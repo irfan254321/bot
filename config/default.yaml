@@ -129,12 +129,16 @@ farming:
   loot_e_interval_sec: 0.14
   loot_click_interval_sec: 0.42
   loot_max_local_dist_px: 360.0
+  loot_close_radius_px: 220
   loot_entry_close_dist_px: 220.0
   loot_entry_kill_window_sec: 4.0
+  post_kill_loot_window_sec: 10.0
+  loot_min_window_sec: 2.0
+  loot_empty_exit_sec: 1.5
   loot_clear_confirm_frames: 4
   loot_max_attempts_per_bag: 3
   loot_attempt_grid_px: 24
-  loot_max_total_sec: 18.0
+  loot_max_total_sec: 10.0
   move_click_interval_sec: 0.55
   move_click_radius_x_ratio: 0.145
   move_click_radius_y_ratio: 0.175

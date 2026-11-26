@@ -354,8 +354,11 @@ def build_overlay_frame_data(
     snap = world.snapshot
     mobs_out: list[OverlayMob] = []
     locked_ov: OverlayMob | None = None
-    # Hide cyan LOCK box & crosshair once 1x click is sent and FSM enters COMBAT_WAIT!
-    if getattr(fsm_state, "value", str(fsm_state)) != "COMBAT_WAIT":
+    st_val = getattr(fsm_state, "value", str(fsm_state))
+    in_combat_wait = st_val == "COMBAT_WAIT"
+    in_loot = st_val == "LOOT"
+    # Hide LOCK & MOB boxes during COMBAT_WAIT and LOOT!
+    if not in_combat_wait and not in_loot:
         for mob in world.mobs:
             is_locked = world.locked_mob is not None and (
                 mob.nameplate_bbox == world.locked_mob.nameplate_bbox
@@ -405,30 +408,43 @@ def build_overlay_frame_data(
                 )
             )
 
-    players_out = tuple(
-        OverlayPlayer(
-            bbox=(int(bx1), int(by1), int(bx2), int(by2)),
-            cx=(int(bx1) + int(bx2)) // 2,
-            cy=int(by1) + int(round(0.35 * max(1, int(by2) - int(by1)))),
-            ks_radius_px=ks_radius,
+    players_out = (
+        ()
+        if in_combat_wait
+        else tuple(
+            OverlayPlayer(
+                bbox=(int(bx1), int(by1), int(bx2), int(by2)),
+                cx=(int(bx1) + int(bx2)) // 2,
+                cy=int(by1) + int(round(0.35 * max(1, int(by2) - int(by1)))),
+                ks_radius_px=ks_radius,
+            )
+            for bx1, by1, bx2, by2 in snap.other_player_boxes
         )
-        for bx1, by1, bx2, by2 in snap.other_player_boxes
     )
 
-    loot_out = tuple(
-        OverlayLoot(
-            bbox=(int(bag.bbox[0]), int(bag.bbox[1]), int(bag.bbox[0] + bag.bbox[2]), int(bag.bbox[1] + bag.bbox[3])),
-            click_x=int(bag.click_x),
-            click_y=int(bag.click_y),
-            score=float(bag.score),
-            index=idx,
+    # During COMBAT_WAIT draw ZERO GOLD/corpse boxes; during LOOT show close Gold Bags only!
+    loot_out = (
+        ()
+        if in_combat_wait
+        else tuple(
+            OverlayLoot(
+                bbox=(int(bag.bbox[0]), int(bag.bbox[1]), int(bag.bbox[0] + bag.bbox[2]), int(bag.bbox[1] + bag.bbox[3])),
+                click_x=int(bag.click_x),
+                click_y=int(bag.click_y),
+                score=float(bag.score),
+                index=idx,
+            )
+            for idx, bag in enumerate(world.loot, start=1)
         )
-        for idx, bag in enumerate(world.loot, start=1)
     )
 
-    corpses_out = tuple(
-        OverlayCorpse(bbox=(int(cx1), int(cy1), int(cx2), int(cy2)))
-        for cx1, cy1, cx2, cy2 in snap.dead_corpses
+    corpses_out = (
+        ()
+        if in_combat_wait
+        else tuple(
+            OverlayCorpse(bbox=(int(cx1), int(cy1), int(cx2), int(cy2)))
+            for cx1, cy1, cx2, cy2 in snap.dead_corpses
+        )
     )
 
     target_hp_pct: float | None = None

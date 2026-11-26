@@ -142,6 +142,7 @@ class PerceptionPipeline:
         check_interface_mode: bool = True,
         check_repair_ui: bool = False,
         skip_mob_detection: bool = False,
+        skip_all_object_detectors: bool = False,
         loot_radius_limit_px: float | None = None,
     ) -> PerceptionSnapshot:
         t_wall0 = time.perf_counter()
@@ -195,27 +196,35 @@ class PerceptionPipeline:
             timings["hsv_conv"] = (time.perf_counter() - t_pf) * 1000.0
 
             t_m = time.perf_counter()
-            if skip_mob_detection:
+            if skip_all_object_detectors:
                 if shared_pf_hsv is not None:
                     combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
                         shared_pf_hsv, ox, oy, frame.width, frame.height
                     )
+                timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
+                timings["gold_loot"] = 0.0
             else:
-                mob_list, contested_list, other_players, other_player_boxes = self.mobs.detect_with_context(
-                    frame, shared_playfield_hsv=shared_pf_hsv
-                )
-            timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
+                if skip_mob_detection:
+                    if shared_pf_hsv is not None:
+                        combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
+                            shared_pf_hsv, ox, oy, frame.width, frame.height
+                        )
+                else:
+                    mob_list, contested_list, other_players, other_player_boxes = self.mobs.detect_with_context(
+                        frame, shared_playfield_hsv=shared_pf_hsv
+                    )
+                timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
 
-            t_l = time.perf_counter()
-            loot_list, pickup_changed = self.loot.detect(
-                frame,
-                mobs=mob_list + contested_list,
-                other_player_boxes=other_player_boxes,
-                shared_playfield_hsv=shared_pf_hsv,
-                max_dist_override_px=loot_radius_limit_px,
-            )
-            dead_corpses = self.loot.last_corpse_boxes
-            timings["gold_loot"] = (time.perf_counter() - t_l) * 1000.0
+                t_l = time.perf_counter()
+                loot_list, pickup_changed = self.loot.detect(
+                    frame,
+                    mobs=mob_list + contested_list,
+                    other_player_boxes=other_player_boxes,
+                    shared_playfield_hsv=shared_pf_hsv,
+                    max_dist_override_px=loot_radius_limit_px,
+                )
+                dead_corpses = self.loot.last_corpse_boxes
+                timings["gold_loot"] = (time.perf_counter() - t_l) * 1000.0
 
         sign_bbox = None
         menu_bbox = None

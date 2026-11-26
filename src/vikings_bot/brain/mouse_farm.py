@@ -39,7 +39,10 @@ class MouseFarmController:
         self.loot_e_interval_sec: float = float(f.get("loot_e_interval_sec", 0.14))
         self.loot_click_interval_sec: float = float(f.get("loot_click_interval_sec", 0.42))
         self.loot_max_local_dist_px: float = float(f.get("loot_max_local_dist_px", 360.0))
-        self.loot_entry_close_dist_px: float = float(f.get("loot_entry_close_dist_px", 220.0))
+        self.loot_close_radius_px: float = float(
+            f.get("loot_close_radius_px", f.get("loot_entry_close_dist_px", 220.0))
+        )
+        self.loot_entry_close_dist_px: float = float(f.get("loot_entry_close_dist_px", self.loot_close_radius_px))
         self.loot_entry_kill_window_sec: float = float(f.get("loot_entry_kill_window_sec", 4.0))
         self.camera_sweep_drag_px: int = int(f.get("camera_sweep_drag_px", 185))
         self.camera_sweep_interval_sec: float = float(f.get("camera_sweep_interval_sec", 0.85))
@@ -277,10 +280,10 @@ class MouseFarmController:
         return any(bag.dist_to_player_px <= self.loot_entry_close_dist_px for bag in local_loot)
 
     def select_local_loot(self, world: WorldState) -> list[LootDrop]:
-        """Return safe Gold Bag drops within near-character radius (<=220px scaled), keeping last_kill_pos first."""
+        """Return safe Gold Bag drops strictly within near-character radius (<=220px scaled)."""
         fw = max(1, world.snapshot.frame_width)
         scale_x = 1.0 if fw <= 1100 else max(0.85, fw / 1920.0)
-        lim = self.loot_entry_close_dist_px * scale_x
+        lim = self.loot_close_radius_px * scale_x
         out: list[LootDrop] = []
         for bag in world.loot:
             if bag.dist_to_player_px > lim and not bag.near_last_kill:

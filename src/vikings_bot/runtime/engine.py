@@ -340,10 +340,16 @@ class BotEngine:
                     BotState.TELEPORT_TO_SPOT,
                     BotState.TRAVEL_TO_SPOT,
                 )
+                skip_all_objs = self.fsm.state == BotState.COMBAT_WAIT
                 skip_mob_det = self.fsm.state in (BotState.COMBAT_WAIT, BotState.LOOT, BotState.ENSURE_MOUSE_MODE)
                 loot_rad_lim = (
-                    float(self.config.farming.get("loot_entry_close_dist_px", 220.0))
-                    if self.fsm.state in (BotState.LOOT, BotState.COMBAT_WAIT)
+                    float(
+                        self.config.farming.get(
+                            "loot_close_radius_px",
+                            self.config.farming.get("loot_entry_close_dist_px", 220.0),
+                        )
+                    )
+                    if self.fsm.state == BotState.LOOT
                     else None
                 )
                 cursor_rel_xy: tuple[int, int] | None = None
@@ -363,6 +369,7 @@ class BotEngine:
                     check_interface_mode=need_imode_check,
                     check_repair_ui=need_repair_ui,
                     skip_mob_detection=skip_mob_det,
+                    skip_all_object_detectors=skip_all_objs,
                     loot_radius_limit_px=loot_rad_lim,
                 )
                 world = self.tracker.update(snapshot)

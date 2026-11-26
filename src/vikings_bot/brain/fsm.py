@@ -56,7 +56,10 @@ class FarmingFSM:
         self.loot_clear_confirm_frames: int = max(2, int(f.get("loot_clear_confirm_frames", 4)))
         self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 3)))
         self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 24)))
-        self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", 18.0))
+        self.post_kill_loot_window_sec: float = max(2.0, float(f.get("post_kill_loot_window_sec", 10.0)))
+        self.loot_min_window_sec: float = max(0.5, float(f.get("loot_min_window_sec", 2.0)))
+        self.loot_empty_exit_sec: float = max(0.2, float(f.get("loot_empty_exit_sec", 1.5)))
+        self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", self.post_kill_loot_window_sec))
         self.last_kill_loot_radius_px: float = float(p.get("last_kill_loot_radius_px", 140.0))
         self.last_kill_loot_window_sec: float = float(p.get("last_kill_loot_window_sec", 0.80))
 
@@ -123,6 +126,7 @@ class FarmingFSM:
         self._loot_grid_attempts: dict[tuple[int, int], int] = {}
         self._loot_prev_count: int = 0
         self._loot_clear_streak: int = 0
+        self._loot_empty_since: float | None = None
         self.last_blacklisted_loot: tuple[float, float] | None = None
 
     def set_control_mode(self, mode: str) -> None:
@@ -214,6 +218,7 @@ class FarmingFSM:
             self._loot_grid_attempts.clear()
             self._loot_prev_count = 0
             self._loot_clear_streak = 0
+            self._loot_empty_since = None
             self.tracker.clear_target_lock()
             self.tracker.notify_movement_stopped()
         elif new_state == BotState.DEAD_RESPAWN:
@@ -729,9 +734,9 @@ class FarmingFSM:
                 hp_vis = True
                 hp_val = lm.hp_ratio_est
         elif world.target_hp_visible:
-            # When GoldRustlerDetector is intentionally off (skip_mob_detection=True), rely on target HP probe
-            hp_vis = True
+            # When all object detectors are intentionally off (COMBAT_WAIT), rely strictly on target HP probe
             hp_val = world.snapshot.combat_target_hp_ratio
+            hp_vis = hp_val is None or hp_val > 0.0
 
         if hp_vis:
             # Anti-KS First-HP Verify: fresh target already < 72% HP on first reading -> another player hit it!
@@ -843,7 +848,14 @@ class FarmingFSM:
         return []
 
     def _handle_loot(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
-        """Pick up Gold Bags via E / click with max 3 attempts per 24x24px grid cell -> blacklist 120s."""
+        """Dedicated post-kill LOOT window (up to 10.0s) strictly for Gold Bags within <=220px.
+
+        Exits back to SEARCH_MOB ONLY when:
+        - `post_kill_loot_window_sec` (10.0s) expires, OR
+        - after at least `loot_min_window_sec` (2.0s), no close Gold Bag is detected for
+          `loot_empty_exit_sec` (1.5s) consecutively, OR
+        - the sole remaining close bag hits the 3-attempt 24x24px grid blacklist cap.
+        """
         local_bags = self.farm.select_local_loot(world)
         bag_count = len(local_bags)
 
@@ -854,19 +866,27 @@ class FarmingFSM:
 
         if bag_count == 0 and not world.snapshot.pickup_log_changed:
             self._loot_clear_streak += 1
+            if self._loot_empty_since is None:
+                self._loot_empty_since = now
         else:
             self._loot_clear_streak = 0
+            self._loot_empty_since = None
 
-        if self._loot_clear_streak >= self.loot_clear_confirm_frames or elapsed >= self.loot_max_total_sec:
+        empty_dur = (now - self._loot_empty_since) if self._loot_empty_since is not None else 0.0
+        window_expired = elapsed >= self.post_kill_loot_window_sec
+        empty_cleared = elapsed >= self.loot_min_window_sec and empty_dur >= self.loot_empty_exit_sec
+
+        if window_expired or empty_cleared:
             self.tracker.mark_loot_done()
             if self.mode == BotMode.LOOT:
                 self._state_entered_at = now
                 self._loot_clear_streak = 0
+                self._loot_empty_since = None
                 return []
             self.transition(
                 BotState.SEARCH_MOB,
                 now,
-                "all_gold_bags_cleared" if self._loot_clear_streak >= self.loot_clear_confirm_frames else "loot_max_timeout",
+                "post_kill_loot_cleared" if empty_cleared else "post_kill_loot_window_timeout",
             )
             return []
 

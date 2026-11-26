@@ -131,12 +131,15 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
     acts_l2 = fsm.step(tracker.update(_snap(4.5, mobs=(), loot=(close_bag,))))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_l2)
 
-    # 6. Bags cleared (4 empty frames) -> returns to SEARCH_MOB -> empty playfield rotates camera via MMB drag!
-    for i in range(4):
-        fsm.step(tracker.update(_snap(5.0 + i * 0.1, mobs=(), loot=())))
+    # 6. Bags cleared (min 2.0s post-kill window + 1.5s consecutive empty) -> returns to SEARCH_MOB -> MMB sweep!
+    fsm.step(tracker.update(_snap(5.0, mobs=(), loot=())))
+    assert fsm.state == BotState.LOOT  # still inside 2.0s initial window & <1.5s empty
+    fsm.step(tracker.update(_snap(6.0, mobs=(), loot=())))
+    assert fsm.state == BotState.LOOT  # empty for 1.0s < 1.5s
+    fsm.step(tracker.update(_snap(6.6, mobs=(), loot=())))
     assert fsm.state == BotState.SEARCH_MOB
 
-    acts_sweep = fsm.step(tracker.update(_snap(5.6, mobs=(), loot=())))
+    acts_sweep = fsm.step(tracker.update(_snap(7.0, mobs=(), loot=())))
     assert any(isinstance(a, DragCameraIntent) and a.button == "middle" and a.dy == 0 for a in acts_sweep)
 
 
@@ -673,3 +676,134 @@ def test_auto_camera_pitch_leveling_and_12s_anti_oscillation_lockout():
         10.0,
     )
     assert acts_ok == [] and settling is False
+
+
+def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
+    """Verify (a) COMBAT_WAIT disables all object detectors + overlay boxes + mouse/camera output,
+    and (b) post-kill LOOT runs up to 10.0s strictly for Gold Bags <=220px without locking other mobs."""
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.debug_overlay import build_overlay_frame_data
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
+    assert int(cfg.farming["loot_close_radius_px"]) == 220
+
+    # (a) Pipeline with skip_all_object_detectors=True (COMBAT_WAIT):
+    #     disables GoldRustlerDetector, GoldBagDetector, and CorpseDetector, while reading Target HP!
+    hsv_bg = np.zeros((768, 1024, 3), dtype=np.uint8)
+    hsv_bg[:, :] = (28, 120, 60)
+    bgr = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    # Nameplate + green target HP bar + close Gold Bag
+    np_patch = np.full((10, 58, 3), (160, 110, 210), dtype=np.uint8)
+    np_patch[:, ::2] = (28, 120, 50)
+    bgr[300:310, 485:543] = cv2.cvtColor(np_patch, cv2.COLOR_HSV2BGR)
+    bgr[314:318, 490:542] = cv2.cvtColor(np.full((4, 52, 3), (62, 220, 225), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr[444:456, 416:426] = cv2.cvtColor(np.full((12, 10, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr[440:444, 419:424] = cv2.cvtColor(np.full((4, 5, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+
+    pipe = PerceptionPipeline(cfg)
+    snap_cw = pipe.analyze(
+        FramePacket(image_bgr=bgr, timestamp=1.0),
+        skip_all_object_detectors=True,
+        check_interface_mode=False,
+    )
+    assert snap_cw.mobs == ()
+    assert snap_cw.loot == ()
+    assert snap_cw.dead_corpses == ()
+    assert snap_cw.combat_target_hp_visible is True
+    assert snap_cw.target_hp_visible is True
+
+    # Overlay in COMBAT_WAIT must hide LOCK, MOB, GOLD, and corpse boxes even if snapshot had data
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    m_eng = _mob(cx=510, cy=330, dist=95.0, has_hp=False)
+    acts_eng = fsm.step(tracker.update(_snap(1.1, fw=1024, fh=768, mobs=(m_eng,))))
+    assert fsm.state == BotState.COMBAT_WAIT
+    assert len(acts_eng) == 1 and isinstance(acts_eng[0], ClickScreenIntent)
+
+    w_cw = tracker.update(
+        PerceptionSnapshot(
+            timestamp=2.0,
+            frame_width=1024,
+            frame_height=768,
+            hp_ratio=1.0,
+            mp_ratio=1.0,
+            coords=CoordReading(x=615, y=1830, confidence=0.98),
+            minimap=MinimapReading(),
+            mobs=(),
+            loot=(),
+            dead_corpses=(),
+            combat_target_hp_visible=True,
+            combat_target_hp_ratio=0.75,
+            horizon_y=30.0,
+            sky_ratio=0.02,
+        )
+    )
+    ov_cw = build_overlay_frame_data(
+        game_rect=(0, 0, 1024, 768), world=w_cw, fsm_state=BotState.COMBAT_WAIT, config=cfg, loop_hz=20.0
+    )
+    assert ov_cw.mobs == () and ov_cw.locked_mob is None and ov_cw.loot == () and ov_cw.corpses == ()
+
+    # During COMBAT_WAIT: ZERO clicks, ZERO DRAG_MMB (even with extreme pitch!), ZERO ESC
+    acts_cw = fsm.step(w_cw)
+    assert acts_cw == []
+    assert fsm.state == BotState.COMBAT_WAIT
+
+    # (b) Target HP drops to 0% / disappears -> enters LOOT at t=3.8
+    w_dead = tracker.update(
+        PerceptionSnapshot(
+            timestamp=3.8,
+            frame_width=1024,
+            frame_height=768,
+            hp_ratio=1.0,
+            mp_ratio=1.0,
+            coords=CoordReading(x=615, y=1830, confidence=0.98),
+            minimap=MinimapReading(),
+            mobs=(),
+            loot=(),
+            combat_target_hp_visible=False,
+            combat_target_hp_ratio=0.0,
+        )
+    )
+    assert fsm.step(w_dead) == []
+    assert fsm.state == BotState.LOOT
+    assert fsm.kills_count == 1
+
+    # During LOOT: another mob + far Gold Bag (310px > 220px) + close Gold Bag (130px <= 220px)
+    other_mob = _mob(cx=320, cy=320, dist=200.0, has_hp=False)
+    far_bag = _bag(cx=200, cy=420, dist=310.0)
+    close_bag = _bag(cx=440, cy=450, dist=130.0)
+    w_loot1 = tracker.update(_snap(4.2, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag, close_bag)))
+    ov_loot = build_overlay_frame_data(
+        game_rect=(0, 0, 1024, 768), world=w_loot1, fsm_state=BotState.LOOT, config=cfg, loop_hz=20.0
+    )
+    assert ov_loot.mobs == () and ov_loot.locked_mob is None, "Overlay must hide MOB/LOCK during LOOT!"
+    acts_l1 = fsm.step(w_loot1)
+    assert fsm.state == BotState.LOOT
+    # Must click ONLY the close Gold Bag (440, 450), never the mob or far bag, and never DRAG_MMB!
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 440 and a.y == 450 for a in acts_l1)
+    assert not any(isinstance(a, DragCameraIntent) for a in acts_l1)
+
+    # Only far bag (>220px) remains -> ignored, stays in LOOT during initial 2.0s window (t=5.5 -> elapsed 1.7s)
+    acts_l2 = fsm.step(tracker.update(_snap(5.5, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
+    assert fsm.state == BotState.LOOT
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_l2)
+
+    # After >=2.0s elapsed AND >=1.5s consecutive empty (empty started at 5.5 -> 7.1 is 1.6s empty, elapsed 3.3s) -> SEARCH_MOB!
+    fsm.step(tracker.update(_snap(7.1, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
+    assert fsm.state == BotState.SEARCH_MOB
+
+    # Verify 10.0s hard post_kill_loot_window_sec cap when close bags keep appearing continuously
+    fsm.transition(BotState.LOOT, 20.0, "test_10s_cap")
+    for idx, ts in enumerate((21.0, 23.0, 25.0, 27.0, 29.5)):
+        # Distinct close bag positions so 3-attempt blacklist never fires early
+        b_i = _bag(cx=430 + idx * 35, cy=440, dist=120.0)
+        fsm.step(tracker.update(_snap(ts, fw=1024, fh=768, loot=(b_i,))))
+        assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(30.1, fw=1024, fh=768, loot=(_bag(cx=520, cy=440, dist=110.0),))))
+    assert fsm.state == BotState.SEARCH_MOB
