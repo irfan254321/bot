@@ -49,6 +49,47 @@ class PerceptionPipeline:
     def close(self) -> None:
         return None
 
+    def _probe_combat_target_hp_bar(
+        self,
+        pf_hsv: np.ndarray,
+        ox: int,
+        oy: int,
+        frame_w: int,
+        frame_h: int,
+    ) -> tuple[bool, float | None]:
+        """Lightweight (<0.2ms) green target HP-bar check during COMBAT_WAIT when GoldRustlerDetector is off."""
+        sx = 1.0 if self.mobs.hud_fixed_pixel_ui else (frame_w / 1920.0)
+        sy = 1.0 if self.mobs.hud_fixed_pixel_ui else (frame_h / 1080.0)
+        cx = frame_w // 2
+        cy = frame_h // 2
+        rx = int(round(210.0 * sx))
+        ry_top = int(round(190.0 * sy))
+        ry_bot = int(round(120.0 * sy))
+        x1 = max(0, (cx - rx) - ox)
+        x2 = min(pf_hsv.shape[1], (cx + rx) - ox)
+        y1 = max(0, (cy - ry_top) - oy)
+        y2 = min(pf_hsv.shape[0], (cy + ry_bot) - oy)
+        if (x2 - x1) < 20 or (y2 - y1) < 8:
+            return (False, None)
+        sub = pf_hsv[y1:y2, x1:x2]
+        g = cv2.inRange(sub, self.mobs.hp_lo, self.mobs.hp_hi)
+        if cv2.countNonZero(g) < 12:
+            return (False, None)
+        n_lbl, _lbl, stats, _ = cv2.connectedComponentsWithStats(g, connectivity=8)
+        expected_w = max(36.0, 68.0 * sx)
+        best_w = 0
+        for idx in range(1, n_lbl):
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            if 6 <= w <= int(round(95.0 * sx)) and 2 <= h <= max(6, int(round(7.0 * sy))):
+                if (w / max(1.0, float(h))) >= 2.0 and (area / max(1.0, float(w * h))) >= 0.50:
+                    if w > best_w:
+                        best_w = w
+        if best_w >= 6:
+            return (True, max(0.03, min(1.0, float(best_w) / expected_w)))
+        return (False, None)
+
     def analyze(
         self,
         frame: FramePacket,
@@ -57,6 +98,8 @@ class PerceptionPipeline:
         cursor_rel_xy: tuple[int, int] | None = None,
         check_interface_mode: bool = True,
         check_repair_ui: bool = False,
+        skip_mob_detection: bool = False,
+        loot_radius_limit_px: float | None = None,
     ) -> PerceptionSnapshot:
         t_wall0 = time.perf_counter()
         timings: dict[str, float] = {}
@@ -82,6 +125,8 @@ class PerceptionPipeline:
         dead_corpses: tuple[tuple[int, int, int, int], ...] = ()
         pickup_changed = False
         playfield_luma: float | None = None
+        combat_target_hp_visible = False
+        combat_target_hp_ratio: float | None = None
 
         if not skip_field_detectors:
             t_pf = time.perf_counter()
@@ -101,9 +146,15 @@ class PerceptionPipeline:
             timings["hsv_conv"] = (time.perf_counter() - t_pf) * 1000.0
 
             t_m = time.perf_counter()
-            mob_list, contested_list, other_players, other_player_boxes = self.mobs.detect_with_context(
-                frame, shared_playfield_hsv=shared_pf_hsv
-            )
+            if skip_mob_detection:
+                if shared_pf_hsv is not None:
+                    combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
+                        shared_pf_hsv, ox, oy, frame.width, frame.height
+                    )
+            else:
+                mob_list, contested_list, other_players, other_player_boxes = self.mobs.detect_with_context(
+                    frame, shared_playfield_hsv=shared_pf_hsv
+                )
             timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
 
             t_l = time.perf_counter()
@@ -112,6 +163,7 @@ class PerceptionPipeline:
                 mobs=mob_list + contested_list,
                 other_player_boxes=other_player_boxes,
                 shared_playfield_hsv=shared_pf_hsv,
+                max_dist_override_px=loot_radius_limit_px,
             )
             dead_corpses = self.loot.last_corpse_boxes
             timings["gold_loot"] = (time.perf_counter() - t_l) * 1000.0
@@ -201,5 +253,7 @@ class PerceptionPipeline:
             detected_control_mode=detected_ctrl_mode,
             camera_pitch_state="ok",
             playfield_luma=playfield_luma,
+            combat_target_hp_visible=combat_target_hp_visible,
+            combat_target_hp_ratio=combat_target_hp_ratio,
             timings_ms=timings,
         )

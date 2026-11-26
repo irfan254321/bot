@@ -88,7 +88,7 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
     assert cfg.controls["input_backend"] == "ahk"
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
     assert fsm.state == BotState.SEARCH_MOB
 
     # 1. Gold Rustler spotted -> clicks LEFT exactly ONCE on upper-torso and enters COMBAT_WAIT!
@@ -137,25 +137,61 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
 
 
 def test_auto_esc_guard_switches_keyboard_banner_back_to_mouse_mode():
+    """Verify one-shot startup ENSURE_MOUSE_MODE (1x or 2x ESC) and ZERO in-loop ESC during farming."""
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.ui_matcher import UiTemplateMatcher
+
     cfg = load_config("config/default.yaml")
+
+    # 1. Width-based top-center INTERFACE TYPE banner detection (1024x768)
+    cfg_vm = load_config("config/default.yaml")
+    cfg_vm.perception["hud_fixed_pixel_ui"] = True
+    um = UiTemplateMatcher(cfg_vm)
+    # Narrow 'Mouse' text (~74px) on dark banner strip at x=410..615, y=98..126
+    img_ms = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
+    img_ms[106:116, 470:544] = (235, 235, 235)
+    mode_ms, _ = um.detect_interface_mode(FramePacket(image_bgr=img_ms, timestamp=1.0))
+    assert mode_ms == "mouse_banner"
+    # Wide 'Keyboard' text (~120px) on dark banner strip
+    img_kb = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
+    img_kb[106:116, 450:570] = (235, 235, 235)
+    mode_kb, _ = um.detect_interface_mode(FramePacket(image_bgr=img_kb, timestamp=1.0))
+    assert mode_kb == "keyboard_banner"
+
+    # 2. Branch A: resume() -> ENSURE_MOUSE_MODE -> 1st ESC -> 0.30s -> mouse_banner -> SEARCH_MOB (no 2nd ESC!)
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0)
+    assert fsm.state == BotState.ENSURE_MOUSE_MODE
 
-    # Top banner shows INTERFACE TYPE: Keyboard -> presses ESC once (no ping-pong during cooldown!)
-    acts_esc = fsm.step(tracker.update(_snap(1.2, interface_mode="keyboard_banner")))
-    assert len(acts_esc) == 1
-    assert isinstance(acts_esc[0], TapKeyIntent) and acts_esc[0].key == "esc"
+    acts_1 = fsm.step(tracker.update(_snap(1.0, interface_mode="no_cursor")))
+    assert len(acts_1) == 1 and isinstance(acts_1[0], TapKeyIntent) and acts_1[0].key == "esc"
+    assert fsm.step(tracker.update(_snap(1.15, interface_mode="mouse_banner"))) == []  # waiting 0.30s
+    assert fsm.state == BotState.ENSURE_MOUSE_MODE
+    assert fsm.step(tracker.update(_snap(1.35, interface_mode="mouse_banner"))) == []
+    assert fsm.state == BotState.SEARCH_MOB
+    assert fsm._mouse_mode_verified is True
 
-    # Second tick immediately after -> respects 2.2s cooldown & waits cleanly
-    acts_wait = fsm.step(tracker.update(_snap(1.4, interface_mode="keyboard_banner")))
-    assert acts_wait == []
-
-    # Mouse banner confirmed -> resumes searching & clicking normally
+    # Once in SEARCH_MOB, even if keyboard_banner appears, NO in-loop ESC ping-pong!
     m = _mob(cx=980, cy=450, dist=160.0)
-    acts_ok = fsm.step(tracker.update(_snap(1.7, mobs=(m,), interface_mode="mouse_banner")))
+    acts_farm = fsm.step(tracker.update(_snap(1.6, mobs=(m,), interface_mode="keyboard_banner")))
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_farm)
     assert fsm.state == BotState.COMBAT_WAIT
-    assert any(isinstance(a, ClickScreenIntent) for a in acts_ok)
+
+    # 3. Branch B: 1st ESC -> 0.30s -> keyboard_banner -> 2nd ESC -> 0.25s -> SEARCH_MOB!
+    tracker2 = WorldStateTracker()
+    fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
+    fsm2.resume(10.0)
+    acts_b1 = fsm2.step(tracker2.update(_snap(10.0, interface_mode="no_cursor")))
+    assert len(acts_b1) == 1 and isinstance(acts_b1[0], TapKeyIntent) and acts_b1[0].key == "esc"
+    acts_b2 = fsm2.step(tracker2.update(_snap(10.35, interface_mode="keyboard_banner")))
+    assert len(acts_b2) == 1 and isinstance(acts_b2[0], TapKeyIntent) and acts_b2[0].key == "esc"
+    assert fsm2.state == BotState.ENSURE_MOUSE_MODE
+    assert fsm2.step(tracker2.update(_snap(10.50, interface_mode="mouse_banner"))) == []  # waiting 0.25s
+    assert fsm2.step(tracker2.update(_snap(10.65, interface_mode="mouse_banner"))) == []
+    assert fsm2.state == BotState.SEARCH_MOB
+    assert fsm2._mouse_mode_verified is True
 
 
 def test_watchdog_anti_miss_never_cancels_while_distance_is_actively_shrinking():
@@ -163,7 +199,7 @@ def test_watchdog_anti_miss_never_cancels_while_distance_is_actively_shrinking()
     cfg = load_config("config/default.yaml")
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
 
     # Click a far mob at dist=440px (coords stagnant/occluded, no HP bar yet)
     m0 = _mob(cx=1100, cy=400, dist=440.0, has_hp=False)
@@ -190,7 +226,7 @@ def test_loot_max_3_attempts_blacklists_obstructed_bag_and_never_blocks_80m_repa
     cfg = load_config("config/default.yaml")
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
 
     # Simulate 80m repair timer already due while an obstructed bag is sitting on the ground
     fsm._active_farming_sec = 4810.0
@@ -289,7 +325,7 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
     cfg = load_config("config/default.yaml")
     tracker = WorldStateTracker(death_zero_hp_frames=5)
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
 
     # 1. Alive at farming spot (610, 1841) with high HP (5099/5700 = 89.5%)
     fsm.step(tracker.update(_snap(1.0, x=610, y=1841, fw=1024, fh=768, hp=0.895)))
@@ -319,7 +355,7 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
     # 4. One-shot burst kill (HP 0.90 -> 0.0) corroborated by respawn dialog popup after 5 consecutive frames
     tracker2 = WorldStateTracker(death_zero_hp_frames=5)
     fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
-    fsm2.resume(10.0)
+    fsm2.resume(10.0, ensure_mouse_mode=False)
     fsm2.step(tracker2.update(_snap(10.0, x=610, y=1841, fw=1024, fh=768, hp=0.90)))
     for i in range(4):
         fsm2.step(
@@ -337,7 +373,7 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
     # 5. One-shot kill corroborated by actual coordinate warp to town (1075, 2628) after 5 consecutive 0% frames
     tracker3 = WorldStateTracker(death_zero_hp_frames=5)
     fsm3 = FarmingFSM(cfg, tracker3, mode=BotMode.FULL)
-    fsm3.resume(20.0)
+    fsm3.resume(20.0, ensure_mouse_mode=False)
     fsm3.step(tracker3.update(_snap(20.0, x=610, y=1841, fw=1024, fh=768, hp=0.90)))
     for i in range(5):
         # 3+ consistent town frames accepted as real teleport jump by WorldStateTracker
@@ -351,23 +387,23 @@ def test_loot_entry_gate_blocks_far_drops_without_kill_and_24px_grid_caps_jitter
     cfg = load_config("config/default.yaml")
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
 
     # 1. No kill yet + faraway yellow drop (dist=290px > 220px) -> MUST stay in SEARCH_MOB (never detour to LOOT!)
     far_drop = _bag(cx=820, cy=480, dist=290.0)
     fsm.step(tracker.update(_snap(1.5, fw=1024, fh=768, loot=(far_drop,))))
     assert fsm.state == BotState.SEARCH_MOB
 
-    # 2. Record a kill -> within 4.0s window, even a 290px drop IS allowed to enter LOOT!
+    # 2. Record a kill -> within 4.0s window, near_last_kill drop IS allowed to enter LOOT!
     tracker.record_kill_pos((820, 480), now=2.0)
-    fsm.step(tracker.update(_snap(4.5, fw=1024, fh=768, loot=(far_drop,))))
+    fsm.step(tracker.update(_snap(2.4, fw=1024, fh=768, loot=(far_drop,))))
     assert fsm.state == BotState.LOOT
 
     # 3. After > 4.0s with no kill, close bag (<=220px) enters LOOT and jitters by +-4px across 3 attempts ->
     #    quantized to 24x24px grid so 3rd attempt ALWAYS triggers blacklist_point!
     tracker2 = WorldStateTracker()
     fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
-    fsm2.resume(10.0)
+    fsm2.resume(10.0, ensure_mouse_mode=False)
     jitter_bags = [
         _bag(cx=510, cy=500, dist=180.0),
         _bag(cx=516, cy=505, dist=182.0),
@@ -410,7 +446,7 @@ def test_auto_daylight_weather_sends_setweather_in_scan_spot_and_never_in_combat
 
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    fsm.resume(10.0)
+    fsm.resume(10.0, ensure_mouse_mode=False)
 
     # 1. First entry into SEARCH_MOB after resume (F9) -> sends `/setweather 11`
     acts_init = fsm.step(tracker.update(_snap(10.5, fw=1024, fh=768, playfield_luma=92.0)))
@@ -476,7 +512,7 @@ def test_ahk_pipe_errno22_fallback_f9_stuck_reset_and_nav_mob_priority():
 
     tracker._consecutive_stuck = 6
     tracker._is_stuck = True
-    fsm.resume(5.0)
+    fsm.resume(5.0, ensure_mouse_mode=False)
     w_resumed = tracker.update(_snap(5.1, x=615, y=1830, fw=1024, fh=768))
     assert w_resumed.consecutive_stuck == 0
     assert w_resumed.is_stuck is False
@@ -492,3 +528,72 @@ def test_ahk_pipe_errno22_fallback_f9_stuck_reset_and_nav_mob_priority():
     )
     assert fsm.state == BotState.COMBAT_WAIT
     assert any(isinstance(a, ClickScreenIntent) and a.x == 520 and a.y == 330 for a in acts_nav)
+
+
+def test_combat_wait_disables_mob_detection_and_loot_respects_220px_radius():
+    """Verify skip_mob_detection=True during COMBAT_WAIT (no mob switching) & <=220px loot radius cap."""
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg_vm = load_config("config/default.yaml")
+    cfg_vm.perception["hud_fixed_pixel_ui"] = True
+    pipe_vm = PerceptionPipeline(cfg_vm)
+
+    # 1. Frame with a Gold Rustler nameplate + green target HP bar + 2 Gold Bags (1 close <=220px, 1 far >220px)
+    hsv_bg = np.zeros((768, 1024, 3), dtype=np.uint8)
+    hsv_bg[:, :] = (28, 120, 60)
+    bgr = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    # Nameplate + green HP bar near center
+    np_patch = np.full((10, 58, 3), (160, 110, 210), dtype=np.uint8)
+    np_patch[:, ::2] = (28, 120, 50)
+    bgr[300:310, 485:543] = cv2.cvtColor(np_patch, cv2.COLOR_HSV2BGR)
+    bgr[314:318, 490:542] = cv2.cvtColor(np.full((4, 52, 3), (62, 220, 225), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    # Close Gold Bag at (420, 440) (~95px from feet (512, 424))
+    bgr[444:456, 416:426] = cv2.cvtColor(np.full((12, 10, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr[440:444, 419:424] = cv2.cvtColor(np.full((4, 5, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    # Far Gold Bag at (160, 440) (~352px from feet -> must be ignored when loot_radius_limit_px=220.0!)
+    bgr[444:456, 156:166] = cv2.cvtColor(np.full((12, 10, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr[440:444, 159:164] = cv2.cvtColor(np.full((4, 5, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+
+    snap_combat = pipe_vm.analyze(
+        FramePacket(image_bgr=bgr, timestamp=1.0),
+        skip_mob_detection=True,
+        loot_radius_limit_px=220.0,
+        check_interface_mode=False,
+    )
+    assert snap_combat.mobs == (), "GoldRustlerDetector must be disabled during COMBAT_WAIT!"
+    assert snap_combat.combat_target_hp_visible is True
+    assert snap_combat.target_hp_visible is True
+    assert len(snap_combat.loot) == 1 and abs(snap_combat.loot[0].click_x - 421) <= 12
+
+    # 2. FSM in COMBAT_WAIT with skip_mob_detection=True (mobs=()): stays locked while HP visible, then enters LOOT on kill!
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg_vm, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    m_close = _mob(cx=515, cy=340, dist=90.0)
+    m_far = _mob(cx=260, cy=320, dist=280.0)
+    # Picks nearest mob from (512, 384) regardless of input list order!
+    acts_e = fsm.step(tracker.update(_snap(1.2, fw=1024, fh=768, mobs=(m_far, m_close))))
+    assert fsm.state == BotState.COMBAT_WAIT
+    assert isinstance(acts_e[0], ClickScreenIntent) and acts_e[0].x == 515
+
+    # HP visible via combat_target_hp_visible while mobs=() (first hit brings HP to 92%)
+    snap_hp = PerceptionSnapshot(
+        timestamp=2.0, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=615, y=1830, confidence=0.98), minimap=MinimapReading(),
+        mobs=(), combat_target_hp_visible=True, combat_target_hp_ratio=0.92,
+    )
+    assert fsm.step(tracker.update(snap_hp)) == []
+    assert fsm.state == BotState.COMBAT_WAIT
+
+    # HP disappears -> after combat_zero_drop_kill_sec transitions directly to LOOT!
+    snap_dead = PerceptionSnapshot(
+        timestamp=3.8, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=615, y=1830, confidence=0.98), minimap=MinimapReading(),
+        mobs=(), combat_target_hp_visible=False, combat_target_hp_ratio=None,
+    )
+    fsm.step(tracker.update(snap_dead))
+    assert fsm.state == BotState.LOOT
+    assert fsm.kills_count == 1

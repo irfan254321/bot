@@ -47,6 +47,7 @@ class FarmingFSM:
         self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
+        self.combat_blind_timeout_sec: float = float(f.get("combat_blind_timeout_sec", 10.0))
         self.combat_stagnant_hp_sec: float = float(f.get("combat_stagnant_hp_sec", 5.0))
         self.combat_hard_timeout_sec: float = float(f.get("combat_hard_timeout_sec", 28.0))
         self.combat_zero_drop_kill_sec: float = float(f.get("combat_zero_drop_kill_sec", 1.6))
@@ -92,8 +93,11 @@ class FarmingFSM:
         self._was_outside_city: bool = False
         self._last_false_death_log_ts: float = -999.0
 
-        # Auto-ESC Mouse Mode guard state
+        # One-shot startup ENSURE_MOUSE_MODE state (runs ONLY once on start / F9 resume)
         self._mouse_mode_verified: bool = False
+        self._ensure_mouse_phase: str = "SEND_FIRST_ESC"
+        self._ensure_mouse_until: float = 0.0
+        self._post_ensure_state: BotState = BotState.SEARCH_MOB
         self._mouse_restore_wait_until: float = 0.0
         self._post_drag_settle_until: float = 0.0
         self._sweeps_in_search: int = 0
@@ -232,27 +236,39 @@ class FarmingFSM:
             self.tracker.clear_target_lock()
         logger.info("FSM %s -> %s (%s)", old.value, new_state.value, reason)
 
-    def resume(self, now: float) -> None:
+    def resume(self, now: float, *, ensure_mouse_mode: bool | None = None) -> None:
         if self.state == BotState.EMERGENCY_STOP:
             return
         self._just_resumed = True
-        self._mouse_mode_verified = False
         self._recovery_attempts = 0
         self.tracker.reset_for_resume()
         self.farm.request_daylight_weather_sync()
+
         if self.mode == BotMode.NAVIGATE:
-            self.transition(BotState.NAVIGATE_TO_SPOT, now, "resume_navigate")
+            target_state = BotState.NAVIGATE_TO_SPOT
+            rsn = "resume_navigate"
         elif self.mode == BotMode.LOOT:
-            self.transition(BotState.LOOT, now, "resume_loot")
+            target_state = BotState.LOOT
+            rsn = "resume_loot"
         elif self.mode == BotMode.COMBAT:
-            self.transition(BotState.SEARCH_MOB, now, "resume_combat")
+            target_state = BotState.SEARCH_MOB
+            rsn = "resume_combat"
         else:
             self._need_dynamic_anchor = self.anchor_spot_on_resume
-            self.transition(
-                BotState.SEARCH_MOB if self.anchor_spot_on_resume else BotState.NAVIGATE_TO_SPOT,
-                now,
-                "resume_full",
-            )
+            target_state = BotState.SEARCH_MOB if self.anchor_spot_on_resume else BotState.NAVIGATE_TO_SPOT
+            rsn = "resume_full"
+
+        want_ensure = self.auto_restore_mouse_mode if ensure_mouse_mode is None else bool(ensure_mouse_mode)
+        if want_ensure and self.mode in (BotMode.FULL, BotMode.COMBAT, BotMode.LOOT):
+            self._mouse_mode_verified = False
+            self._ensure_mouse_phase = "SEND_FIRST_ESC"
+            self._ensure_mouse_until = 0.0
+            self._post_ensure_state = target_state
+            self.transition(BotState.ENSURE_MOUSE_MODE, now, f"{rsn}_ensure_mouse_mode")
+            return
+
+        self._mouse_mode_verified = True
+        self.transition(target_state, now, rsn)
 
     def pause(self, now: float, reason: str = "manual_pause") -> None:
         if self.state != BotState.EMERGENCY_STOP:
@@ -407,32 +423,18 @@ class FarmingFSM:
             self._last_step_ts = None
             return []
 
-        if self._last_step_ts is not None and self.state not in (BotState.REPAIR_RECALL, BotState.REPAIR_AT_NPC):
+        if self._last_step_ts is not None and self.state not in (
+            BotState.ENSURE_MOUSE_MODE,
+            BotState.REPAIR_RECALL,
+            BotState.REPAIR_AT_NPC,
+        ):
             dt = min(1.0, max(0.0, now - self._last_step_ts))
             self._active_farming_sec += dt
         self._last_step_ts = now
 
-        # --- AUTO-ESC MOUSE MODE GUARD ---
-        # Jika terlihat banner atas 'INTERFACE TYPE: Keyboard', tekan ESC 1x untuk balik ke Mouse Mode!
-        if self.auto_restore_mouse_mode and self.state not in (
-            BotState.DEAD_RESPAWN,
-            BotState.REPAIR_RECALL,
-            BotState.REPAIR_AT_NPC,
-        ):
-            imode = world.snapshot.interface_mode
-            esc_key = str(self.config.respawn_travel.get("mode_toggle_key", "esc"))
-            if imode == "mouse_banner":
-                self._mouse_mode_verified = True
-                self._mouse_restore_wait_until = 0.0
-            elif imode == "keyboard_banner":
-                if self.tracker.is_ready("auto_mouse_mode_esc", now):
-                    self.tracker.set_cooldown("auto_mouse_mode_esc", now, 2.2)
-                    self._mouse_restore_wait_until = now + 0.35
-                    logger.warning("INTERFACE TYPE: Keyboard detected -> pressing ESC once to switch to Mouse Mode")
-                    return [TapKeyIntent(key=esc_key, hold_sec=0.05, reason="auto_restore_mouse_mode_banner")]
-                return []
-            elif now < self._mouse_restore_wait_until:
-                return []
+        # --- ONE-SHOT STARTUP ENSURE_MOUSE_MODE (runs ONLY once on start / F9 resume; zero ESC in farming loop!) ---
+        if self.state == BotState.ENSURE_MOUSE_MODE:
+            return self._handle_ensure_mouse_mode(world, now)
 
         # Track whether character was outside town so sudden city-warp corroborates genuine respawn
         if world.coords_smoothed is not None and not self.respawn_travel.is_in_city(world.coords_smoothed):
@@ -557,6 +559,34 @@ class FarmingFSM:
 
         return intents
 
+    def _handle_ensure_mouse_mode(self, world: WorldState, now: float) -> list[ActionIntent]:
+        """One-shot startup Mouse Mode verification: ESC -> 0.30s -> check banner -> optional 2nd ESC -> 0.25s."""
+        esc_key = str(self.config.respawn_travel.get("mode_toggle_key", "esc"))
+        if self._ensure_mouse_phase == "SEND_FIRST_ESC":
+            self._ensure_mouse_phase = "WAIT_BANNER"
+            self._ensure_mouse_until = now + 0.30
+            logger.info("ENSURE_MOUSE_MODE: sending initial ESC probe and waiting 0.30s for INTERFACE TYPE banner")
+            return [TapKeyIntent(key=esc_key, hold_sec=0.05, reason="ensure_mouse_mode_esc_1")]
+
+        if self._ensure_mouse_phase == "WAIT_BANNER":
+            if now < self._ensure_mouse_until:
+                return []
+            imode = world.snapshot.interface_mode
+            if imode == "keyboard_banner":
+                self._ensure_mouse_phase = "WAIT_SECOND_ESC"
+                self._ensure_mouse_until = now + 0.25
+                logger.info("ENSURE_MOUSE_MODE: banner shows Keyboard -> pressing ESC 2nd time and waiting 0.25s")
+                return [TapKeyIntent(key=esc_key, hold_sec=0.05, reason="ensure_mouse_mode_esc_2")]
+            self._mouse_mode_verified = True
+            self.transition(self._post_ensure_state, now, f"mouse_mode_verified({imode})")
+            return []
+
+        if now < self._ensure_mouse_until:
+            return []
+        self._mouse_mode_verified = True
+        self.transition(self._post_ensure_state, now, "mouse_mode_verified_after_esc_2")
+        return []
+
     def _handle_navigate(self, world: WorldState, now: float) -> list[ActionIntent]:
         # Priority 0: If already within 60 coord units of spot center and a safe Gold Rustler is visible,
         # engage it directly instead of rotating camera / risking stuck_navigating!
@@ -680,6 +710,10 @@ class FarmingFSM:
             if lm.has_hp_bar:
                 hp_vis = True
                 hp_val = lm.hp_ratio_est
+        elif world.target_hp_visible:
+            # When GoldRustlerDetector is intentionally off (skip_mob_detection=True), rely on target HP probe
+            hp_vis = True
+            hp_val = world.snapshot.combat_target_hp_ratio
 
         if hp_vis:
             # Anti-KS First-HP Verify: fresh target already < 72% HP on first reading -> another player hit it!
@@ -731,7 +765,7 @@ class FarmingFSM:
         idle_no_move = max(0.0, now - self._combat_last_move_ts)
         hp_gone_sec = (now - self._combat_last_hp_ts) if self._combat_last_hp_ts is not None else elapsed
 
-        # 4. Kill Trigger B: Target HP bar disappeared after combat with 0 drops
+        # 4. Kill Trigger B: Target HP bar disappeared after combat -> transition to LOOT (or SEARCH_MOB in COMBAT-only)
         if self._combat_saw_hp and (not hp_vis) and hp_gone_sec >= self.combat_zero_drop_kill_sec and idle_no_move >= 1.2:
             self.kills_count += 1
             self.tracker.record_kill_pos(
@@ -741,19 +775,25 @@ class FarmingFSM:
                 radius_px=self.last_kill_loot_radius_px,
             )
             self.tracker.clear_target_lock()
-            self.tracker.mark_loot_done()
-            self.transition(BotState.SEARCH_MOB, now, "gold_kill_zero_drops")
+            if self.mode == BotMode.COMBAT:
+                self.tracker.mark_loot_done()
+                self.transition(BotState.SEARCH_MOB, now, "gold_kill_zero_drops")
+            else:
+                self.tracker.trigger_pending_loot()
+                self.transition(BotState.LOOT, now, "gold_kill_hp_gone_check_loot")
             return []
 
-        # 5. Watchdog Anti-Miss (2.4s) WITH Active Approach Guard (Refinement #1):
+        # 5. Watchdog Anti-Miss (2.4s when tracking mob; 10.0s blind safety cap when mob detector is off in COMBAT_WAIT)
         # NEVER cancel lock while dist_to_player_px is actively decreasing or character is moving!
-        approach_active = (now - self._combat_last_approach_ts) < self.combat_miss_timeout_sec
-        coords_moving = idle_no_move < self.combat_miss_timeout_sec
-        if (not self._combat_saw_hp) and elapsed >= self.combat_miss_timeout_sec and (not approach_active) and (not coords_moving):
+        miss_limit = self.combat_miss_timeout_sec if world.locked_mob_visible else self.combat_blind_timeout_sec
+        approach_active = (now - self._combat_last_approach_ts) < miss_limit
+        coords_moving = idle_no_move < miss_limit
+        if (not self._combat_saw_hp) and elapsed >= miss_limit and (not approach_active) and (not coords_moving):
             logger.info("Watchdog Anti-Miss: idle %.1fs without approach or HP bar -> unlocking", elapsed)
             self._record_aborted_mob(world.locked_mob, now, ttl_sec=4.0)
             self.tracker.clear_target_lock()
-            self.transition(BotState.SEARCH_MOB, now, "watchdog_click_missed_idle")
+            next_st = BotState.LOOT if (near_bags and self.mode != BotMode.COMBAT) else BotState.SEARCH_MOB
+            self.transition(next_st, now, "watchdog_click_missed_idle")
             return []
 
         # 6. Watchdog Stagnant HP while standing still

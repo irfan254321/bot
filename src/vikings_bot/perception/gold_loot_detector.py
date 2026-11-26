@@ -208,6 +208,7 @@ class GoldBagDetector:
         mobs: tuple[MobTarget, ...] = (),
         other_player_boxes: tuple[tuple[int, int, int, int], ...] = (),
         shared_playfield_hsv: np.ndarray | None = None,
+        max_dist_override_px: float | None = None,
     ) -> tuple[tuple[LootDrop, ...], bool]:
         """Detect dropped Gold Bags in loot_area ROI and return `(drops, pickup_log_changed)`."""
         fw, fh = frame.width, frame.height
@@ -389,7 +390,10 @@ class GoldBagDetector:
                 continue
             clusters.append((bx, by, bw, bh, sc))
 
-        max_d = self.max_dist_px * max(0.55, scale_x)
+        if max_dist_override_px is not None:
+            max_d = float(max_dist_override_px) * (1.0 if self.hud_fixed_pixel_ui else max(0.55, scale_x))
+        else:
+            max_d = self.max_dist_px * max(0.55, scale_x)
         drops: list[LootDrop] = []
         for bx, by, bw, bh, sc in clusters:
             cx = bx + bw // 2

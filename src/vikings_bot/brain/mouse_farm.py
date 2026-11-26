@@ -127,16 +127,22 @@ class MouseFarmController:
         allow_wounded: bool = False,
         is_ignored: Callable[[MobTarget], bool] | None = None,
     ) -> MobTarget | None:
-        """Choose the nearest safe, un-contested Gold Rustler within engage bounds."""
+        """Choose the single nearest safe, un-contested Gold Rustler by Euclidean distance from player center."""
         fw = max(1, world.snapshot.frame_width)
         fh = max(1, world.snapshot.frame_height)
         scale_x = 1.0 if fw <= 1100 else (fw / 1920.0)
         max_dist = self.mob_max_engage_dist_px * scale_x
         min_y = self.mob_min_y_ratio * fh
         rear_y_cut = 0.72 * fh
+        cx0 = fw * 0.5
+        cy0 = fh * 0.5
+        ordered_mobs = sorted(
+            world.mobs,
+            key=lambda m: math.hypot(m.click_x - cx0, m.click_y - cy0),
+        )
         rear_fallback: MobTarget | None = None
 
-        for mob in world.mobs:
+        for mob in ordered_mobs:
             if mob.contested:
                 continue
             if not allow_wounded and mob.has_hp_bar:
@@ -194,10 +200,10 @@ class MouseFarmController:
         return any(bag.dist_to_player_px <= self.loot_entry_close_dist_px for bag in local_loot)
 
     def select_local_loot(self, world: WorldState) -> list[LootDrop]:
-        """Return safe Gold Bag drops within local pickup radius, keeping last_kill_pos priority first."""
+        """Return safe Gold Bag drops within near-character radius (<=220px scaled), keeping last_kill_pos first."""
         fw = max(1, world.snapshot.frame_width)
-        scale_x = fw / 1920.0
-        lim = self.loot_max_local_dist_px * max(0.85, scale_x)
+        scale_x = 1.0 if fw <= 1100 else max(0.85, fw / 1920.0)
+        lim = self.loot_entry_close_dist_px * scale_x
         out: list[LootDrop] = []
         for bag in world.loot:
             if bag.dist_to_player_px > lim and not bag.near_last_kill:

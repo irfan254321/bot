@@ -333,16 +333,22 @@ class BotEngine:
                 need_tele_ui = self.fsm.state == BotState.TELEPORT_TO_SPOT
                 need_repair_ui = self.fsm.state == BotState.REPAIR_AT_NPC
                 skip_field = self.fsm.state in (
+                    BotState.ENSURE_MOUSE_MODE,
                     BotState.DEAD_RESPAWN,
                     BotState.REPAIR_RECALL,
                     BotState.REPAIR_AT_NPC,
                     BotState.TELEPORT_TO_SPOT,
                     BotState.TRAVEL_TO_SPOT,
                 )
-                cursor_rel_xy: tuple[int, int] | None = None
-                need_imode_check = self.fsm.auto_restore_mouse_mode and (
-                    (now < self.fsm._mouse_restore_wait_until) or ((now - last_imode_check_ts) >= 0.35)
+                skip_mob_det = self.fsm.state in (BotState.COMBAT_WAIT, BotState.LOOT, BotState.ENSURE_MOUSE_MODE)
+                loot_rad_lim = (
+                    float(self.config.farming.get("loot_entry_close_dist_px", 220.0))
+                    if self.fsm.state in (BotState.LOOT, BotState.COMBAT_WAIT)
+                    else None
                 )
+                cursor_rel_xy: tuple[int, int] | None = None
+                # One-shot interface mode check ONLY during ENSURE_MOUSE_MODE (never during active farming!)
+                need_imode_check = self.fsm.state == BotState.ENSURE_MOUSE_MODE
                 if need_imode_check:
                     last_imode_check_ts = now
                     cpos = Win32InputDriver.get_cursor_pos()
@@ -356,6 +362,8 @@ class BotEngine:
                     cursor_rel_xy=cursor_rel_xy,
                     check_interface_mode=need_imode_check,
                     check_repair_ui=need_repair_ui,
+                    skip_mob_detection=skip_mob_det,
+                    loot_radius_limit_px=loot_rad_lim,
                 )
                 world = self.tracker.update(snapshot)
 

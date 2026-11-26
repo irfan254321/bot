@@ -133,7 +133,7 @@ def test_die_mid_way_during_travel_repeats_infinitely_until_spot_reached():
     tracker = WorldStateTracker(death_zero_hp_frames=6)
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
 
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
     fsm.step(tracker.update(_snap(1.0, 1409, 1779)))
     assert fsm.state == BotState.TRAVEL_TO_SPOT
 
@@ -175,7 +175,7 @@ def test_travel_drinks_hp_pot_while_walking_to_spot():
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
 
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
     fsm.step(tracker.update(_snap(1.0, 1409, 1779)))
     assert fsm.state == BotState.TRAVEL_TO_SPOT
 
@@ -192,7 +192,7 @@ def test_mouse_mode_auto_switches_to_kb_for_teleporter_walk():
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
 
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
     acts = fsm.step(tracker.update(_snap(1.0, 1075, 2628)))
     assert fsm.state == BotState.TELEPORT_TO_SPOT
     assert any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts)
@@ -247,7 +247,7 @@ def test_auto_weapon_swap_q_when_ea_low_and_no_swap_when_strong():
     cfg = load_config("config/default.yaml")
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
 
     acts_q = fsm.step(tracker.update(_snap(1.5, 615, 1830, ea=94)))
     assert any(isinstance(a, TapKeyIntent) and a.key == "q" for a in acts_q)
@@ -261,7 +261,7 @@ def test_teleport_dismisses_accidental_npc_talk_dialog_by_clicking_ok_then_enter
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
 
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
     fsm.step(tracker.update(_snap(1.0, 1060, 2626)))
     assert fsm.state == BotState.TELEPORT_TO_SPOT
     fsm.respawn_travel._tele_phase = "WAIT_LOAD"

@@ -9,6 +9,7 @@ from enum import Enum
 
 class BotState(str, Enum):
     PAUSED = "PAUSED"
+    ENSURE_MOUSE_MODE = "ENSURE_MOUSE_MODE"
     DEAD_RESPAWN = "DEAD_RESPAWN"
     REPAIR_RECALL = "REPAIR_RECALL"
     REPAIR_AT_NPC = "REPAIR_AT_NPC"
@@ -127,6 +128,8 @@ class PerceptionSnapshot:
     detected_control_mode: str | None = None  # "mouse" | "keyboard" | None
     camera_pitch_state: str = "ok"
     playfield_luma: float | None = None
+    combat_target_hp_visible: bool = False
+    combat_target_hp_ratio: float | None = None
     timings_ms: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -142,7 +145,7 @@ class PerceptionSnapshot:
 
     @property
     def target_hp_visible(self) -> bool:
-        return self.engaged_mob is not None
+        return self.combat_target_hp_visible or (self.engaged_mob is not None)
 
 
 @dataclass

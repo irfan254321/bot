@@ -282,7 +282,7 @@ def test_1024x768_pure_mouse_auto_repair_never_uses_wasd_or_esc() -> None:
     cfg.perception["hud_fixed_pixel_ui"] = True
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    fsm.resume(1.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
     fsm._mouse_mode_verified = True
     fsm.step(tracker.update(_make_snap(1.0, 615, 1830, fw=1024, fh=768)))
 

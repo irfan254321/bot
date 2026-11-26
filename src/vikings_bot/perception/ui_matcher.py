@@ -446,6 +446,30 @@ class UiTemplateMatcher:
             if ms_score >= self.interface_mode_thresh and ms_score > (kb_score + 0.10):
                 return ("mouse_banner", f"banner_mouse({ms_score:.2f})")
 
+        # 1b) Top-center INTERFACE TYPE banner white-text width fallback (x=410..615, y=98..126 at 1024x768, scaled).
+        #     'Mouse' text is narrower (~65-85px) while 'Keyboard' text is wider (~105-135px).
+        if frame.width >= 320 and frame.height >= 240:
+            sx_b = 1.0 if self.hud_fixed_pixel_ui else (frame.width / 1024.0)
+            sy_b = 1.0 if self.hud_fixed_pixel_ui else (frame.height / 768.0)
+            bx1 = max(0, int(round(410.0 * sx_b)))
+            bx2 = min(frame.width, int(round(615.0 * sx_b)))
+            by1 = max(0, int(round(98.0 * sy_b)))
+            by2 = min(frame.height, int(round(126.0 * sy_b)))
+            if (bx2 - bx1) >= 40 and (by2 - by1) >= 10:
+                bpatch = frame.image_bgr[by1:by2, bx1:bx2]
+                bmin = bpatch.min(axis=2)
+                bmax = bpatch.max(axis=2)
+                dark_bg = float((bmax <= 75).mean())
+                if dark_bg >= 0.45:
+                    wmask = (bmin >= 185) & ((bmax.astype(np.int16) - bmin.astype(np.int16)) <= 45)
+                    col_hits = np.where(wmask.sum(axis=0) >= 2)[0]
+                    if col_hits.size >= 15:
+                        span_norm = float(col_hits[-1] - col_hits[0] + 1) / max(0.5, sx_b)
+                        if 98.0 <= span_norm <= 150.0:
+                            return ("keyboard_banner", f"banner_width_keyboard({span_norm:.0f}px)")
+                        if 55.0 <= span_norm <= 92.0:
+                            return ("mouse_banner", f"banner_width_mouse({span_norm:.0f}px)")
+
         # 2) Tight 64x64 patch around live cursor position inside game client.
         #    Ignore exact screen center (fw/2, fh/2) +-14px because RYL locks the hidden cursor to center
         #    in Keyboard Mode right over the character's white HP bar; NEVER run a whole-playfield scan

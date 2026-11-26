@@ -121,6 +121,7 @@ farming:
   mob_max_engage_dist_px: 560
   mob_min_y_ratio: 0.14
   combat_miss_timeout_sec: 2.4
+  combat_blind_timeout_sec: 10.0
   combat_stagnant_hp_sec: 5.0
   combat_hard_timeout_sec: 28.0
   combat_zero_drop_kill_sec: 1.6
