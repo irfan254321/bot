@@ -64,25 +64,30 @@ class YoloDetectionResult:
 
 def letterbox_bgr(
     image_bgr: np.ndarray,
-    new_shape: int = 640,
+    new_shape: int | tuple[int, int] = 640,
     pad_color: tuple[int, int, int] = (114, 114, 114),
 ) -> tuple[np.ndarray, float, float, float]:
-    """Letterbox BGR image to (1, 3, new_shape, new_shape) RGB float32 in [0, 1].
+    """Letterbox BGR image to (1, 3, target_h, target_w) RGB float32 in [0, 1].
 
     Returns:
         (blob_nchw, scale_ratio, pad_left, pad_top)
     """
+    if isinstance(new_shape, tuple):
+        target_h, target_w = int(new_shape[0]), int(new_shape[1])
+    else:
+        target_h = target_w = int(new_shape)
+
     h, w = image_bgr.shape[:2]
     if h <= 0 or w <= 0:
-        empty = np.zeros((1, 3, new_shape, new_shape), dtype=np.float32)
+        empty = np.zeros((1, 3, target_h, target_w), dtype=np.float32)
         return (empty, 1.0, 0.0, 0.0)
 
-    r = min(float(new_shape) / float(h), float(new_shape) / float(w))
+    r = min(float(target_h) / float(h), float(target_w) / float(w))
     new_w = max(1, int(round(w * r)))
     new_h = max(1, int(round(h * r)))
 
-    dw = (float(new_shape) - float(new_w)) / 2.0
-    dh = (float(new_shape) - float(new_h)) / 2.0
+    dw = (float(target_w) - float(new_w)) / 2.0
+    dh = (float(target_h) - float(new_h)) / 2.0
 
     if (w, h) != (new_w, new_h):
         resized = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
@@ -103,8 +108,8 @@ def letterbox_bgr(
         cv2.BORDER_CONSTANT,
         value=pad_color,
     )
-    if padded.shape[0] != new_shape or padded.shape[1] != new_shape:
-        padded = cv2.resize(padded, (new_shape, new_shape), interpolation=cv2.INTER_LINEAR)
+    if padded.shape[0] != target_h or padded.shape[1] != target_w:
+        padded = cv2.resize(padded, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
     rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
     chw = np.transpose(rgb, (2, 0, 1)).astype(np.float32) * (1.0 / 255.0)
@@ -185,8 +190,11 @@ class Yolo11nOnnxDetector:
         p = config.perception
         self.model_path: str = str(p.get("yolo_model_path", "models/yolo11n_ryl.onnx"))
         self.imgsz: int = max(160, int(p.get("yolo_imgsz", 640)))
+        self.imgsz_h: int = self.imgsz
+        self.imgsz_w: int = self.imgsz
         self.conf_threshold: float = float(p.get("yolo_conf_threshold", 0.45))
-        self.gold_bag_conf_threshold: float = float(p.get("gold_bag_conf_threshold", 0.32))
+        self.gold_bag_conf_threshold: float = float(p.get("gold_bag_conf_threshold", 0.25))
+        self.dead_rustler_conf_threshold: float = float(p.get("dead_rustler_conf_threshold", 0.35))
         self.iou_threshold: float = float(p.get("yolo_iou_threshold", 0.45))
         self.intra_op_threads: int = max(1, int(p.get("yolo_intra_op_threads", 2)))
         self.anti_ks_enabled: bool = bool(p.get("anti_ks_enabled", True))
@@ -196,7 +204,8 @@ class Yolo11nOnnxDetector:
         self.anti_ks_damage_zone_radius_px: float = float(
             p.get("anti_ks_damage_zone_radius_px", self.anti_ks_player_radius_px)
         )
-        self.click_y_top_ratio: float = float(p.get("click_y_top_ratio", 0.42))
+        # Click lower-chest / torso of gold_rustler bbox: y1 + 0.65 * (y2 - y1) so clicks never miss in top gap
+        self.click_y_top_ratio: float = float(p.get("yolo_click_y_ratio", 0.65))
 
         self._session: Any | None = None
         self._input_name: str = "images"
@@ -214,6 +223,13 @@ class Yolo11nOnnxDetector:
             ins = session.get_inputs()
             if ins:
                 self._input_name = str(ins[0].name)
+                shape = getattr(ins[0], "shape", None)
+                if shape is not None and len(shape) >= 4:
+                    h_dim, w_dim = shape[2], shape[3]
+                    if isinstance(h_dim, int) and h_dim >= 160 and isinstance(w_dim, int) and w_dim >= 160:
+                        self.imgsz_h = int(h_dim)
+                        self.imgsz_w = int(w_dim)
+                        self.imgsz = max(self.imgsz_h, self.imgsz_w)
         except Exception:
             self._input_name = "images"
         try:
@@ -273,7 +289,7 @@ class Yolo11nOnnxDetector:
             return []
 
         fh, fw = image_bgr.shape[:2]
-        blob, ratio, pad_x, pad_y = letterbox_bgr(image_bgr, new_shape=self.imgsz)
+        blob, ratio, pad_x, pad_y = letterbox_bgr(image_bgr, new_shape=(self.imgsz_h, self.imgsz_w))
         outputs = self._session.run([self._output_name], {self._input_name: blob})
         if not outputs:
             return []
@@ -304,9 +320,9 @@ class Yolo11nOnnxDetector:
         cls_thresholds = np.array(
             [
                 self.conf_threshold,  # 0: gold_rustler
-                self.gold_bag_conf_threshold,  # 1: gold_bag (lower threshold for small ground drops)
+                self.gold_bag_conf_threshold,  # 1: gold_bag (0.25 for small ground drops)
                 self.conf_threshold,  # 2: player
-                self.conf_threshold,  # 3: dead_rustler
+                self.dead_rustler_conf_threshold,  # 3: dead_rustler (0.35)
             ],
             dtype=np.float32,
         )

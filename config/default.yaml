@@ -36,7 +36,9 @@ perception:
   yolo_model_path: "models/yolo11n_ryl.onnx"
   yolo_imgsz: 640
   yolo_conf_threshold: 0.45
-  gold_bag_conf_threshold: 0.32
+  gold_bag_conf_threshold: 0.25
+  dead_rustler_conf_threshold: 0.35
+  yolo_click_y_ratio: 0.65
   yolo_iou_threshold: 0.45
   yolo_intra_op_threads: 2
   anti_ks_use_hsv_damage: false
@@ -138,6 +140,7 @@ farming:
   engage_dist_px: 560
   mob_min_y_ratio: 0.14
   combat_miss_timeout_sec: 2.4
+  combat_min_lock_hold_sec: 1.5
   combat_no_hit_abort_sec: 5.0
   combat_hit_confirm_timeout_sec: 5.0
   combat_confirmed_max_sec: 35.0
@@ -156,9 +159,9 @@ farming:
   loot_close_radius_px: 310
   loot_entry_close_dist_px: 310.0
   loot_entry_kill_window_sec: 4.0
-  mandatory_loot_duration_sec: 2.0
+  mandatory_loot_duration_sec: 2.5
   post_kill_loot_window_sec: 10.0
-  loot_min_window_sec: 2.0
+  loot_min_window_sec: 2.5
   loot_empty_exit_sec: 1.2
   loot_clear_confirm_frames: 4
   loot_max_attempts_per_bag: 2
@@ -168,7 +171,7 @@ farming:
   # Mandatory post-LOOT Return-to-Center before next SCAN_SPOT
   spot_x: 594
   spot_y: 1832
-  spot_center_arrival_radius: 8.0
+  spot_center_arrival_radius: 12.0
   return_center_timeout_sec: 6.0
   move_click_interval_sec: 0.55
   move_click_radius_x_ratio: 0.145

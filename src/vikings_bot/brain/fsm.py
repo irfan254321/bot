@@ -11,6 +11,7 @@ from vikings_bot.brain.respawn_travel import RespawnTravelController
 from vikings_bot.config import BotConfig
 from vikings_bot.input.actions import (
     ActionIntent,
+    ClickScreenIntent,
     DragCameraIntent,
     HoldKeyIntent,
     TapKeyIntent,
@@ -47,6 +48,7 @@ class FarmingFSM:
         self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
+        self.combat_min_lock_hold_sec: float = max(0.0, float(f.get("combat_min_lock_hold_sec", 1.5)))
         self.combat_no_hit_abort_sec: float = float(f.get("combat_no_hit_abort_sec", 5.0))
         self.combat_hit_confirm_timeout_sec: float = float(
             f.get("combat_hit_confirm_timeout_sec", self.combat_no_hit_abort_sec)
@@ -57,7 +59,7 @@ class FarmingFSM:
         )
         self.spot_center_x: float = float(f.get("spot_x", 594.0))
         self.spot_center_y: float = float(f.get("spot_y", 1832.0))
-        self.spot_center_arrival_radius: float = max(2.0, float(f.get("spot_center_arrival_radius", 8.0)))
+        self.spot_center_arrival_radius: float = max(2.0, float(f.get("spot_center_arrival_radius", 12.0)))
         self.return_center_timeout_sec: float = max(1.0, float(f.get("return_center_timeout_sec", 6.0)))
         self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
         self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
@@ -69,11 +71,11 @@ class FarmingFSM:
         self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 2)))
         self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 20)))
         self.loot_visited_grid_ttl_sec: float = max(2.0, float(f.get("loot_visited_grid_ttl_sec", 15.0)))
-        self.mandatory_loot_duration_sec: float = max(1.0, float(f.get("mandatory_loot_duration_sec", 2.0)))
+        self.mandatory_loot_duration_sec: float = max(1.0, float(f.get("mandatory_loot_duration_sec", 2.5)))
         self.post_kill_loot_window_sec: float = max(
             self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 10.0))
         )
-        self.loot_min_window_sec: float = max(0.5, float(f.get("loot_min_window_sec", 2.0)))
+        self.loot_min_window_sec: float = max(0.5, float(f.get("loot_min_window_sec", 2.5)))
         self.loot_empty_exit_sec: float = max(0.2, float(f.get("loot_empty_exit_sec", 1.2)))
         self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", self.post_kill_loot_window_sec))
         self.last_kill_loot_radius_px: float = float(p.get("last_kill_loot_radius_px", 140.0))
@@ -716,6 +718,16 @@ class FarmingFSM:
             self.transition(BotState.SEARCH_MOB, now, "arrived_at_spot")
             return self.release_move_keys("arrived_at_spot")
 
+        # Stop NAVIGATE_TO_SPOT micro-jitter when already within <= 12 units of spot center (594, 1832) or dynamic anchor!
+        if self.mode != BotMode.NAVIGATE and world.coords_smoothed is not None:
+            center_pt = Point2D(self.spot_center_x, self.spot_center_y)
+            if (
+                world.coords_smoothed.distance_to(center_pt) <= self.spot_center_arrival_radius
+                or world.coords_smoothed.distance_to(self.navigator.spot_center) <= self.spot_center_arrival_radius
+            ):
+                self.transition(BotState.SEARCH_MOB, now, "arrived_within_spot_center_12u")
+                return self.release_move_keys("arrived_within_spot_center_12u")
+
         return self.navigator.step_to_waypoint(world, now)
 
     def _handle_search(self, world: WorldState, now: float) -> list[ActionIntent]:
@@ -946,14 +958,17 @@ class FarmingFSM:
                 self.transition(BotState.LOOT, now, "gold_kill_hp_gone_check_loot")
             return []
 
-        # 5. Stage 1 (No Hit Confirmation within 3.0s) & Anti-Ghost-Lock (1.5s when idle):
-        #    If click missed onto empty grass (no hit_damage_visible and no HP drop), blacklist 15s -> SEARCH_MOB!
-        miss_limit = self.combat_miss_timeout_sec if world.locked_mob_visible else self.combat_ghost_lock_sec
+        # 5. Stage 1 (No Hit Confirmation within 5.0s) & Anti-Ghost-Lock (min 1.5s lock hold to prevent target-hopping):
+        #    Hold locked target for at least combat_min_lock_hold_sec (1.5s) before allowing any miss/ghost unlock!
+        miss_limit = max(
+            self.combat_min_lock_hold_sec,
+            self.combat_miss_timeout_sec if world.locked_mob_visible else self.combat_ghost_lock_sec,
+        )
         approach_active = world.locked_mob_visible and ((now - self._combat_last_approach_ts) < miss_limit)
         coords_moving = idle_no_move < miss_limit
         hit_confirm_expired = (
             (not self._combat_confirmed)
-            and elapsed >= self.combat_hit_confirm_timeout_sec
+            and elapsed >= max(self.combat_min_lock_hold_sec, self.combat_hit_confirm_timeout_sec)
             and (not approach_active)
         )
         ghost_idle_expired = (
@@ -1092,6 +1107,53 @@ class FarmingFSM:
             return []
 
         intents, target_bag, act_kind = self.farm.build_loot_step(world, now, candidate_bags=ordered_bags)
+        if not ordered_bags and elapsed < self.loot_min_window_sec:
+            # Mandatory >=2.5s post-kill LOOT even when GOLD reads 0: click nearest dead_rustler or last_kill_pos
+            # (within 310px of screen center) so character walks onto the corpse while AHK background E spam runs!
+            fw = max(1, world.snapshot.frame_width)
+            fh = max(1, world.snapshot.frame_height)
+            sx_1024 = 1.0 if fw <= 1100 else (fw / 1024.0)
+            max_r = float(self.config.farming.get("loot_close_radius_px", 310.0)) * sx_1024
+            cx_scr, cy_scr = fw * 0.5, fh * 0.5
+            corpse_pts: list[tuple[float, int, int, str]] = []
+            for cx1, cy1, cx2, cy2 in world.snapshot.dead_corpses:
+                mx, my = (cx1 + cx2) // 2, (cy1 + cy2) // 2
+                d = math.hypot(mx - cx_scr, my - cy_scr)
+                if d <= max_r:
+                    corpse_pts.append((d, mx, my, "loot_click_dead_rustler"))
+            corpse_pts.sort(key=lambda item: item[0])
+            if not corpse_pts and elapsed >= 0.35 and world.last_kill_pos is not None:
+                kpos = world.last_kill_pos
+                d = math.hypot(kpos[0] - cx_scr, kpos[1] - cy_scr)
+                if d <= max_r:
+                    corpse_pts.append((d, int(kpos[0]), int(kpos[1]), "loot_click_kill_pos"))
+            for _d, mx, my, rsn in corpse_pts:
+                if self._is_in_anti_ks_zone(
+                    float(mx),
+                    float(my),
+                    world,
+                    now,
+                    player_radius_px=self.anti_ks_player_radius_px,
+                    damage_radius_px=self.anti_ks_player_radius_px,
+                ):
+                    continue
+                cell = _cell_of(float(mx), float(my))
+                if self.visited_loot_grids.get(cell, (0, 0.0))[0] >= 1:
+                    continue
+                if self.tracker.is_ready("loot_corpse_click", now):
+                    self.tracker.set_cooldown("loot_corpse_click", now, 0.65)
+                    self.visited_loot_grids[cell] = (1, now + self.loot_visited_grid_ttl_sec)
+                    intents.append(
+                        ClickScreenIntent(
+                            x=mx,
+                            y=my,
+                            button="left",
+                            no_jitter=True,
+                            reason=f"{rsn}({mx},{my})",
+                        )
+                    )
+                    break
+
         if target_bag is not None and act_kind in ("tap_e", "click_bag"):
             bx, by = float(target_bag.click_x), float(target_bag.click_y)
             cell = _cell_of(bx, by)

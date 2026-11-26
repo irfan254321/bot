@@ -1118,8 +1118,10 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
     fsm.step(tracker.update(_snap(23.1, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
     fsm.step(tracker.update(_snap(24.0, x=645, y=1830, fw=1024, fh=768)))
-    assert fsm.state == BotState.LOOT  # inside initial 2.0s window
+    assert fsm.state == BotState.LOOT  # inside mandatory 2.5s window
     fsm.step(tracker.update(_snap(25.5, x=645, y=1830, fw=1024, fh=768)))
+    assert fsm.state == BotState.LOOT  # elapsed 2.4s < 2.5s mandatory min window
+    fsm.step(tracker.update(_snap(25.7, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.RETURN_TO_CENTER
     fsm.step(tracker.update(_snap(26.0, x=594, y=1832, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
@@ -1463,7 +1465,7 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
     assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
     assert int(cfg.farming["spot_x"]) == 594 and int(cfg.farming["spot_y"]) == 1832
-    assert float(cfg.farming["spot_center_arrival_radius"]) == 8.0
+    assert float(cfg.farming["spot_center_arrival_radius"]) == 12.0
     assert float(cfg.farming["return_center_timeout_sec"]) == 6.0
 
     # 1. AHK v2 bridge script checks & CHAT_CMD interlock
@@ -1535,20 +1537,22 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
     assert fsm.step(tracker.update(_snap(6.1, x=630, y=1845, fw=1024, fh=768))) == []
     assert fsm.state == BotState.LOOT
 
-    # Stage 3: LOOT clicks gold bag directly, then exits to RETURN_TO_CENTER once empty >= 1.2s (past 2.0s min)
+    # Stage 3: LOOT clicks gold bag directly, stays >=2.5s min, then exits to RETURN_TO_CENTER once empty >= 1.2s
     bag1 = _bag(cx=640, cy=400, dist=130.0)
     acts_l1 = fsm.step(tracker.update(_snap(6.5, x=630, y=1845, fw=1024, fh=768, loot=(bag1,))))
     assert any(isinstance(a, ClickScreenIntent) and a.x == 640 and a.y == 400 and a.button == "left" for a in acts_l1)
     fsm.step(tracker.update(_snap(7.2, x=630, y=1845, fw=1024, fh=768, loot=())))
-    assert fsm.state == BotState.LOOT
+    assert fsm.state == BotState.LOOT  # elapsed 1.1s < 2.5s
     fsm.step(tracker.update(_snap(8.5, x=630, y=1845, fw=1024, fh=768, loot=())))
+    assert fsm.state == BotState.LOOT  # elapsed 2.4s < 2.5s mandatory min window
+    fsm.step(tracker.update(_snap(8.7, x=630, y=1845, fw=1024, fh=768, loot=())))
     assert fsm.state == BotState.RETURN_TO_CENTER
 
-    # Stage 4: RETURN_TO_CENTER walks toward (594, 1832) while far (dist=38u > 8u), then transitions to SEARCH_MOB on arrival!
+    # Stage 4: RETURN_TO_CENTER walks toward (594, 1832) while far (dist=38u > 12u), then transitions to SEARCH_MOB within <= 12u!
     acts_walk = fsm.step(tracker.update(_snap(9.2, x=630, y=1845, fw=1024, fh=768)))
     assert fsm.state == BotState.RETURN_TO_CENTER
     assert any(isinstance(a, ClickScreenIntent) and "return->spot_center" in a.reason for a in acts_walk)
-    fsm.step(tracker.update(_snap(10.5, x=596, y=1830, fw=1024, fh=768)))  # dist = 2.8 <= 8.0
+    fsm.step(tracker.update(_snap(10.5, x=603, y=1837, fw=1024, fh=768)))  # dist = 10.3 <= 12.0
     assert fsm.state == BotState.SEARCH_MOB
 
     # Verify RETURN_TO_CENTER 6.0s timeout also returns cleanly to SEARCH_MOB
@@ -1586,11 +1590,15 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert cfg.perception["yolo_model_path"] == "models/yolo11n_ryl.onnx"
     assert int(cfg.perception["yolo_imgsz"]) == 640
     assert float(cfg.perception["yolo_conf_threshold"]) == 0.45
-    assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.32
+    assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.25
+    assert float(cfg.perception["dead_rustler_conf_threshold"]) == 0.35
+    assert float(cfg.perception["yolo_click_y_ratio"]) == 0.65
     assert float(cfg.perception["yolo_iou_threshold"]) == 0.45
     assert int(cfg.perception["yolo_intra_op_threads"]) == 2
     assert cfg.perception["anti_ks_use_hsv_damage"] is False
     assert float(cfg.perception["anti_ks_player_min_conf"]) == 0.50
+    assert float(cfg.farming["combat_min_lock_hold_sec"]) == 1.5
+    assert float(cfg.farming["loot_min_window_sec"]) == 2.5
 
     # Helper: map original 1024x768 xywh -> 640x640 letterbox xywh
     # Draw bright orange HSV-damage-like patch at (755, 285) right next to safe gold_rustler -> MUST NOT cause KS:DMG!
@@ -1625,12 +1633,12 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
         (CLS_PLAYER, 0.82, 200, 300, 56, 88),
         # 7: Low-conf player at (780, 300) (conf=0.47 < 0.50 -> MUST NOT trigger Anti-KS on safe gold_rustler at 760,290!)
         (CLS_PLAYER, 0.47, 780, 300, 50, 80),
-        # 8: dead_rustler at (620, 340) -> NEVER attack target, overlay dead_corpses only!
-        (CLS_DEAD_RUSTLER, 0.77, 620, 340, 82, 48),
+        # 8: dead_rustler at (620, 340) with conf=0.38 (>= 0.35 dead_rustler_conf_threshold) -> overlay dead_corpses only!
+        (CLS_DEAD_RUSTLER, 0.38, 620, 340, 82, 48),
         # 9: Safe gold_bag at (630, 380) (conf=0.90)
         (CLS_GOLD_BAG, 0.90, 630, 380, 22, 20),
-        # 10: Small gold_bag at (660, 390) with conf=0.35 (>= 0.32 gold_bag_conf_threshold, < 0.45!) -> MUST BE DETECTED!
-        (CLS_GOLD_BAG, 0.35, 660, 390, 14, 14),
+        # 10: Small gold_bag at (660, 390) with conf=0.27 (>= 0.25 gold_bag_conf_threshold, < 0.45!) -> MUST BE DETECTED!
+        (CLS_GOLD_BAG, 0.27, 660, 390, 14, 14),
         # 11: Far gold_bag at (900, 200) (dist from 512,384 = 429 > 310) -> rejected in LOOT!
         (CLS_GOLD_BAG, 0.87, 900, 200, 20, 18),
         # 12: Anti-KS gold_bag near high-conf player at (250, 350, dist to player=70.7 <= 240) -> rejected!
@@ -1647,23 +1655,25 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
         tensor[0, 4 + cid, idx] = conf
 
     class _MockIo:
-        def __init__(self, name: str) -> None:
+        def __init__(self, name: str, shape=None) -> None:
             self.name = name
+            self.shape = shape
 
     class _MockOrtSession:
-        def __init__(self, out_arr: np.ndarray) -> None:
+        def __init__(self, out_arr: np.ndarray, imgsz: int = 640) -> None:
             self.out_arr = out_arr
+            self.imgsz = imgsz
             self.calls = 0
 
         def get_inputs(self):
-            return [_MockIo("images")]
+            return [_MockIo("images", shape=[1, 3, self.imgsz, self.imgsz])]
 
         def get_outputs(self):
-            return [_MockIo("output0")]
+            return [_MockIo("output0", shape=list(self.out_arr.shape))]
 
         def run(self, output_names, feed_dict):
             self.calls += 1
-            assert "images" in feed_dict and feed_dict["images"].shape == (1, 3, 640, 640)
+            assert "images" in feed_dict and feed_dict["images"].shape == (1, 3, self.imgsz, self.imgsz)
             return [self.out_arr]
 
     mock_sess = _MockOrtSession(tensor)
@@ -1683,6 +1693,10 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert snap_scan.detector_backend == "YOLO11n-ONNX"
     assert len(snap_scan.mobs) == 1
     assert abs(snap_scan.mobs[0].click_x - 760) <= 3
+    # Verify hitbox click_y = y1 + 0.65 * (y2 - y1) -> y1=244, y2=336 => 244 + 0.65*92 = 304
+    mb = snap_scan.mobs[0].body_bbox
+    expected_cy = int(round(mb[1] + 0.65 * (mb[3] - mb[1])))
+    assert abs(snap_scan.mobs[0].click_y - expected_cy) <= 1
     assert snap_scan.mobs[0].class_name == "gold_rustler"
     assert abs(snap_scan.mobs[0].confidence - 0.88) < 1e-4
     assert len(snap_scan.contested_mobs) == 1 and "KS:PLAYER" in snap_scan.contested_mobs[0].contest_reason
@@ -1712,8 +1726,32 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert snap_loot.mobs == ()
     assert len(snap_loot.loot) == 3
     assert any(abs(b.click_x - 630) <= 3 and b.class_name == "gold_bag" and abs(b.score - 0.90) < 1e-4 for b in snap_loot.loot)
-    assert any(abs(b.click_x - 660) <= 3 and b.class_name == "gold_bag" and abs(b.score - 0.35) < 1e-4 for b in snap_loot.loot)
+    assert any(abs(b.click_x - 660) <= 3 and b.class_name == "gold_bag" and abs(b.score - 0.27) < 1e-4 for b in snap_loot.loot)
     assert any(abs(b.click_x - 600) <= 3 and b.class_name == "gold_bag" for b in snap_loot.loot)
+
+    # 3b. Dynamic 416x416 ONNX input shape auto-sync (no hardcoded 640!)
+    tensor_416 = np.zeros((1, 8, 3549), dtype=np.float32)
+    mock_416 = _MockOrtSession(tensor_416, imgsz=416)
+    det_416 = Yolo11nOnnxDetector(cfg, session_override=mock_416)
+    assert det_416.imgsz_h == 416 and det_416.imgsz_w == 416
+    det_416.detect(blank)
+    assert mock_416.calls == 1
+
+    # 3c. Mandatory >=2.5s LOOT clicks dead_rustler even when GOLD=0
+    tracker_l = WorldStateTracker()
+    fsm_l = FarmingFSM(cfg, tracker_l, mode=BotMode.FULL)
+    fsm_l.resume(1.0, ensure_mouse_mode=False)
+    fsm_l.transition(BotState.LOOT, 10.0, "post_kill_zero_gold")
+    w_dead = tracker_l.update(
+        PerceptionSnapshot(
+            timestamp=10.5, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+            coords=CoordReading(x=598, y=1835, confidence=0.98), minimap=MinimapReading(),
+            loot=(), dead_corpses=((579, 316, 661, 364),),
+        )
+    )
+    acts_dead = fsm_l.step(w_dead)
+    assert fsm_l.state == BotState.LOOT
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 620 and a.y == 340 and "dead_rustler" in a.reason for a in acts_dead)
 
     # 4. Overlay displays YOLO class names + confidence scores
     tracker = WorldStateTracker()
@@ -1747,7 +1785,7 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     draw_overlay_scene(_FakeCanvas(), ov_data)
     assert any("gold_rustler 0.88" in t for t in drawn_texts), f"Missing gold_rustler conf label: {drawn_texts}"
     assert any("player 0.82" in t for t in drawn_texts), f"Missing player conf label: {drawn_texts}"
-    assert any("dead_rustler 0.77" in t for t in drawn_texts), f"Missing dead_rustler conf label: {drawn_texts}"
+    assert any("dead_rustler 0.38" in t for t in drawn_texts), f"Missing dead_rustler conf label: {drawn_texts}"
 
     cv_ov = DebugOverlay(cfg).render(pkt, world_scan, BotState.SEARCH_MOB)
     assert cv_ov.shape == (768, 1024, 3)
