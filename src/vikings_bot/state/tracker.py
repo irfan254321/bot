@@ -41,7 +41,7 @@ class WorldStateTracker:
         self.coord_max_jump = coord_max_jump
         self.stuck_timeout_sec = stuck_timeout_sec
         self.stuck_min_move_units = stuck_min_move_units
-        self.death_zero_hp_frames = max(3, int(death_zero_hp_frames))
+        self.death_zero_hp_frames = max(5, int(death_zero_hp_frames))
 
         self._coord_history: deque[tuple[float, Point2D]] = deque(maxlen=64)
         self._last_valid_coord: Point2D | None = None
@@ -61,6 +61,9 @@ class WorldStateTracker:
         self._is_stuck: bool = False
         self._consecutive_stuck: int = 0
         self._zero_hp_streak: int = 0
+        self._last_nonzero_hp_ratio: float = 1.0
+        self._low_hp_seen_at: float | None = None
+        self._low_hp_window_sec: float = 15.0
 
         self._cooldowns: dict[str, float] = {}
         self.waypoint_index: int = 0
@@ -161,6 +164,9 @@ class WorldStateTracker:
         self.notify_movement_stopped()
         self._pending_loot = False
         self._consecutive_stuck = 0
+        self._zero_hp_streak = 0
+        self._last_nonzero_hp_ratio = 1.0
+        self._low_hp_seen_at = None
         self._heading_source = "default"
         self._last_click_coord = None
         self._last_click_rel_angle_deg = None
@@ -254,11 +260,26 @@ class WorldStateTracker:
                         self._consecutive_stuck += 1
                     self._is_stuck = True
 
-        # 4. Death / zero HP streak
+        # 4. Death / zero HP streak + Anti-False-Death prior-HP trajectory tracking
         if snapshot.hp_ratio <= 0.01:
             self._zero_hp_streak += 1
         else:
             self._zero_hp_streak = 0
+            self._last_nonzero_hp_ratio = float(snapshot.hp_ratio)
+            if snapshot.hp_ratio < 0.35:
+                self._low_hp_seen_at = now
+            elif snapshot.hp_ratio >= 0.70:
+                # Healed back up comfortably -> older low-HP dips must not authorize a future glitchy 0% death
+                self._low_hp_seen_at = None
+
+        hp_dropped_below_35_recently = (self._last_nonzero_hp_ratio < 0.35) or (
+            self._low_hp_seen_at is not None and (now - self._low_hp_seen_at) <= self._low_hp_window_sec
+        )
+        respawn_dialog_visible = bool(snapshot.respawn_dialog_visible)
+        confirmed_dead = (
+            self._zero_hp_streak >= max(5, self.death_zero_hp_frames)
+            and (respawn_dialog_visible or hp_dropped_below_35_recently)
+        )
 
         # 5. Update strict single-target lock
         matched_lock = self.target_lock.update(
@@ -314,7 +335,10 @@ class WorldStateTracker:
             last_kill_pos=kill_pos_active,
             last_kill_until=self.last_kill_until,
             pending_loot=self._pending_loot,
-            is_dead=(self._zero_hp_streak >= self.death_zero_hp_frames),
+            is_dead=confirmed_dead,
+            last_nonzero_hp_ratio=self._last_nonzero_hp_ratio,
+            hp_dropped_below_35_recently=hp_dropped_below_35_recently,
+            respawn_dialog_visible=respawn_dialog_visible,
             travel_waypoint_index=self.travel_waypoint_index,
             last_action_summary=self.last_action_summary,
         )

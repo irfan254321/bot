@@ -18,6 +18,7 @@ class MinimapAnalyzer:
     def __init__(self, config: BotConfig) -> None:
         self.roi = config.roi("minimap")
         p = config.perception
+        self.hud_fixed_pixel_ui = bool(p.get("hud_fixed_pixel_ui", False))
         self.red_lo_1 = np.array(p.get("minimap_red_hsv_lower_1", [0, 140, 120]), dtype=np.uint8)
         self.red_hi_1 = np.array(p.get("minimap_red_hsv_upper_1", [10, 255, 255]), dtype=np.uint8)
         self.red_lo_2 = np.array(p.get("minimap_red_hsv_lower_2", [170, 140, 120]), dtype=np.uint8)
@@ -26,7 +27,14 @@ class MinimapAnalyzer:
         self.cyan_hi = np.array(p.get("minimap_cyan_hsv_upper", [108, 255, 255]), dtype=np.uint8)
 
     def analyze(self, frame: FramePacket) -> MinimapReading:
-        crop, _ = frame.crop_norm(self.roi)
+        if self.hud_fixed_pixel_ui:
+            x1 = max(0, int(round(self.roi[0] * 1920.0)))
+            y1 = max(0, int(round(self.roi[1] * 1080.0)))
+            x2 = min(frame.width, max(x1 + 20, int(round(self.roi[2] * 1920.0))))
+            y2 = min(frame.height, max(y1 + 20, int(round(self.roi[3] * 1080.0))))
+            crop = frame.image_bgr[y1:y2, x1:x2]
+        else:
+            crop, _ = frame.crop_norm(self.roi)
         h, w = crop.shape[:2]
         if h < 20 or w < 20:
             return MinimapReading()

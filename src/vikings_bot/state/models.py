@@ -121,11 +121,16 @@ class PerceptionSnapshot:
     repair_all_bbox: tuple[int, int, int, int] | None = None
     repair_yes_bbox: tuple[int, int, int, int] | None = None
     inventory_tab_bbox: tuple[int, int, int, int] | None = None
+    respawn_dialog_bbox: tuple[int, int, int, int] | None = None
     detector_backend: str = "OpenCV-Gold"
     interface_mode: str = "unknown"  # "keyboard_banner" | "mouse_banner" | "mouse_cursor" | "no_cursor" | "unknown"
     detected_control_mode: str | None = None  # "mouse" | "keyboard" | None
     camera_pitch_state: str = "ok"
     timings_ms: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def respawn_dialog_visible(self) -> bool:
+        return self.respawn_dialog_bbox is not None
 
     @property
     def engaged_mob(self) -> MobTarget | None:
@@ -160,6 +165,9 @@ class WorldState:
     last_kill_until: float = 0.0
     pending_loot: bool = False
     is_dead: bool = False
+    last_nonzero_hp_ratio: float = 1.0
+    hp_dropped_below_35_recently: bool = False
+    respawn_dialog_visible: bool = False
     travel_waypoint_index: int = 0
     last_action_summary: str = ""
 

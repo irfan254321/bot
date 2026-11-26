@@ -171,7 +171,7 @@ class SafetyMonitor:
             elif (
                 not self.auto_respawn_enabled
                 and world is not None
-                and world.zero_hp_streak >= self.death_zero_hp_frames
+                and world.is_dead
             ):
                 force_pause = "player_dead_zero_hp"
             elif (

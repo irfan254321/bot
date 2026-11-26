@@ -111,6 +111,7 @@ class PerceptionPipeline:
         repair_all_bbox = None
         repair_yes_bbox = None
         inventory_tab_bbox = None
+        respawn_dialog_bbox = None
 
         if check_tele_ui:
             t0 = time.perf_counter()
@@ -129,6 +130,18 @@ class PerceptionPipeline:
             if talk_ok_bbox is None:
                 talk_ok_bbox = self.ui_matcher.find_npc_talk_dialog(frame)
             timings["repair_ui"] = (time.perf_counter() - t0) * 1000.0
+
+        # Opportunistic respawn-popup check ONLY when HP reads 0% AND center screen has a dark modal box (<0.05ms gate!)
+        if hp_ratio <= 0.01:
+            respawn_dialog_bbox = talk_ok_bbox or repair_yes_bbox
+            if respawn_dialog_bbox is None and frame.width >= 64 and frame.height >= 64:
+                cy1, cy2 = int(frame.height * 0.35), int(frame.height * 0.68)
+                cx1, cx2 = int(frame.width * 0.34), int(frame.width * 0.68)
+                center_sub = frame.image_bgr[cy1:cy2:4, cx1:cx2:4]
+                if center_sub.size > 0 and float((center_sub.max(axis=2) < 65).mean()) >= 0.08:
+                    respawn_dialog_bbox = self.ui_matcher.find_npc_talk_dialog(
+                        frame
+                    ) or self.ui_matcher.find_repair_yes_btn(frame)
 
         interface_mode = "unknown"
         detected_ctrl_mode: str | None = None
@@ -169,6 +182,7 @@ class PerceptionPipeline:
             repair_all_bbox=repair_all_bbox,
             repair_yes_bbox=repair_yes_bbox,
             inventory_tab_bbox=inventory_tab_bbox,
+            respawn_dialog_bbox=respawn_dialog_bbox,
             detector_backend=self.active_backend_desc,
             interface_mode=interface_mode,
             detected_control_mode=detected_ctrl_mode,

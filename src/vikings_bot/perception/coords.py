@@ -334,54 +334,94 @@ class CoordReader:
             return None
         return CoordReading(x=int(left_str), y=int(right_str), confidence=conf, raw_text=raw)
 
-    def read(self, frame: FramePacket) -> CoordReading | None:
-        crop, _ = frame.crop_norm(self.roi)
-        res = self.read_crop(crop)
-        if res is not None or not self.hud_fixed_pixel_ui:
-            return res
+    @staticmethod
+    def _is_plausible_world_coord(reading: CoordReading | None) -> bool:
+        """Reject bogus 1-2 digit minimap noise (e.g. '11,14'); RYL world coords are 3-4 digits."""
+        if reading is None:
+            return False
+        if not (50 <= reading.x <= 4096 and 50 <= reading.y <= 4096):
+            return False
+        return (reading.x >= 100) or (reading.y >= 100)
 
-        # VMware 1024x768 adaptive fallback: auto-locate the dark black coordinate strip below the minimap
-        # (handles slight window/DPI/titlebar shifts while staying strictly left of the '-' zoom button!)
+    def read(self, frame: FramePacket) -> CoordReading | None:
         fh, fw = frame.height, frame.width
-        x1, x2 = 2, min(fw, 92)
-        y1, y2 = min(fh - 1, 102), min(fh, 175)
-        if (y2 - y1) >= 20 and (x2 - x1) >= 40:
-            band = frame.image_bgr[y1:y2, x1:x2]
+        if not self.hud_fixed_pixel_ui:
+            crop, _ = frame.crop_norm(self.roi)
+            return self.read_crop(crop)
+
+        # VMware 1024x768 fixed-pixel UI: RYL renders the minimap & coord strip at native 1:1 pixels
+        # anchored to top-left (x=4..116, y=118..142), NOT scaled by 1024/1920!
+        # Checking crop_norm first on 1024x768 lands inside the minimap (y=85..100) and causes bogus '(11,14)'.
+        fx1 = max(0, int(round(self.roi[0] * 1920.0)) - 2)
+        fy1 = max(0, int(round(self.roi[1] * 1080.0)) - 2)
+        fx2 = min(fw, max(fx1 + 40, int(round(self.roi[2] * 1920.0)) + 4))
+        fy2 = min(fh, max(fy1 + 14, int(round(self.roi[3] * 1080.0)) + 2))
+        if (fy2 - fy1) >= 12 and (fx2 - fx1) >= 40:
+            res_fixed = self.read_crop(frame.image_bgr[fy1:fy2, fx1:fx2])
+            if self._is_plausible_world_coord(res_fixed):
+                return res_fixed
+
+        # Adaptive dark coordinate-strip locator (handles slight VMware window border / titlebar shifts
+        # while covering full 3-4 digit X,Y like '610,1841' or '1075,2631')
+        y1, y2 = min(fh - 1, 95), min(fh, 185)
+        for x_end in (min(fw, 118), min(fw, 108)):
+            x1 = 2
+            if (y2 - y1) < 20 or (x_end - x1) < 40:
+                continue
+            band = frame.image_bgr[y1:y2, x1:x_end]
             row_max_ch = band.max(axis=2)
-            # Dark coordinate bar rows have low median brightness (black box interior)
             row_med = np.median(row_max_ch, axis=1)
-            dark_rows = np.where(row_med <= 36.0)[0]
-            if dark_rows.size >= 8:
-                # Find the longest contiguous dark band (the black coordinate strip!)
-                splits = np.where(np.diff(dark_rows) > 2)[0] + 1
-                runs = np.split(dark_rows, splits)
-                best_run = max(runs, key=lambda r: r.size)
-                if best_run.size >= 8:
-                    ry1 = max(0, y1 + int(best_run[0]) - 2)
-                    ry2 = min(fh, y1 + int(best_run[-1]) + 3)
-                    alt = self.read_crop(frame.image_bgr[ry1:ry2, x1:x2])
-                    if alt is not None:
-                        return alt
-        return None
+            dark_rows = np.where(row_med <= 42.0)[0]
+            if dark_rows.size < 8:
+                continue
+            splits = np.where(np.diff(dark_rows) > 2)[0] + 1
+            runs = sorted(np.split(dark_rows, splits), key=lambda r: r.size, reverse=True)
+            for run in runs:
+                if run.size < 8:
+                    continue
+                ry1 = max(0, y1 + int(run[0]) - 2)
+                ry2 = min(fh, y1 + int(run[-1]) + 3)
+                alt = self.read_crop(frame.image_bgr[ry1:ry2, x1:x_end])
+                if self._is_plausible_world_coord(alt):
+                    return alt
+
+        # Final fallback if frame actually uses proportional HUD scaling
+        crop_norm, _ = frame.crop_norm(self.roi)
+        res_norm = self.read_crop(crop_norm)
+        return res_norm if self._is_plausible_world_coord(res_norm) else None
 
     def read_int_roi(self, frame: FramePacket, roi: tuple[float, float, float, float]) -> int | None:
         """Read a single integer HUD stat (e.g. bottom-left EA value: 94 vs 179) using digit templates."""
         if not self.templates:
             return None
-        crop, _ = frame.crop_norm(roi)
-        if crop.size == 0:
-            return None
-        glyphs = segment_glyphs(crop)
-        if not (1 <= len(glyphs) <= 4):
-            return None
-        digits: list[str] = []
-        scores: list[float] = []
-        for _x, _y, w, h, canvas in glyphs:
-            label, score = self._match_glyph(h, w, canvas)
-            if not label.isdigit():
-                return None
-            digits.append(label)
-            scores.append(score)
-        if not scores or min(scores) < max(0.65, self.min_confidence):
-            return None
-        return int("".join(digits))
+        crops: list[np.ndarray] = []
+        if self.hud_fixed_pixel_ui and roi[1] >= 0.80:
+            fh, fw = frame.height, frame.width
+            x1 = max(0, int(round(roi[0] * 1920.0)))
+            x2 = min(fw, max(x1 + 10, int(round(roi[2] * 1920.0))))
+            y1 = max(0, fh - int(round((1.0 - roi[1]) * 1080.0)))
+            y2 = min(fh, max(y1 + 6, fh - int(round((1.0 - roi[3]) * 1080.0))))
+            if y2 > y1 and x2 > x1:
+                crops.append(frame.image_bgr[y1:y2, x1:x2])
+        crop_n, _ = frame.crop_norm(roi)
+        crops.append(crop_n)
+
+        for crop in crops:
+            if crop.size == 0:
+                continue
+            glyphs = segment_glyphs(crop)
+            if not (1 <= len(glyphs) <= 4):
+                continue
+            digits: list[str] = []
+            scores: list[float] = []
+            ok = True
+            for _x, _y, w, h, canvas in glyphs:
+                label, score = self._match_glyph(h, w, canvas)
+                if not label.isdigit():
+                    ok = False
+                    break
+                digits.append(label)
+                scores.append(score)
+            if ok and scores and min(scores) >= max(0.65, self.min_confidence):
+                return int("".join(digits))
+        return None

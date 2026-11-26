@@ -88,6 +88,8 @@ class FarmingFSM:
         self._repair_weapon_checked: bool = False
         self._force_repair_requested: bool = False
         self._fallback_route_activated: bool = False
+        self._was_outside_city: bool = False
+        self._last_false_death_log_ts: float = -999.0
 
         # Auto-ESC Mouse Mode guard state
         self._mouse_mode_verified: bool = False
@@ -318,6 +320,33 @@ class FarmingFSM:
             fb_c.y,
         )
 
+    def _is_confirmed_real_death(self, world: WorldState, now: float) -> tuple[bool, str]:
+        """Anti-False-Death Guard: require >=5 consecutive 0%-HP frames AND corroborating evidence.
+
+        Prevents HUD glitches / 1024x768 ROI misreads (HP dropping suddenly from >30% to 0%)
+        from triggering false DEAD_RESPAWN transitions while still alive at the farming spot.
+        """
+        min_frames = max(5, int(self.tracker.death_zero_hp_frames))
+        if world.zero_hp_streak < min_frames:
+            return (False, "streak_below_min")
+
+        if world.respawn_dialog_visible:
+            return (True, "respawn_dialog")
+        if world.hp_dropped_below_35_recently or world.last_nonzero_hp_ratio < 0.35:
+            return (True, "prior_low_hp")
+        if self._was_outside_city and self.respawn_travel.is_in_city(world.coords_smoothed):
+            return (True, "warped_to_city")
+
+        if (now - self._last_false_death_log_ts) >= 5.0:
+            self._last_false_death_log_ts = now
+            logger.warning(
+                "Anti-False-Death: suppressed DEAD_RESPAWN (hp=0%% streak=%d, prev_hp=%.0f%%, respawn_ui=%s)",
+                world.zero_hp_streak,
+                world.last_nonzero_hp_ratio * 100.0,
+                world.respawn_dialog_visible,
+            )
+        return (False, "suppressed_false_death")
+
     def _check_periodic_repair_due(self, world: WorldState, now: float) -> list[ActionIntent] | None:
         if self.mode != BotMode.FULL or world.pending_loot:
             return None
@@ -401,20 +430,26 @@ class FarmingFSM:
             elif now < self._mouse_restore_wait_until:
                 return []
 
-        # --- GLOBAL DEATH INTERCEPTION ---
+        # Track whether character was outside town so sudden city-warp corroborates genuine respawn
+        if world.coords_smoothed is not None and not self.respawn_travel.is_in_city(world.coords_smoothed):
+            self._was_outside_city = True
+
+        # --- GLOBAL DEATH INTERCEPTION (with Anti-False-Death Guard) ---
         if (
             self.mode == BotMode.FULL
             and self.respawn_travel.enabled
-            and world.is_dead
             and self.state not in (BotState.DEAD_RESPAWN, BotState.REPAIR_RECALL)
         ):
-            self.deaths_count += 1
-            self._activate_fallback_route_if_needed()
-            prev_st = self.state.value
-            self._need_dynamic_anchor = False
-            self._just_resumed = False
-            self.transition(BotState.DEAD_RESPAWN, now, f"died_in_{prev_st}#death_{self.deaths_count}")
-            return self.respawn_travel.release_all_move_keys("died_release_all")
+            confirmed_dead, death_cue = self._is_confirmed_real_death(world, now)
+            if confirmed_dead:
+                self.deaths_count += 1
+                self._activate_fallback_route_if_needed()
+                prev_st = self.state.value
+                self._need_dynamic_anchor = False
+                self._just_resumed = False
+                self._was_outside_city = False
+                self.transition(BotState.DEAD_RESPAWN, now, f"died_in_{prev_st}[{death_cue}]#death_{self.deaths_count}")
+                return self.respawn_travel.release_all_move_keys("died_release_all")
 
         # --- SMART RESUME LOCATION CHECK ---
         if self._just_resumed and world.coords_smoothed is not None:

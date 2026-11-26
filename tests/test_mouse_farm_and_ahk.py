@@ -55,23 +55,26 @@ def _snap(
     *,
     fw: int = 1920,
     fh: int = 1080,
+    hp: float = 1.0,
     mobs: tuple[MobTarget, ...] = (),
     contested: tuple[MobTarget, ...] = (),
     loot: tuple[LootDrop, ...] = (),
     interface_mode: str = "mouse_cursor",
     pickup_changed: bool = False,
+    respawn_dialog_bbox: tuple[int, int, int, int] | None = None,
 ) -> PerceptionSnapshot:
     return PerceptionSnapshot(
         timestamp=ts,
         frame_width=fw,
         frame_height=fh,
-        hp_ratio=1.0,
+        hp_ratio=hp,
         mp_ratio=1.0,
         coords=CoordReading(x=x, y=y, confidence=0.98),
         minimap=MinimapReading(),
         mobs=mobs,
         contested_mobs=contested,
         loot=loot,
+        respawn_dialog_bbox=respawn_dialog_bbox,
         interface_mode=interface_mode,
         pickup_log_changed=pickup_changed,
     )
@@ -277,3 +280,65 @@ def test_ahk_input_driver_protocol_vm_foreground_vs_host_background_and_cli_flag
     desktop_hwnd = int(ctypes.windll.user32.GetDesktopWindow())
     bgr = PrintWindowCaptureSource.grab_hwnd_bgr(desktop_hwnd, 128, 96)
     assert bgr is None or bgr.shape == (96, 128, 3)
+
+
+def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_warp():
+    """Verify Anti-False-Death guard blocks glitchy 0% HP while allowing real confirmed deaths."""
+    cfg = load_config("config/default.yaml")
+    tracker = WorldStateTracker(death_zero_hp_frames=5)
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0)
+
+    # 1. Alive at farming spot (610, 1841) with high HP (5099/5700 = 89.5%)
+    fsm.step(tracker.update(_snap(1.0, x=610, y=1841, fw=1024, fh=768, hp=0.895)))
+    assert fsm.state == BotState.SEARCH_MOB
+
+    # 2. Glitch frames: 1..10 consecutive 0% HP straight from 89.5% with NO respawn dialog & NO town warp -> BLOCKED!
+    for i in range(10):
+        w = tracker.update(_snap(1.1 + i * 0.05, x=610, y=1841, fw=1024, fh=768, hp=0.0))
+        fsm.step(w)
+        assert w.is_dead is False
+        assert fsm.state == BotState.SEARCH_MOB
+        assert fsm.deaths_count == 0
+
+    # 3. Recover high HP, then REAL death via prior HP drop < 35% (28%) -> requires >= 5 consecutive 0% frames
+    fsm.step(tracker.update(_snap(2.0, x=610, y=1841, fw=1024, fh=768, hp=0.88)))
+    fsm.step(tracker.update(_snap(2.2, x=610, y=1841, fw=1024, fh=768, hp=0.28)))
+    for i in range(4):
+        w = tracker.update(_snap(2.3 + i * 0.05, x=610, y=1841, fw=1024, fh=768, hp=0.0))
+        fsm.step(w)
+        assert fsm.state == BotState.SEARCH_MOB, f"Triggered death too early on frame {i + 1}/5"
+    w5 = tracker.update(_snap(2.55, x=610, y=1841, fw=1024, fh=768, hp=0.0))
+    fsm.step(w5)
+    assert w5.is_dead is True
+    assert fsm.state == BotState.DEAD_RESPAWN
+    assert fsm.deaths_count == 1
+
+    # 4. One-shot burst kill (HP 0.90 -> 0.0) corroborated by respawn dialog popup after 5 consecutive frames
+    tracker2 = WorldStateTracker(death_zero_hp_frames=5)
+    fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
+    fsm2.resume(10.0)
+    fsm2.step(tracker2.update(_snap(10.0, x=610, y=1841, fw=1024, fh=768, hp=0.90)))
+    for i in range(4):
+        fsm2.step(
+            tracker2.update(
+                _snap(10.1 + i * 0.05, x=610, y=1841, fw=1024, fh=768, hp=0.0, respawn_dialog_bbox=(480, 410, 55, 25))
+            )
+        )
+        assert fsm2.state == BotState.SEARCH_MOB
+    fsm2.step(
+        tracker2.update(_snap(10.35, x=610, y=1841, fw=1024, fh=768, hp=0.0, respawn_dialog_bbox=(480, 410, 55, 25)))
+    )
+    assert fsm2.state == BotState.DEAD_RESPAWN
+    assert fsm2.deaths_count == 1
+
+    # 5. One-shot kill corroborated by actual coordinate warp to town (1075, 2628) after 5 consecutive 0% frames
+    tracker3 = WorldStateTracker(death_zero_hp_frames=5)
+    fsm3 = FarmingFSM(cfg, tracker3, mode=BotMode.FULL)
+    fsm3.resume(20.0)
+    fsm3.step(tracker3.update(_snap(20.0, x=610, y=1841, fw=1024, fh=768, hp=0.90)))
+    for i in range(5):
+        # 3+ consistent town frames accepted as real teleport jump by WorldStateTracker
+        fsm3.step(tracker3.update(_snap(20.2 + i * 0.05, x=1075, y=2628, fw=1024, fh=768, hp=0.0)))
+    assert fsm3.state == BotState.DEAD_RESPAWN
+    assert fsm3.deaths_count == 1

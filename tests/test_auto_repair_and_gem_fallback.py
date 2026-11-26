@@ -70,6 +70,9 @@ def _make_snap(
 
 def _feed_death(tracker: WorldStateTracker, fsm: FarmingFSM, start_ts: float, x: int, y: int, frames: int = 12) -> float:
     t = start_ts
+    # Realistic pre-death low HP (<35%) frame before hitting 0% (Anti-False-Death guard)
+    fsm.step(tracker.update(_make_snap(t, x, y, hp=0.22)))
+    t += 0.05
     for _ in range(frames):
         fsm.step(tracker.update(_make_snap(t, x, y, hp=0.0)))
         t += 0.05
