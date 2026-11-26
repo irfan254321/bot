@@ -77,11 +77,15 @@ class FarmingFSM:
         self.loot_visited_grid_ttl_sec: float = max(2.0, float(f.get("loot_visited_grid_ttl_sec", 15.0)))
         self.mandatory_loot_duration_sec: float = max(1.0, float(f.get("mandatory_loot_duration_sec", 2.5)))
         self.post_kill_loot_window_sec: float = max(
-            self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 8.0))
+            self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 7.5))
         )
         self.loot_min_window_sec: float = max(0.5, float(f.get("loot_min_window_sec", 2.5)))
         self.loot_empty_exit_sec: float = max(0.2, float(f.get("loot_empty_exit_sec", 0.8)))
-        self.loot_target_move_timeout_sec: float = max(0.4, float(f.get("loot_target_move_timeout_sec", 1.4)))
+        self.loot_target_move_timeout_sec: float = max(0.4, float(f.get("loot_target_move_timeout_sec", 1.2)))
+        self.loot_fallback_step_interval_sec: float = max(
+            0.25, float(f.get("loot_fallback_step_interval_sec", 0.75))
+        )
+        self.loot_fallback_sweep_offset_px: int = max(20, int(f.get("loot_fallback_sweep_offset_px", 85)))
         self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", self.post_kill_loot_window_sec))
         self.last_kill_loot_radius_px: float = float(p.get("last_kill_loot_radius_px", 140.0))
         self.last_kill_loot_window_sec: float = float(p.get("last_kill_loot_window_sec", 0.80))
@@ -155,11 +159,14 @@ class FarmingFSM:
         self._aborted_mobs: list[tuple[float, float, float]] = []  # (expire_ts, cx, cy)
         self.external_combat_zones: list[tuple[float, float, float]] = []  # (expire_ts, x, y)
 
-        # LOOT_PICKUP sequential visited_loot_grids on 24x24px grid (TTL 15.0s, max 2 attempts / 1.4s move timeout)
+        # LOOT_PICKUP sequential visited_loot_grids on 24x24px grid (TTL 15.0s, max 2 attempts / 1.2s move timeout)
         self.visited_loot_grids: dict[tuple[int, int], tuple[int, float]] = {}
         self._loot_grid_attempts: dict[tuple[int, int], int] = {}
         self._loot_active_grid: tuple[int, int] | None = None
         self._loot_active_grid_since: float = 0.0
+        self._loot_fallback_stage: int = 0
+        self._loot_fallback_next_ts: float = 0.0
+        self._loot_saw_any_bag: bool = False
         self._loot_prev_count: int = 0
         self._loot_clear_streak: int = 0
         self._loot_empty_since: float | None = None
@@ -288,6 +295,9 @@ class FarmingFSM:
             self._loot_grid_attempts.clear()
             self._loot_active_grid = None
             self._loot_active_grid_since = now
+            self._loot_fallback_stage = 0
+            self._loot_fallback_next_ts = now
+            self._loot_saw_any_bag = False
             self._loot_prev_count = 0
             self._loot_clear_streak = 0
             self._loot_empty_since = None
@@ -1127,6 +1137,8 @@ class FarmingFSM:
         ordered_bags = unvisited + retryable
         bag_count = len(ordered_bags)
         self._loot_prev_count = bag_count
+        if bag_count > 0:
+            self._loot_saw_any_bag = True
 
         if bag_count == 0 and not world.snapshot.pickup_log_changed:
             self._loot_clear_streak += 1
@@ -1136,9 +1148,21 @@ class FarmingFSM:
             self._loot_clear_streak = 0
             self._loot_empty_since = None
 
+        # Priority 2 fallback sweep active when GOLD == 0 on entry (stages 0..3: corpse -> -85 -> +85 -> rescan)
+        fallback_active = (
+            self.loot_dead_point_sweep
+            and (not self._loot_saw_any_bag)
+            and bag_count == 0
+            and self._loot_fallback_stage < 4
+        )
+
         empty_dur = (now - self._loot_empty_since) if self._loot_empty_since is not None else 0.0
         window_expired = elapsed >= self.post_kill_loot_window_sec
-        empty_cleared = elapsed >= self.loot_min_window_sec and empty_dur >= self.loot_empty_exit_sec
+        empty_cleared = (
+            (not fallback_active)
+            and elapsed >= self.loot_min_window_sec
+            and empty_dur >= self.loot_empty_exit_sec
+        )
 
         if window_expired or empty_cleared:
             self.tracker.mark_loot_done()
@@ -1161,31 +1185,49 @@ class FarmingFSM:
             return []
 
         intents, target_bag, act_kind = self.farm.build_loot_step(world, now, candidate_bags=ordered_bags)
-        if self.loot_dead_point_sweep and not ordered_bags and elapsed < self.loot_min_window_sec:
-            # Dead-point loot sweep: move to dead_rustler / last_kill_pos immediately, then micro-nudge (+-18px)
-            # during the 2.5s window while AHK background E spam vacuums all drops without needing GOLD > 0!
+        if fallback_active and now >= self._loot_fallback_next_ts:
+            # Priority 2 (GOLD == 0 fallback sweep): sequential 0.75s left-clicks to:
+            #   Stage 0: dead_rustler / last_kill_pos / last combat click
+            #   Stage 1: (-85, 0) relative to screen center (512, 384)
+            #   Stage 2: (+85, 0) relative to screen center (512, 384)
+            #   Stage 3: 1x final detect_loot_tiled rescan wait -> Stage 4 (done)
             fw = max(1, world.snapshot.frame_width)
             fh = max(1, world.snapshot.frame_height)
             sx_1024 = 1.0 if fw <= 1100 else (fw / 1024.0)
             max_r = float(self.config.farming.get("loot_close_radius_px", 310.0)) * sx_1024
-            cx_scr, cy_scr = fw * 0.5, fh * 0.5
-            corpse_pts: list[tuple[float, int, int, str]] = []
-            for cx1, cy1, cx2, cy2 in world.snapshot.dead_corpses:
-                mx, my = (cx1 + cx2) // 2, (cy1 + cy2) // 2
-                d = math.hypot(mx - cx_scr, my - cy_scr)
-                if d <= max_r:
-                    corpse_pts.append((d, mx, my, "loot_click_dead_rustler"))
-            corpse_pts.sort(key=lambda item: item[0])
-            if not corpse_pts and elapsed >= 0.35 and world.last_kill_pos is not None:
-                kpos = world.last_kill_pos
-                d = math.hypot(kpos[0] - cx_scr, kpos[1] - cy_scr)
-                if d <= max_r:
-                    corpse_pts.append((d, int(kpos[0]), int(kpos[1]), "loot_click_kill_pos"))
-                    if elapsed >= 1.25:
-                        nudge = int(round(18.0 * sx_1024))
-                        corpse_pts.append((d, int(kpos[0]) + nudge, int(kpos[1]), "loot_micro_nudge_kill_pos"))
-            for _d, mx, my, rsn in corpse_pts:
-                if self._is_in_anti_ks_zone(
+            cx_scr = int(round(fw * 0.5))
+            cy_scr = int(round(fh * 0.5))
+            off_x = int(round(float(self.loot_fallback_sweep_offset_px) * sx_1024))
+
+            click_pt: tuple[int, int, str] | None = None
+            if self._loot_fallback_stage == 0:
+                corpse_pts: list[tuple[float, int, int, str]] = []
+                for cx1, cy1, cx2, cy2 in world.snapshot.dead_corpses:
+                    mx, my = (cx1 + cx2) // 2, (cy1 + cy2) // 2
+                    d = math.hypot(mx - cx_scr, my - cy_scr)
+                    if d <= max_r:
+                        corpse_pts.append((d, mx, my, "loot_fallback_dead_rustler"))
+                corpse_pts.sort(key=lambda item: item[0])
+                if corpse_pts:
+                    click_pt = (corpse_pts[0][1], corpse_pts[0][2], corpse_pts[0][3])
+                else:
+                    kpos = world.last_kill_pos or self._combat_click_xy
+                    if kpos is not None and math.hypot(kpos[0] - cx_scr, kpos[1] - cy_scr) <= max_r:
+                        click_pt = (int(kpos[0]), int(kpos[1]), "loot_fallback_kill_pos")
+                self._loot_fallback_stage = 1
+            elif self._loot_fallback_stage == 1:
+                click_pt = (max(0, cx_scr - off_x), cy_scr, "loot_fallback_sweep_left")
+                self._loot_fallback_stage = 2
+            elif self._loot_fallback_stage == 2:
+                click_pt = (min(fw - 1, cx_scr + off_x), cy_scr, "loot_fallback_sweep_right")
+                self._loot_fallback_stage = 3
+            else:
+                # Stage 3 complete: final tiled rescan finished
+                self._loot_fallback_stage = 4
+
+            if click_pt is not None:
+                mx, my, rsn = click_pt
+                if not self._is_in_anti_ks_zone(
                     float(mx),
                     float(my),
                     world,
@@ -1193,13 +1235,6 @@ class FarmingFSM:
                     player_radius_px=self.anti_ks_player_radius_px,
                     damage_radius_px=self.anti_ks_player_radius_px,
                 ):
-                    continue
-                cell = _cell_of(float(mx), float(my))
-                if self.visited_loot_grids.get(cell, (0, 0.0))[0] >= 1:
-                    continue
-                if self.tracker.is_ready("loot_corpse_click", now):
-                    self.tracker.set_cooldown("loot_corpse_click", now, 0.65)
-                    self.visited_loot_grids[cell] = (1, now + self.loot_visited_grid_ttl_sec)
                     intents.append(
                         ClickScreenIntent(
                             x=mx,
@@ -1209,7 +1244,9 @@ class FarmingFSM:
                             reason=f"{rsn}({mx},{my})",
                         )
                     )
-                    break
+                self._loot_fallback_next_ts = now + self.loot_fallback_step_interval_sec
+            elif self._loot_fallback_stage <= 3:
+                self._loot_fallback_next_ts = now + self.loot_fallback_step_interval_sec
 
         if target_bag is not None and act_kind in ("tap_e", "click_bag"):
             bx, by = float(target_bag.click_x), float(target_bag.click_y)

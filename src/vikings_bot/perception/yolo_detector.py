@@ -193,7 +193,7 @@ class Yolo11nOnnxDetector:
         self.imgsz_h: int = self.imgsz
         self.imgsz_w: int = self.imgsz
         self.conf_threshold: float = float(p.get("yolo_conf_threshold", 0.45))
-        self.gold_bag_conf_threshold: float = float(p.get("gold_bag_conf_threshold", 0.22))
+        self.gold_bag_conf_threshold: float = float(p.get("gold_bag_conf_threshold", 0.20))
         self.loot_tiled_gold_bag_conf_threshold: float = float(
             p.get("loot_tiled_gold_bag_conf_threshold", self.gold_bag_conf_threshold)
         )

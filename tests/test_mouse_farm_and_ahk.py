@@ -94,6 +94,7 @@ def _load_legacy_mouse_loot_cfg():
     c.farming["disable_gold_bag_detector"] = False
     c.farming["engage_double_click"] = False
     c.farming["engage_skill_key"] = ""
+    c.farming["loot_dead_point_sweep"] = False
     c.farming["return_center_min_drift_units"] = 0.0
     c.farming["post_kill_loot_window_sec"] = 10.0
     c.farming["loot_min_window_sec"] = 2.0
@@ -1118,14 +1119,17 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
         assert fsm.step(w_fight) == []
         assert fsm.state == BotState.COMBAT_WAIT
 
-    # 4. 2.5s after last hit stops (t=23.1) -> MANDATORY BotState.LOOT -> RETURN_TO_CENTER -> SEARCH_MOB!
+    # 4. 2.5s after last hit stops (t=23.1) -> MANDATORY BotState.LOOT (3-step GOLD==0 fallback sweep) -> RETURN_TO_CENTER -> SEARCH_MOB!
     fsm.step(tracker.update(_snap(23.1, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(24.0, x=645, y=1830, fw=1024, fh=768)))
-    assert fsm.state == BotState.LOOT  # inside mandatory 2.5s window
-    fsm.step(tracker.update(_snap(25.5, x=645, y=1830, fw=1024, fh=768)))
-    assert fsm.state == BotState.LOOT  # elapsed 2.4s < 2.5s mandatory min window
-    fsm.step(tracker.update(_snap(25.7, x=645, y=1830, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(24.0, x=645, y=1830, fw=1024, fh=768)))  # Stage 0: kill_pos
+    assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(24.8, x=645, y=1830, fw=1024, fh=768)))  # Stage 1: (-85, 0)
+    assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(25.6, x=645, y=1830, fw=1024, fh=768)))  # Stage 2: (+85, 0)
+    assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(26.4, x=645, y=1830, fw=1024, fh=768)))  # Stage 3: final rescan
+    fsm.step(tracker.update(_snap(26.6, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.RETURN_TO_CENTER
     fsm.step(tracker.update(_snap(26.0, x=594, y=1832, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
@@ -1464,7 +1468,7 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
     assert cfg.farming["background_e_spam"] is True
     assert cfg.farming["disable_gold_bag_detector"] is False
     assert cfg.farming["loot_mouse_click_enabled"] is True
-    assert float(cfg.farming["post_kill_loot_window_sec"]) == 8.0
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 7.5
     assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
     assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
@@ -1594,9 +1598,9 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert cfg.perception["yolo_model_path"] == "models/yolo11n_ryl.onnx"
     assert int(cfg.perception["yolo_imgsz"]) == 640
     assert float(cfg.perception["yolo_conf_threshold"]) == 0.45
-    assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.22
+    assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.20
     assert cfg.perception["loot_tiled_enabled"] is True
-    assert float(cfg.perception["loot_tiled_gold_bag_conf_threshold"]) == 0.22
+    assert float(cfg.perception["loot_tiled_gold_bag_conf_threshold"]) == 0.20
     assert float(cfg.perception["dead_rustler_conf_threshold"]) == 0.35
     # Test single-frame path here; 3-crop tiled path is verified in test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase
     cfg.perception["loot_tiled_enabled"] = False
@@ -1765,22 +1769,31 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     det_416.detect(blank)
     assert mock_416.calls == 1
 
-    # 3c. Mandatory >=2.5s LOOT clicks dead_rustler even when GOLD=0; when within <=35u of (594,1832) exits directly to SEARCH_MOB!
+    # 3c. Mandatory LOOT with GOLD=0 runs 3-step fallback sweep (corpse -> -85 -> +85 -> rescan) then exits to SEARCH_MOB when <=35u!
     tracker_l = WorldStateTracker()
     fsm_l = FarmingFSM(cfg, tracker_l, mode=BotMode.FULL)
     fsm_l.resume(1.0, ensure_mouse_mode=False)
     fsm_l.transition(BotState.LOOT, 10.0, "post_kill_zero_gold")
     w_dead = tracker_l.update(
         PerceptionSnapshot(
-            timestamp=10.5, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+            timestamp=10.1, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
             coords=CoordReading(x=598, y=1835, confidence=0.98), minimap=MinimapReading(),
             loot=(), dead_corpses=((579, 316, 661, 364),),
         )
     )
-    acts_dead = fsm_l.step(w_dead)
+    acts_s0 = fsm_l.step(w_dead)
     assert fsm_l.state == BotState.LOOT
-    assert any(isinstance(a, ClickScreenIntent) and a.x == 620 and a.y == 340 and "dead_rustler" in a.reason for a in acts_dead)
-    # After >=2.5s empty & dist=5u <= 35u -> skips unnecessary RETURN_TO_CENTER and goes straight to SEARCH_MOB!
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 620 and a.y == 340 and "dead_rustler" in a.reason for a in acts_s0)
+    # 0.75s later -> Stage 1: (-85, 0) from (512, 384) = (427, 384)
+    acts_s1 = fsm_l.step(tracker_l.update(_snap(10.9, x=598, y=1835, fw=1024, fh=768, loot=())))
+    assert fsm_l.state == BotState.LOOT
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 427 and a.y == 384 and "sweep_left" in a.reason for a in acts_s1)
+    # 0.75s later -> Stage 2: (+85, 0) from (512, 384) = (597, 384)
+    acts_s2 = fsm_l.step(tracker_l.update(_snap(11.7, x=598, y=1835, fw=1024, fh=768, loot=())))
+    assert fsm_l.state == BotState.LOOT
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 597 and a.y == 384 and "sweep_right" in a.reason for a in acts_s2)
+    # 0.75s later -> Stage 3 rescan completes -> exits straight to SEARCH_MOB (dist=5u <= 35u)!
+    fsm_l.step(tracker_l.update(_snap(12.5, x=598, y=1835, fw=1024, fh=768, loot=())))
     fsm_l.step(tracker_l.update(_snap(12.7, x=598, y=1835, fw=1024, fh=768, loot=())))
     assert fsm_l.state == BotState.SEARCH_MOB
 
@@ -1847,11 +1860,13 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
 
     cfg = load_config("config/default.yaml")
     assert cfg.perception["loot_tiled_enabled"] is True
-    assert float(cfg.perception["loot_tiled_gold_bag_conf_threshold"]) == 0.22
-    assert float(cfg.farming["post_kill_loot_window_sec"]) == 8.0
+    assert float(cfg.perception["loot_tiled_gold_bag_conf_threshold"]) == 0.20
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 7.5
     assert int(cfg.farming["loot_attempt_grid_px"]) == 24
     assert float(cfg.farming["loot_empty_exit_sec"]) == 0.8
-    assert float(cfg.farming["loot_target_move_timeout_sec"]) == 1.4
+    assert float(cfg.farming["loot_target_move_timeout_sec"]) == 1.2
+    assert float(cfg.farming["loot_fallback_step_interval_sec"]) == 0.75
+    assert int(cfg.farming["loot_fallback_sweep_offset_px"]) == 85
 
     # 512x512 tile -> 640x640 letterbox ratio = 640 / 512 = 1.25, pad = 0
     tile_dummy = np.zeros((512, 512, 3), dtype=np.uint8)
@@ -1893,8 +1908,8 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
         ]
     )
     # Tile 2 (Right: x=512..1024, y=140..652):
-    #   - Desynced far-right gold_bag at full (880, 380) -> tile (368, 240), conf=0.23 (>= 0.22 threshold -> MUST BE DETECTED!)
-    t_right = _tile_tensor([(CLS_GOLD_BAG, 0.23, 368, 240, 16, 16)])
+    #   - Desynced far-right gold_bag at full (880, 380) -> tile (368, 240), conf=0.21 (>= 0.20 threshold -> MUST BE DETECTED!)
+    t_right = _tile_tensor([(CLS_GOLD_BAG, 0.21, 368, 240, 16, 16)])
 
     class _Io:
         def __init__(self, name, shape):
@@ -1929,8 +1944,8 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
     assert len(snap_loot.loot) == 2, f"Expected 2 merged unique gold_bags (NMS + SELF/HUD/Anti-KS), got {snap_loot.loot}"
     # Bag #1: merged overlap at ~(432, 360) with winning conf=0.88 (closest to 512,384)
     assert abs(snap_loot.loot[0].click_x - 432) <= 3 and abs(snap_loot.loot[0].score - 0.88) < 1e-4
-    # Bag #2: desynced far-right at ~(880, 380) with conf=0.23 (>= 0.22)
-    assert abs(snap_loot.loot[1].click_x - 880) <= 3 and abs(snap_loot.loot[1].score - 0.23) < 1e-4
+    # Bag #2: desynced far-right at ~(880, 380) with conf=0.21 (>= 0.20)
+    assert abs(snap_loot.loot[1].click_x - 880) <= 3 and abs(snap_loot.loot[1].score - 0.21) < 1e-4
     assert len(snap_loot.dead_corpses) == 1
 
     # Verify overlay renders tiled gold_bag boxes + conf scores during LOOT
@@ -1950,17 +1965,17 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
                 texts.append(str(kw["text"]))
 
     draw_overlay_scene(_Canvas(), ov)
-    assert any("gold_bag 0.88" in t for t in texts) and any("gold_bag 0.23" in t for t in texts)
+    assert any("gold_bag 0.88" in t for t in texts) and any("gold_bag 0.21" in t for t in texts)
 
-    # Verify FSM LOOT 1.4s move timeout marks stuck grid visited & advances to next gold_bag, then exits after 0.8s empty!
+    # Verify FSM LOOT 1.2s move timeout marks stuck grid visited & advances to next gold_bag, then exits after 0.8s empty!
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
     fsm.transition(BotState.LOOT, 10.0, "test_tiled_chase")
     # Tick 1: clicks nearest bag (432, 360)
     acts1 = fsm.step(tracker.update(_snap(10.1, x=640, y=1840, fw=1024, fh=768, loot=snap_loot.loot)))
     assert any(isinstance(a, ClickScreenIntent) and abs(a.x - 432) <= 3 for a in acts1)
-    # After 1.4s moving toward (432, 360) -> grid force-marked visited -> immediately clicks next bag (880, 380)!
-    acts2 = fsm.step(tracker.update(_snap(11.6, x=640, y=1840, fw=1024, fh=768, loot=snap_loot.loot)))
+    # After 1.2s moving toward (432, 360) -> grid force-marked visited -> immediately clicks next bag (880, 380)!
+    acts2 = fsm.step(tracker.update(_snap(11.4, x=640, y=1840, fw=1024, fh=768, loot=snap_loot.loot)))
     assert any(isinstance(a, ClickScreenIntent) and abs(a.x - 880) <= 3 for a in acts2)
     # Bags cleared for >=0.8s (past 2.5s min) -> exits to RETURN_TO_CENTER (dist=46.7 > 35u)!
     fsm.step(tracker.update(_snap(12.2, x=640, y=1840, fw=1024, fh=768, loot=())))
