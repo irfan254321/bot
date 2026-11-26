@@ -268,3 +268,14 @@ def test_vm_1024_raw_night_screenshot_regression():
     assert len(mobs_syn) == 1, f"Expected 1 merged mob (and 0 solid hill smudge), got {mobs_syn}"
     assert mobs_syn[0].nameplate_bbox[2] >= 55
     assert (mobs_syn[0].body_bbox[3] - mobs_syn[0].body_bbox[1]) <= 135
+
+    # Verify SELF zone (x=445..580, y=320..450 at 1024x768) is NEVER flagged as DEAD / MAYAT [SKIP]
+    bgr_self = cv2.cvtColor(hsv_syn, cv2.COLOR_HSV2BGR)
+    self_corpse = cv2.cvtColor(bgr_self[370:398, 470:554], cv2.COLOR_BGR2HSV)
+    self_corpse[8:22, 0:22] = (28, 80, 18)
+    self_corpse[6:22, 22:46] = (25, 35, 175)
+    self_corpse[4:22, 46:72] = (88, 155, 85)
+    self_corpse[6:18, 72:84] = (105, 110, 95)
+    bgr_self[370:398, 470:554] = cv2.cvtColor(self_corpse, cv2.COLOR_HSV2BGR)
+    pipe_vm.loot.detect(FramePacket(image_bgr=bgr_self, timestamp=3.0))
+    assert pipe_vm.loot.last_corpse_boxes == (), f"SELF zone falsely marked as DEAD/MAYAT: {pipe_vm.loot.last_corpse_boxes}"

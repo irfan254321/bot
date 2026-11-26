@@ -47,6 +47,8 @@ class FarmingFSM:
         self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
+        self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
+        self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
         self.combat_blind_timeout_sec: float = float(f.get("combat_blind_timeout_sec", 10.0))
         self.combat_stagnant_hp_sec: float = float(f.get("combat_stagnant_hp_sec", 5.0))
         self.combat_hard_timeout_sec: float = float(f.get("combat_hard_timeout_sec", 28.0))
@@ -170,10 +172,18 @@ class FarmingFSM:
         self.tracker.set_cooldown("weapon_swap", now, self.weapon_swap_cd)
         return [TapKeyIntent(key=self.weapon_swap_key, reason=f"weapon_swap_ea({ea}<{self.weapon_min_ea})")]
 
-    def _record_aborted_mob(self, mob: MobTarget | None, now: float, ttl_sec: float = 6.0) -> None:
+    def _record_aborted_mob(
+        self,
+        mob: MobTarget | None,
+        now: float,
+        ttl_sec: float = 6.0,
+        click_xy: tuple[int, int] | None = None,
+    ) -> None:
         self._aborted_mobs = [m for m in self._aborted_mobs if now < m[0]]
         if mob is not None:
             self._aborted_mobs.append((now + ttl_sec, float(mob.click_x), float(mob.click_y)))
+        elif click_xy is not None:
+            self._aborted_mobs.append((now + ttl_sec, float(click_xy[0]), float(click_xy[1])))
 
     def _is_aborted_mob(self, mob: MobTarget, now: float, scale_x: float) -> bool:
         if not self._aborted_mobs:
@@ -560,12 +570,12 @@ class FarmingFSM:
         return intents
 
     def _handle_ensure_mouse_mode(self, world: WorldState, now: float) -> list[ActionIntent]:
-        """One-shot startup Mouse Mode verification: ESC -> 0.30s -> check banner -> optional 2nd ESC -> 0.25s."""
+        """One-shot startup Mouse Mode verification: ESC -> 0.32s -> check banner -> optional 2nd ESC -> 0.28s."""
         esc_key = str(self.config.respawn_travel.get("mode_toggle_key", "esc"))
         if self._ensure_mouse_phase == "SEND_FIRST_ESC":
             self._ensure_mouse_phase = "WAIT_BANNER"
-            self._ensure_mouse_until = now + 0.30
-            logger.info("ENSURE_MOUSE_MODE: sending initial ESC probe and waiting 0.30s for INTERFACE TYPE banner")
+            self._ensure_mouse_until = now + 0.32
+            logger.info("ENSURE_MOUSE_MODE: sending initial ESC probe and waiting 0.32s for INTERFACE TYPE banner")
             return [TapKeyIntent(key=esc_key, hold_sec=0.05, reason="ensure_mouse_mode_esc_1")]
 
         if self._ensure_mouse_phase == "WAIT_BANNER":
@@ -574,8 +584,8 @@ class FarmingFSM:
             imode = world.snapshot.interface_mode
             if imode == "keyboard_banner":
                 self._ensure_mouse_phase = "WAIT_SECOND_ESC"
-                self._ensure_mouse_until = now + 0.25
-                logger.info("ENSURE_MOUSE_MODE: banner shows Keyboard -> pressing ESC 2nd time and waiting 0.25s")
+                self._ensure_mouse_until = now + 0.28
+                logger.info("ENSURE_MOUSE_MODE: banner shows Keyboard -> pressing ESC 2nd time and waiting 0.28s")
                 return [TapKeyIntent(key=esc_key, hold_sec=0.05, reason="ensure_mouse_mode_esc_2")]
             self._mouse_mode_verified = True
             self.transition(self._post_ensure_state, now, f"mouse_mode_verified({imode})")
@@ -783,17 +793,27 @@ class FarmingFSM:
                 self.transition(BotState.LOOT, now, "gold_kill_hp_gone_check_loot")
             return []
 
-        # 5. Watchdog Anti-Miss (2.4s when tracking mob; 10.0s blind safety cap when mob detector is off in COMBAT_WAIT)
-        # NEVER cancel lock while dist_to_player_px is actively decreasing or character is moving!
-        miss_limit = self.combat_miss_timeout_sec if world.locked_mob_visible else self.combat_blind_timeout_sec
-        approach_active = (now - self._combat_last_approach_ts) < miss_limit
+        # 5. Anti-Ghost-Lock (1.5s when mob detector is off & neither movement nor THP appears -> blacklist 15s)
+        #    AND Watchdog Anti-Miss (2.4s when tracking mob; NEVER cancels while dist_to_player_px shrinks!)
+        miss_limit = self.combat_miss_timeout_sec if world.locked_mob_visible else self.combat_ghost_lock_sec
+        approach_active = world.locked_mob_visible and ((now - self._combat_last_approach_ts) < miss_limit)
         coords_moving = idle_no_move < miss_limit
         if (not self._combat_saw_hp) and elapsed >= miss_limit and (not approach_active) and (not coords_moving):
-            logger.info("Watchdog Anti-Miss: idle %.1fs without approach or HP bar -> unlocking", elapsed)
-            self._record_aborted_mob(world.locked_mob, now, ttl_sec=4.0)
+            logger.info(
+                "Anti-Ghost-Lock: idle %.1fs without movement or THP -> blacklisting %s for %.0fs",
+                elapsed,
+                self._combat_click_xy,
+                self.combat_ghost_blacklist_sec,
+            )
+            self._record_aborted_mob(
+                world.locked_mob,
+                now,
+                ttl_sec=self.combat_ghost_blacklist_sec,
+                click_xy=self._combat_click_xy,
+            )
             self.tracker.clear_target_lock()
             next_st = BotState.LOOT if (near_bags and self.mode != BotMode.COMBAT) else BotState.SEARCH_MOB
-            self.transition(next_st, now, "watchdog_click_missed_idle")
+            self.transition(next_st, now, "anti_ghost_lock_idle")
             return []
 
         # 6. Watchdog Stagnant HP while standing still

@@ -49,16 +49,17 @@ class DebugOverlay:
         py = int(round(h * self.config.player_center_norm()[1]))
         cv2.circle(canvas, (px, py), 6, (255, 255, 0), 2)
 
-        for idx, mob in enumerate(world.mobs):
-            bx1, by1, bx2, by2 = mob.body_bbox
-            is_locked = world.locked_mob is not None and mob.nameplate_bbox == world.locked_mob.nameplate_bbox
-            color = (0, 255, 255) if is_locked else ((0, 255, 0) if mob.has_hp_bar else (255, 100, 255))
-            thickness = 3 if is_locked else 2
-            cv2.rectangle(canvas, (bx1, by1), (bx2, by2), color, thickness)
-            cv2.drawMarker(canvas, (mob.click_x, mob.click_y), color, cv2.MARKER_CROSS, 18, thickness)
-            hp_s = f" {mob.hp_ratio_est:.0%}" if mob.hp_ratio_est is not None else ""
-            lbl = f"LOCK#{world.locked_mob_id}{hp_s}" if is_locked else f"GR#{idx + 1} {mob.dist_to_player_px:.0f}px{hp_s}"
-            cv2.putText(canvas, lbl, (bx1, max(16, by1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2)
+        if fsm_state != BotState.COMBAT_WAIT:
+            for idx, mob in enumerate(world.mobs):
+                bx1, by1, bx2, by2 = mob.body_bbox
+                is_locked = world.locked_mob is not None and mob.nameplate_bbox == world.locked_mob.nameplate_bbox
+                color = (0, 255, 255) if is_locked else ((0, 255, 0) if mob.has_hp_bar else (255, 100, 255))
+                thickness = 3 if is_locked else 2
+                cv2.rectangle(canvas, (bx1, by1), (bx2, by2), color, thickness)
+                cv2.drawMarker(canvas, (mob.click_x, mob.click_y), color, cv2.MARKER_CROSS, 18, thickness)
+                hp_s = f" {mob.hp_ratio_est:.0%}" if mob.hp_ratio_est is not None else ""
+                lbl = f"LOCK#{world.locked_mob_id}{hp_s}" if is_locked else f"GR#{idx + 1} {mob.dist_to_player_px:.0f}px{hp_s}"
+                cv2.putText(canvas, lbl, (bx1, max(16, by1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2)
 
         for cm in world.snapshot.contested_mobs:
             bx1, by1, bx2, by2 = cm.body_bbox

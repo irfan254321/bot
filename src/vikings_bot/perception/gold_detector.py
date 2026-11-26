@@ -315,10 +315,16 @@ class GoldRustlerDetector:
         sx = 1.0 if self.hud_fixed_pixel_ui else (fw / 1920.0)
         sy = 1.0 if self.hud_fixed_pixel_ui else (fh / 1080.0)
 
-        # 1. Segment pink/magenta Gold Rustler nameplates (including dark night rose-magenta H=0..6 wraparound)
+        # 1. Segment pink/magenta Gold Rustler nameplates (daylight-strict + dark night rose-magenta wraparound)
         pink_main = cv2.inRange(pf_hsv, self.np_lo, self.np_hi)
-        pink_wrap = cv2.inRange(pf_hsv, self.np_wrap_lo, self.np_wrap_hi)
-        pink = cv2.bitwise_and(cv2.bitwise_or(pink_main, pink_wrap), hud_mask)
+        # Check playfield brightness: in bright daylight, disable warm brown/red wraparound so grass never triggers!
+        med_v = float(np.median(pf_hsv[::8, ::8, 2])) if pf_hsv.size > 0 else 70.0
+        is_night = med_v < 72.0
+        if is_night:
+            pink_wrap = cv2.inRange(pf_hsv, self.np_wrap_lo, self.np_wrap_hi)
+            pink = cv2.bitwise_and(cv2.bitwise_or(pink_main, pink_wrap), hud_mask)
+        else:
+            pink = cv2.bitwise_and(pink_main, hud_mask)
         min_w = max(14, int(round(self.np_min_w * sx)))
         max_w = int(round(self.np_max_w * sx))
         min_h = max(4, int(round(self.np_min_h * sy)))
@@ -348,11 +354,40 @@ class GoldRustlerDetector:
                 fill_ratio = raw_px / max(1.0, float(w * h))
                 if not (self.np_min_fill <= fill_ratio <= self.np_max_fill):
                     continue
-                # Require >=30% true magenta pixels (H>=140) so pure brown/red dirt or hills never match
+                # Require >=30% true magenta pixels (H>=140) at night and >=50% in daylight
                 main_px = cv2.countNonZero(pink_main[y : y + h, x : x + w])
-                if main_px < max(3, int(raw_px * 0.30)):
+                req_ratio = 0.30 if is_night else 0.50
+                if main_px < max(3, int(raw_px * req_ratio)):
                     continue
                 raw_nps.append((ox + x, oy + y, w, h, raw_px))
+
+        # 1b. Horizontal green HP-bar booster/candidate outside SELF zone (H=45..80, S>=120, V>=120, w=45..95, h=3..7)
+        hp_bar_mask = cv2.bitwise_and(
+            cv2.inRange(pf_hsv, np.array([45, 120, 120], dtype=np.uint8), np.array([80, 255, 255], dtype=np.uint8)),
+            hud_mask,
+        )
+        sx1_s, sy1_s, sx2_s, sy2_s = self_box
+        hp_bar_mask[
+            max(0, sy1_s - oy) : min(hp_bar_mask.shape[0], sy2_s - oy),
+            max(0, sx1_s - ox) : min(hp_bar_mask.shape[1], sx2_s - ox),
+        ] = 0
+        if cv2.countNonZero(hp_bar_mask) >= int(round(135.0 * sx * sy)):
+            n_hb, _lhb, st_hb, _ = cv2.connectedComponentsWithStats(hp_bar_mask, connectivity=8)
+            min_hbw, max_hbw = int(round(45.0 * sx)), int(round(95.0 * sx))
+            min_hbh, max_hbh = max(3, int(round(3.0 * sy))), max(7, int(round(7.0 * sy)))
+            for idx in range(1, n_hb):
+                hx = int(st_hb[idx, cv2.CC_STAT_LEFT])
+                hy = int(st_hb[idx, cv2.CC_STAT_TOP])
+                hw = int(st_hb[idx, cv2.CC_STAT_WIDTH])
+                hh = int(st_hb[idx, cv2.CC_STAT_HEIGHT])
+                if not (min_hbw <= hw <= max_hbw and min_hbh <= hh <= max_hbh):
+                    continue
+                if (int(st_hb[idx, cv2.CC_STAT_AREA]) / max(1.0, float(hw * hh))) < 0.55:
+                    continue
+                gx, gy = ox + hx, oy + hy
+                if any(abs(gx - nx) <= 45 * sx and abs(gy - (ny + nh)) <= 24 * sy for nx, ny, _nw, nh, _ in raw_nps):
+                    continue
+                raw_nps.append((gx, max(oy, gy - int(round(14.0 * sy))), hw, max(8, int(round(9.0 * sy))), hw * 4))
 
         np_bboxes = [(x, y, w, h) for x, y, w, h, _ in raw_nps]
 

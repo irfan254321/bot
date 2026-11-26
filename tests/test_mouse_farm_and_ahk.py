@@ -144,22 +144,35 @@ def test_auto_esc_guard_switches_keyboard_banner_back_to_mouse_mode():
 
     cfg = load_config("config/default.yaml")
 
-    # 1. Width-based top-center INTERFACE TYPE banner detection (1024x768)
+    # 1. Width-based top-center INTERFACE TYPE banner detection at x=395..585, y=91..109 (1024x768)
+    #    Uses real ref_mode_mouse.jpg / ref_mode_keyboard.jpg if present, else calibrated 1024x768 synthetic banner.
+    from pathlib import Path
+    import cv2
+
     cfg_vm = load_config("config/default.yaml")
     cfg_vm.perception["hud_fixed_pixel_ui"] = True
     um = UiTemplateMatcher(cfg_vm)
-    # Narrow 'Mouse' text (~74px) on dark banner strip at x=410..615, y=98..126
-    img_ms = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
-    img_ms[106:116, 470:544] = (235, 235, 235)
+
+    fix_dir = Path(__file__).parent / "fixtures"
+    ref_mouse = fix_dir / "ref_mode_mouse.jpg"
+    ref_kb = fix_dir / "ref_mode_keyboard.jpg"
+    if ref_mouse.exists():
+        img_ms = cv2.imread(str(ref_mouse), cv2.IMREAD_COLOR)
+    else:
+        img_ms = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
+        img_ms[96:105, 455:529] = (235, 235, 235)  # 74px in [55..92px] -> Mouse
     mode_ms, _ = um.detect_interface_mode(FramePacket(image_bgr=img_ms, timestamp=1.0))
     assert mode_ms == "mouse_banner"
-    # Wide 'Keyboard' text (~120px) on dark banner strip
-    img_kb = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
-    img_kb[106:116, 450:570] = (235, 235, 235)
+
+    if ref_kb.exists():
+        img_kb = cv2.imread(str(ref_kb), cv2.IMREAD_COLOR)
+    else:
+        img_kb = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
+        img_kb[96:105, 430:550] = (235, 235, 235)  # 120px in [98..150px] -> Keyboard
     mode_kb, _ = um.detect_interface_mode(FramePacket(image_bgr=img_kb, timestamp=1.0))
     assert mode_kb == "keyboard_banner"
 
-    # 2. Branch A: resume() -> ENSURE_MOUSE_MODE -> 1st ESC -> 0.30s -> mouse_banner -> SEARCH_MOB (no 2nd ESC!)
+    # 2. Branch A: resume() -> ENSURE_MOUSE_MODE -> 1st ESC -> 0.32s -> mouse_banner -> SEARCH_MOB (no 2nd ESC!)
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0)
@@ -167,7 +180,7 @@ def test_auto_esc_guard_switches_keyboard_banner_back_to_mouse_mode():
 
     acts_1 = fsm.step(tracker.update(_snap(1.0, interface_mode="no_cursor")))
     assert len(acts_1) == 1 and isinstance(acts_1[0], TapKeyIntent) and acts_1[0].key == "esc"
-    assert fsm.step(tracker.update(_snap(1.15, interface_mode="mouse_banner"))) == []  # waiting 0.30s
+    assert fsm.step(tracker.update(_snap(1.20, interface_mode="mouse_banner"))) == []  # waiting 0.32s
     assert fsm.state == BotState.ENSURE_MOUSE_MODE
     assert fsm.step(tracker.update(_snap(1.35, interface_mode="mouse_banner"))) == []
     assert fsm.state == BotState.SEARCH_MOB
@@ -179,7 +192,7 @@ def test_auto_esc_guard_switches_keyboard_banner_back_to_mouse_mode():
     assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_farm)
     assert fsm.state == BotState.COMBAT_WAIT
 
-    # 3. Branch B: 1st ESC -> 0.30s -> keyboard_banner -> 2nd ESC -> 0.25s -> SEARCH_MOB!
+    # 3. Branch B: 1st ESC -> 0.32s -> keyboard_banner -> 2nd ESC -> 0.28s -> SEARCH_MOB!
     tracker2 = WorldStateTracker()
     fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
     fsm2.resume(10.0)
@@ -188,8 +201,8 @@ def test_auto_esc_guard_switches_keyboard_banner_back_to_mouse_mode():
     acts_b2 = fsm2.step(tracker2.update(_snap(10.35, interface_mode="keyboard_banner")))
     assert len(acts_b2) == 1 and isinstance(acts_b2[0], TapKeyIntent) and acts_b2[0].key == "esc"
     assert fsm2.state == BotState.ENSURE_MOUSE_MODE
-    assert fsm2.step(tracker2.update(_snap(10.50, interface_mode="mouse_banner"))) == []  # waiting 0.25s
-    assert fsm2.step(tracker2.update(_snap(10.65, interface_mode="mouse_banner"))) == []
+    assert fsm2.step(tracker2.update(_snap(10.50, interface_mode="mouse_banner"))) == []  # waiting 0.28s
+    assert fsm2.step(tracker2.update(_snap(10.68, interface_mode="mouse_banner"))) == []
     assert fsm2.state == BotState.SEARCH_MOB
     assert fsm2._mouse_mode_verified is True
 
@@ -597,3 +610,24 @@ def test_combat_wait_disables_mob_detection_and_loot_respects_220px_radius():
     fsm.step(tracker.update(snap_dead))
     assert fsm.state == BotState.LOOT
     assert fsm.kills_count == 1
+
+    # 3. Overlay hides cyan LOCK box during COMBAT_WAIT, AND Anti-Ghost-Lock aborts after 1.5s -> 15s blacklist!
+    from vikings_bot.debug_overlay import build_overlay_frame_data
+
+    tracker3 = WorldStateTracker()
+    fsm3 = FarmingFSM(cfg_vm, tracker3, mode=BotMode.FULL)
+    fsm3.resume(20.0, ensure_mouse_mode=False)
+    ghost = _mob(cx=380, cy=310, dist=170.0)
+    fsm3.step(tracker3.update(_snap(20.1, x=615, y=1830, fw=1024, fh=768, mobs=(ghost,))))
+    assert fsm3.state == BotState.COMBAT_WAIT
+    w_cw = tracker3.update(_snap(20.5, x=615, y=1830, fw=1024, fh=768, mobs=()))
+    ov_cw = build_overlay_frame_data(
+        game_rect=(0, 0, 1024, 768), world=w_cw, fsm_state=BotState.COMBAT_WAIT, config=cfg_vm, loop_hz=20.0
+    )
+    assert ov_cw.locked_mob is None and ov_cw.mobs == (), "Overlay must hide LOCK box during COMBAT_WAIT!"
+
+    # After 1.5s with no movement & no THP -> Anti-Ghost-Lock cancels COMBAT_WAIT and blacklists (380, 310) for 15s!
+    fsm3.step(tracker3.update(_snap(21.7, x=615, y=1830, fw=1024, fh=768, mobs=())))
+    assert fsm3.state == BotState.SEARCH_MOB
+    acts_skip = fsm3.step(tracker3.update(_snap(25.0, x=615, y=1830, fw=1024, fh=768, mobs=(ghost,))))
+    assert fsm3.state == BotState.SEARCH_MOB and not any(isinstance(a, ClickScreenIntent) for a in acts_skip)

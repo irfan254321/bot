@@ -285,7 +285,18 @@ class GoldBagDetector:
             if ax2 > ax1 and ay2 > ay1:
                 valid[ay1:ay2, ax1:ax2] = 0
 
-        corpses = self._detect_dead_corpses(hsv, ox, oy, scale_x, scale_y)
+        raw_corpses = self._detect_dead_corpses(hsv, ox, oy, scale_x, scale_y)
+        # Exclude SELF zone (x=445..580, y=320..450 at 1024x768, scaled) so own character is NEVER marked DEAD / MAYAT
+        sx_self = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
+        sy_self = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
+        self_cx1, self_cy1 = int(round(445.0 * sx_self)), int(round(320.0 * sy_self))
+        self_cx2, self_cy2 = int(round(580.0 * sx_self)), int(round(450.0 * sy_self))
+        corpses: list[tuple[int, int, int, int]] = []
+        for cx1, cy1, cx2, cy2 in raw_corpses:
+            ccx, ccy = (cx1 + cx2) // 2, (cy1 + cy2) // 2
+            if self_cx1 <= ccx <= self_cx2 and self_cy1 <= ccy <= self_cy2:
+                continue
+            corpses.append((cx1, cy1, cx2, cy2))
         self.last_corpse_boxes = tuple(corpses)
         for cx1, cy1, cx2, cy2 in corpses:
             ax1, ay1 = max(0, cx1 - 8 - ox), max(0, cy1 - 8 - oy)

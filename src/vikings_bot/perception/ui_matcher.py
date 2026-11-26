@@ -446,22 +446,21 @@ class UiTemplateMatcher:
             if ms_score >= self.interface_mode_thresh and ms_score > (kb_score + 0.10):
                 return ("mouse_banner", f"banner_mouse({ms_score:.2f})")
 
-        # 1b) Top-center INTERFACE TYPE banner white-text width fallback (x=410..615, y=98..126 at 1024x768, scaled).
-        #     'Mouse' text is narrower (~65-85px) while 'Keyboard' text is wider (~105-135px).
+        # 1b) Top-center INTERFACE TYPE banner white-text width fallback (x=395..585, y=91..109 at 1024x768, scaled).
+        #     White text pixels (V >= 200, S <= 45): 'Mouse' ~55-92px vs 'Keyboard' ~98-150px.
         if frame.width >= 320 and frame.height >= 240:
             sx_b = 1.0 if self.hud_fixed_pixel_ui else (frame.width / 1024.0)
             sy_b = 1.0 if self.hud_fixed_pixel_ui else (frame.height / 768.0)
-            bx1 = max(0, int(round(410.0 * sx_b)))
-            bx2 = min(frame.width, int(round(615.0 * sx_b)))
-            by1 = max(0, int(round(98.0 * sy_b)))
-            by2 = min(frame.height, int(round(126.0 * sy_b)))
-            if (bx2 - bx1) >= 40 and (by2 - by1) >= 10:
+            bx1 = max(0, int(round(395.0 * sx_b)))
+            bx2 = min(frame.width, int(round(585.0 * sx_b)))
+            by1 = max(0, int(round(91.0 * sy_b)))
+            by2 = min(frame.height, int(round(109.0 * sy_b)))
+            if (bx2 - bx1) >= 40 and (by2 - by1) >= 8:
                 bpatch = frame.image_bgr[by1:by2, bx1:bx2]
-                bmin = bpatch.min(axis=2)
-                bmax = bpatch.max(axis=2)
-                dark_bg = float((bmax <= 75).mean())
-                if dark_bg >= 0.45:
-                    wmask = (bmin >= 185) & ((bmax.astype(np.int16) - bmin.astype(np.int16)) <= 45)
+                bhsv = cv2.cvtColor(bpatch, cv2.COLOR_BGR2HSV)
+                dark_bg = float((bhsv[:, :, 2] <= 85).mean())
+                if dark_bg >= 0.35:
+                    wmask = (bhsv[:, :, 2] >= 200) & (bhsv[:, :, 1] <= 45)
                     col_hits = np.where(wmask.sum(axis=0) >= 2)[0]
                     if col_hits.size >= 15:
                         span_norm = float(col_hits[-1] - col_hits[0] + 1) / max(0.5, sx_b)

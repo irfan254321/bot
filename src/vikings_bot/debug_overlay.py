@@ -354,54 +354,56 @@ def build_overlay_frame_data(
     snap = world.snapshot
     mobs_out: list[OverlayMob] = []
     locked_ov: OverlayMob | None = None
-    for mob in world.mobs:
-        is_locked = world.locked_mob is not None and (
-            mob.nameplate_bbox == world.locked_mob.nameplate_bbox
-            or mob.body_bbox == world.locked_mob.body_bbox
-        )
-        om = OverlayMob(
-            bbox=mob.body_bbox,
-            click_x=int(mob.click_x),
-            click_y=int(mob.click_y),
-            conf=float(mob.confidence),
-            dist_px=float(mob.dist_to_player_px),
-            safe=True,
-            locked=is_locked,
-            hp_ratio=mob.hp_ratio_est,
-            label=f"LOCK#{world.locked_mob_id}" if is_locked and world.locked_mob_id is not None else "",
-        )
-        mobs_out.append(om)
-        if is_locked:
-            locked_ov = om
-
-    if world.locked_mob is not None and locked_ov is None:
-        lm = world.locked_mob
-        locked_ov = OverlayMob(
-            bbox=lm.body_bbox,
-            click_x=int(lm.click_x),
-            click_y=int(lm.click_y),
-            conf=float(lm.confidence),
-            dist_px=float(lm.dist_to_player_px),
-            safe=True,
-            locked=True,
-            hp_ratio=lm.hp_ratio_est,
-            label=f"LOCK#{world.locked_mob_id}" if world.locked_mob_id is not None else "LOCK",
-        )
-
-    for cm in snap.contested_mobs:
-        mobs_out.append(
-            OverlayMob(
-                bbox=cm.body_bbox,
-                click_x=int(cm.click_x),
-                click_y=int(cm.click_y),
-                conf=float(cm.confidence),
-                dist_px=float(cm.dist_to_player_px),
-                safe=False,
-                locked=False,
-                hp_ratio=cm.hp_ratio_est,
-                label=cm.contest_reason or "SKIP [KS]",
+    # Hide cyan LOCK box & crosshair once 1x click is sent and FSM enters COMBAT_WAIT!
+    if getattr(fsm_state, "value", str(fsm_state)) != "COMBAT_WAIT":
+        for mob in world.mobs:
+            is_locked = world.locked_mob is not None and (
+                mob.nameplate_bbox == world.locked_mob.nameplate_bbox
+                or mob.body_bbox == world.locked_mob.body_bbox
             )
-        )
+            om = OverlayMob(
+                bbox=mob.body_bbox,
+                click_x=int(mob.click_x),
+                click_y=int(mob.click_y),
+                conf=float(mob.confidence),
+                dist_px=float(mob.dist_to_player_px),
+                safe=True,
+                locked=is_locked,
+                hp_ratio=mob.hp_ratio_est,
+                label=f"LOCK#{world.locked_mob_id}" if is_locked and world.locked_mob_id is not None else "",
+            )
+            mobs_out.append(om)
+            if is_locked:
+                locked_ov = om
+
+        if world.locked_mob is not None and locked_ov is None:
+            lm = world.locked_mob
+            locked_ov = OverlayMob(
+                bbox=lm.body_bbox,
+                click_x=int(lm.click_x),
+                click_y=int(lm.click_y),
+                conf=float(lm.confidence),
+                dist_px=float(lm.dist_to_player_px),
+                safe=True,
+                locked=True,
+                hp_ratio=lm.hp_ratio_est,
+                label=f"LOCK#{world.locked_mob_id}" if world.locked_mob_id is not None else "LOCK",
+            )
+
+        for cm in snap.contested_mobs:
+            mobs_out.append(
+                OverlayMob(
+                    bbox=cm.body_bbox,
+                    click_x=int(cm.click_x),
+                    click_y=int(cm.click_y),
+                    conf=float(cm.confidence),
+                    dist_px=float(cm.dist_to_player_px),
+                    safe=False,
+                    locked=False,
+                    hp_ratio=cm.hp_ratio_est,
+                    label=cm.contest_reason or "SKIP [KS]",
+                )
+            )
 
     players_out = tuple(
         OverlayPlayer(
@@ -432,6 +434,8 @@ def build_overlay_frame_data(
     target_hp_pct: float | None = None
     if locked_ov is not None and locked_ov.hp_ratio is not None:
         target_hp_pct = max(0.0, min(100.0, float(locked_ov.hp_ratio) * 100.0))
+    elif snap.combat_target_hp_ratio is not None:
+        target_hp_pct = max(0.0, min(100.0, float(snap.combat_target_hp_ratio) * 100.0))
     elif snap.engaged_mob is not None and snap.engaged_mob.hp_ratio_est is not None:
         target_hp_pct = max(0.0, min(100.0, float(snap.engaged_mob.hp_ratio_est) * 100.0))
 
