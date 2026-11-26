@@ -119,8 +119,8 @@ def test_keyboard_hold_w_preserves_closed_loop_heading_and_dynamic_anchor_waypoi
     nav.set_dynamic_anchor(Point2D(613.0, 1839.0))
     assert nav.current_target_point.x == pytest.approx(613.0)
     assert nav.current_target_point.y == pytest.approx(1839.0)
-    assert nav.is_outside_farm_radius(Point2D(646.0, 1802.0)) is True
-    assert nav.is_outside_farm_radius(Point2D(625.0, 1845.0)) is False
+    assert nav.is_outside_farm_radius(Point2D(680.0, 1780.0)) is True
+    assert nav.is_outside_farm_radius(Point2D(646.0, 1802.0)) is False
 
     # 2. Simulate 30Hz continuous W hold moving South-East (-45 deg) while heading started at +90 deg
     t = 10.0

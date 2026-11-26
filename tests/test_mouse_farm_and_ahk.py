@@ -131,15 +131,15 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
     acts_l2 = fsm.step(tracker.update(_snap(4.5, mobs=(), loot=(close_bag,))))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_l2)
 
-    # 6. Bags cleared (mandatory 7.0s post-kill LOOT window) -> returns to SEARCH_MOB -> MMB sweep!
+    # 6. Bags cleared (mandatory 8.0s post-kill LOOT window) -> returns to SEARCH_MOB -> MMB sweep!
     fsm.step(tracker.update(_snap(5.0, mobs=(), loot=())))
-    assert fsm.state == BotState.LOOT  # still inside mandatory 7.0s LOOT window
-    fsm.step(tracker.update(_snap(10.0, mobs=(), loot=())))
-    assert fsm.state == BotState.LOOT  # elapsed 6.3s < 7.0s
-    fsm.step(tracker.update(_snap(10.8, mobs=(), loot=())))
+    assert fsm.state == BotState.LOOT  # still inside mandatory 8.0s LOOT window
+    fsm.step(tracker.update(_snap(11.0, mobs=(), loot=())))
+    assert fsm.state == BotState.LOOT  # elapsed 7.3s < 8.0s
+    fsm.step(tracker.update(_snap(11.8, mobs=(), loot=())))
     assert fsm.state == BotState.SEARCH_MOB
 
-    acts_sweep = fsm.step(tracker.update(_snap(11.2, mobs=(), loot=())))
+    acts_sweep = fsm.step(tracker.update(_snap(12.2, mobs=(), loot=())))
     assert any(isinstance(a, DragCameraIntent) and a.button == "middle" and a.dy == 0 for a in acts_sweep)
 
 
@@ -784,13 +784,13 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     assert any(isinstance(a, ClickScreenIntent) and a.x == 440 and a.y == 450 for a in acts_l1)
     assert not any(isinstance(a, DragCameraIntent) for a in acts_l1)
 
-    # Only far bag (>220px) remains -> ignored, stays in LOOT during mandatory 7.0s window (t=10.0 -> elapsed 6.2s)
-    acts_l2 = fsm.step(tracker.update(_snap(10.0, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
+    # Only far bag (>220px) remains -> ignored, stays in LOOT during mandatory 8.0s window (t=11.0 -> elapsed 7.2s)
+    acts_l2 = fsm.step(tracker.update(_snap(11.0, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
     assert fsm.state == BotState.LOOT
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_l2)
 
-    # After mandatory 7.0s elapsed (t=10.9 -> elapsed 7.1s >= 7.0s) with no close bags -> SEARCH_MOB!
-    fsm.step(tracker.update(_snap(10.9, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
+    # After mandatory 8.0s elapsed (t=11.9 -> elapsed 8.1s >= 8.0s) with no close bags -> SEARCH_MOB!
+    fsm.step(tracker.update(_snap(11.9, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
     assert fsm.state == BotState.SEARCH_MOB
 
     # Verify 10.0s hard post_kill_loot_window_sec cap when close bags keep appearing continuously
@@ -931,10 +931,10 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
 
     cfg = load_config("config/default.yaml")
     cfg.perception["hud_fixed_pixel_ui"] = True
-    assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 3.0
+    assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 6.5
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 30.0
     assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
-    assert float(cfg.farming["mandatory_loot_duration_sec"]) == 7.0
+    assert float(cfg.farming["mandatory_loot_duration_sec"]) == 8.0
 
     pipe = PerceptionPipeline(cfg)
 
@@ -974,23 +974,23 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     mobs_self = pipe.mobs.detect(FramePacket(image_bgr=bgr_self, timestamp=2.0))
     assert len(mobs_self) == 1 and abs(mobs_self[0].click_x - 260) <= 4
 
-    # 3. Stage 1 Miss (no hit_damage_visible & no HP drop for 3.0s) -> blacklists 15s & returns to SEARCH_MOB!
+    # 3. Stage 1 Miss (no hit_damage_visible & no HP drop for 6.5s) -> blacklists 15s & returns to SEARCH_MOB!
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
     grass_mob = _mob(cx=310, cy=320, dist=190.0, has_hp=False)
     fsm.step(tracker.update(_snap(1.0, x=615, y=1830, fw=1024, fh=768, mobs=(grass_mob,))))
     assert fsm.state == BotState.COMBAT_WAIT
-    # Character walks briefly (coords change) but never sees hit_damage_visible or HP drop for 3.0s!
-    fsm.step(tracker.update(_snap(2.5, x=617, y=1831, fw=1024, fh=768, mobs=())))
+    # Character walks briefly (coords change) but never sees hit_damage_visible or HP drop for 6.5s!
+    fsm.step(tracker.update(_snap(4.5, x=617, y=1831, fw=1024, fh=768, mobs=())))
     assert fsm.state == BotState.COMBAT_WAIT
-    fsm.step(tracker.update(_snap(4.1, x=618, y=1831, fw=1024, fh=768, mobs=())))
+    fsm.step(tracker.update(_snap(7.6, x=618, y=1831, fw=1024, fh=768, mobs=())))
     assert fsm.state == BotState.SEARCH_MOB
-    # Blacklisted for 15s: clicking same grass coord at t=10.0 is skipped!
-    acts_bl = fsm.step(tracker.update(_snap(10.0, x=618, y=1831, fw=1024, fh=768, mobs=(grass_mob,))))
+    # Blacklisted for 15s: clicking same grass coord at t=12.0 is skipped!
+    acts_bl = fsm.step(tracker.update(_snap(12.0, x=618, y=1831, fw=1024, fh=768, mobs=(grass_mob,))))
     assert fsm.state == BotState.SEARCH_MOB and not any(isinstance(a, ClickScreenIntent) for a in acts_bl)
 
-    # 4. Stage 2 Hit-Confirmed Combat -> 2.5s post-last-hit idle -> MANDATORY 7.0s LOOT -> SEARCH_MOB!
+    # 4. Stage 2 Hit-Confirmed Combat -> 2.5s post-last-hit idle -> MANDATORY 8.0s LOOT -> SEARCH_MOB!
     real_mob = _mob(cx=720, cy=310, dist=210.0, has_hp=False)
     fsm.step(tracker.update(_snap(20.0, x=615, y=1830, fw=1024, fh=768, mobs=(real_mob,))))
     assert fsm.state == BotState.COMBAT_WAIT
@@ -1011,11 +1011,11 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     # At t=26.6 (2.6s >= 2.5s since last hit) -> MANDATORY transition to BotState.LOOT!
     fsm.step(tracker.update(_snap(26.6, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
-    # Mandatory 7.0s LOOT: still in LOOT at t=33.0 (6.4s < 7.0s) tapping E, exits at t=33.7 (7.1s >= 7.0s)!
-    acts_loot_e = fsm.step(tracker.update(_snap(33.0, fw=1024, fh=768)))
+    # Mandatory 8.0s LOOT: still in LOOT at t=34.0 (7.4s < 8.0s) tapping E, exits at t=34.7 (8.1s >= 8.0s)!
+    acts_loot_e = fsm.step(tracker.update(_snap(34.0, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_loot_e)
-    fsm.step(tracker.update(_snap(33.7, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(34.7, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. NAVIGATE_TO_SPOT guard: when spot_dist <= 25u and len(mobs) >= 1, stays in SEARCH_MOB & engages mob!
@@ -1031,3 +1031,87 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     )
     assert fsm.state == BotState.COMBAT_WAIT
     assert any(isinstance(a, ClickScreenIntent) and a.x == 740 and a.y == 320 for a in acts_no_nav)
+
+
+def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_and_spot_radius_55():
+    """Verify watchdog_hp_stagnant never aborts during chase or after hit confirmation,
+    spot farm_radius=55 blocks drift/patrol when mobs>=1 (<=85u), and AHK script has blocking stdin loop."""
+    from pathlib import Path
+
+    cfg = load_config("config/default.yaml")
+    assert cfg.active_route.farm_radius == 55.0
+
+    # 1. AHK v2 bridge script must NOT check gStdIn.AtEOF before ReadLine() (prevents instant empty_reply exit!)
+    ahk_code = "\n".join(
+        ln for ln in Path("ahk/vikings_input_bridge.ahk").read_text(encoding="utf-8").splitlines()
+        if not ln.lstrip().startswith(";")
+    )
+    read_pos = ahk_code.find("gStdIn.ReadLine()")
+    ateof_pos = ahk_code.find("gStdIn.AtEOF")
+    assert read_pos > 0 and (ateof_pos == -1 or ateof_pos > read_pos), "gStdIn.AtEOF must only be checked AFTER ReadLine()!"
+
+    # 2. During a 5.5s chase (pos moving 28 units) with full THP=1.0, watchdog_hp_stagnant MUST NOT abort at t=5.0s!
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    far_mob = _mob(cx=740, cy=310, dist=240.0, has_hp=False)
+    fsm.step(tracker.update(_snap(1.0, x=615, y=1830, fw=1024, fh=768, mobs=(far_mob,))))
+    assert fsm.state == BotState.COMBAT_WAIT
+
+    for step_i in range(1, 6):
+        ts = 1.0 + step_i * 1.1  # t=2.1, 3.2, 4.3, 5.4, 6.5 (passes old 5.0s stagnant HP cutoff!)
+        w_chase = tracker.update(
+            PerceptionSnapshot(
+                timestamp=ts,
+                frame_width=1024,
+                frame_height=768,
+                hp_ratio=1.0,
+                mp_ratio=1.0,
+                coords=CoordReading(x=615 + step_i * 5, y=1830, confidence=0.98),
+                minimap=MinimapReading(),
+                combat_target_hp_visible=True,
+                combat_target_hp_ratio=1.0,
+                hit_damage_visible=(step_i >= 5),  # first hit lands at t=6.5s!
+            )
+        )
+        assert fsm.step(w_chase) == []
+        assert fsm.state == BotState.COMBAT_WAIT
+
+    assert fsm._combat_confirmed is True
+
+    # 3. Once hit_damage_visible confirmed combat, watchdog_hp_stagnant stays DISABLED even across 14s of combat!
+    for ts in (8.5, 10.5, 12.5, 14.5, 16.5, 18.5, 20.5):
+        w_fight = tracker.update(
+            PerceptionSnapshot(
+                timestamp=ts,
+                frame_width=1024,
+                frame_height=768,
+                hp_ratio=1.0,
+                mp_ratio=1.0,
+                coords=CoordReading(x=645, y=1830, confidence=0.98),
+                minimap=MinimapReading(),
+                combat_target_hp_visible=True,
+                combat_target_hp_ratio=0.99,
+                hit_damage_visible=True,
+            )
+        )
+        assert fsm.step(w_fight) == []
+        assert fsm.state == BotState.COMBAT_WAIT
+
+    # 4. 2.5s after last hit stops (t=23.1) -> MANDATORY BotState.LOOT for 8.0s BEFORE any spot-distance check!
+    fsm.step(tracker.update(_snap(23.1, x=645, y=1830, fw=1024, fh=768)))
+    assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(30.5, x=645, y=1830, fw=1024, fh=768)))
+    assert fsm.state == BotState.LOOT  # 7.4s < 8.0s
+    fsm.step(tracker.update(_snap(31.2, x=645, y=1830, fw=1024, fh=768)))
+    assert fsm.state == BotState.SEARCH_MOB
+
+    # 5. At drift=72u (outside 55u farm_radius, <=85u) with 2 visible mobs -> attacks mob instead of drifting/patrolling!
+    spot = fsm.navigator.spot_center
+    m_a = _mob(cx=710, cy=320, dist=180.0, has_hp=False)
+    m_b = _mob(cx=300, cy=320, dist=240.0, has_hp=False)
+    acts_atk = fsm.step(
+        tracker.update(_snap(32.0, x=int(spot.x + 72), y=int(spot.y), fw=1024, fh=768, mobs=(m_a, m_b)))
+    )
+    assert fsm.state == BotState.COMBAT_WAIT
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 710 and a.y == 320 for a in acts_atk)

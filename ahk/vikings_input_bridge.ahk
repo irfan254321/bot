@@ -31,24 +31,30 @@ SetWinDelay -1
 
 global gHeldKeys := Map()
 global gHeldButtons := Map()
-global gStdIn := FileOpen("*", "r")
-global gStdOut := FileOpen("*", "w")
+global gStdIn := FileOpen("*", "r", "UTF-8")
+global gStdOut := FileOpen("*", "w", "UTF-8")
 
 OnExit(CleanupAllInputs)
 
 WriteReply("READY|AHK_V2")
 
+; Blocking persistent stdin loop: DO NOT check gStdIn.AtEOF before ReadLine()!
+; On Windows anonymous pipes, AtEOF can return true when the buffer is momentarily empty.
 while true {
-    if gStdIn.AtEOF {
-        Sleep 10
-        break
-    }
-    line := ""
+    rawLine := ""
     try {
-        line := Trim(gStdIn.ReadLine(), "`r`n `t")
+        rawLine := gStdIn.ReadLine()
     } catch {
         break
     }
+    if (rawLine = "") {
+        if gStdIn.AtEOF {
+            break
+        }
+        Sleep 10
+        continue
+    }
+    line := Trim(rawLine, "`r`n `t")
     if (line = "") {
         continue
     }

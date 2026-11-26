@@ -4,7 +4,7 @@ active_route: gold_rustler_spot
 
 routes:
   gold_rustler_spot:
-    farm_radius: 22.0
+    farm_radius: 55.0
     arrival_radius: 7.0
     loop: true
     # Calibrated from Video 4 (19-39-18.mp4): Addon Keep (1409,1779) -> Gold Rustler (624,1818)
@@ -57,7 +57,7 @@ routes:
         y: 1844.0
 
   gem_rustler_spot:
-    farm_radius: 22.0
+    farm_radius: 55.0
     arrival_radius: 7.0
     loop: true
     # Calibrated from Video 2026-11-25_19-18-21.mp4: Addon Keep (1409,1779) -> New Gem Rustler Spot (1195,1568)
@@ -107,7 +107,7 @@ routes:
         y: 1580.0
 
   gem_rustler_fallback_spot:
-    farm_radius: 22.0
+    farm_radius: 55.0
     arrival_radius: 7.0
     loop: true
     # Fallback Gem Rustler spot after 2 deaths: Addon Keep (1409,1779) -> Old Gem Rustler (1092,1115)
@@ -157,7 +157,7 @@ routes:
         y: 1129.0
 
   metal_rustler_spot:
-    farm_radius: 22.0
+    farm_radius: 55.0
     arrival_radius: 7.0
     loop: true
     # Calibrated from Video 1 (19-36-01.mp4): Addon Keep (1409,1779) -> Riverbank (1197,1567)

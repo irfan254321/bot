@@ -47,19 +47,19 @@ class FarmingFSM:
         self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
-        self.combat_hit_confirm_timeout_sec: float = float(f.get("combat_hit_confirm_timeout_sec", 3.0))
+        self.combat_hit_confirm_timeout_sec: float = float(f.get("combat_hit_confirm_timeout_sec", 6.5))
         self.combat_confirmed_max_sec: float = float(f.get("combat_confirmed_max_sec", 30.0))
         self.combat_post_last_hit_idle_sec: float = float(f.get("combat_post_last_hit_idle_sec", 2.5))
         self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
         self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
         self.combat_blind_timeout_sec: float = float(f.get("combat_blind_timeout_sec", 10.0))
-        self.combat_stagnant_hp_sec: float = float(f.get("combat_stagnant_hp_sec", 5.0))
+        self.combat_stagnant_hp_sec: float = float(f.get("combat_stagnant_hp_sec", 12.0))
         self.combat_hard_timeout_sec: float = float(f.get("combat_hard_timeout_sec", 28.0))
         self.combat_zero_drop_kill_sec: float = float(f.get("combat_zero_drop_kill_sec", 1.6))
         self.loot_clear_confirm_frames: int = max(2, int(f.get("loot_clear_confirm_frames", 4)))
         self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 3)))
         self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 24)))
-        self.mandatory_loot_duration_sec: float = max(2.0, float(f.get("mandatory_loot_duration_sec", 7.0)))
+        self.mandatory_loot_duration_sec: float = max(2.0, float(f.get("mandatory_loot_duration_sec", 8.0)))
         self.post_kill_loot_window_sec: float = max(
             self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 10.0))
         )
@@ -626,12 +626,12 @@ class FarmingFSM:
         return []
 
     def _handle_navigate(self, world: WorldState, now: float) -> list[ActionIntent]:
-        # Priority 0: If already within 60 coord units of spot center and a safe Gold Rustler is visible,
-        # engage it directly instead of rotating camera / risking stuck_navigating!
+        # Priority 0: If within 85 coord units of spot center and a safe Gold Rustler is visible,
+        # engage it directly instead of rotating camera / patrolling!
         if (
             self.mode == BotMode.FULL
             and world.coords_smoothed is not None
-            and world.coords_smoothed.distance_to(self.navigator.spot_center) <= 60.0
+            and world.coords_smoothed.distance_to(self.navigator.spot_center) <= 85.0
             and world.mobs
         ):
             fw = max(1, world.snapshot.frame_width)
@@ -677,7 +677,7 @@ class FarmingFSM:
         if rep_intents is not None:
             return rep_intents
 
-        # Priority 3: Stay inside farming spot leash (do NOT interrupt with NAVIGATE_TO_SPOT if <=25u and mobs visible!)
+        # Priority 3: Stay inside farming spot leash (block drifted_outside_spot_area when mobs>=1 unless drift > 85u!)
         spot_dist = (
             world.coords_smoothed.distance_to(self.navigator.spot_center)
             if world.coords_smoothed is not None
@@ -686,7 +686,7 @@ class FarmingFSM:
         if (
             self.mode == BotMode.FULL
             and self.navigator.is_outside_leash_exit(world.coords_smoothed)
-            and not (spot_dist <= 25.0 and len(world.mobs) >= 1)
+            and not (len(world.mobs) >= 1 and spot_dist <= 85.0)
         ):
             self.tracker.waypoint_index = 0
             self.transition(BotState.NAVIGATE_TO_SPOT, now, "drifted_outside_spot_area")
@@ -724,7 +724,11 @@ class FarmingFSM:
             if any(isinstance(a, DragCameraIntent) for a in sweep):
                 self._post_drag_settle_until = now + 0.18
             self._sweeps_in_search += 1
-            if self.mode == BotMode.FULL and self._sweeps_in_search >= self.max_sweeps_before_patrol:
+            if (
+                self.mode == BotMode.FULL
+                and not world.mobs
+                and self._sweeps_in_search >= self.max_sweeps_before_patrol
+            ):
                 self.navigator.advance_waypoint()
                 self.transition(BotState.NAVIGATE_TO_SPOT, now, "patrol_next_spot_point")
                 return []
@@ -742,7 +746,7 @@ class FarmingFSM:
             self.transition(BotState.SEARCH_MOB, now, "anti_ks_contested_drop")
             return []
 
-        # 2. Update movement & active approach distance progress (User Refinement #1!)
+        # 2. Update movement & active approach distance progress (chase_in_progress!)
         if world.coords_smoothed is not None:
             if self._combat_anchor_pos is None:
                 self._combat_anchor_pos = world.coords_smoothed
@@ -750,6 +754,8 @@ class FarmingFSM:
             elif world.coords_smoothed.distance_to(self._combat_anchor_pos) >= 0.8:
                 self._combat_anchor_pos = world.coords_smoothed
                 self._combat_last_move_ts = now
+                # While character is actively running toward target, NEVER accumulate stagnant HP time!
+                self._combat_last_hp_drop_ts = now
 
         hp_vis = False
         hp_val: float | None = None
@@ -918,8 +924,15 @@ class FarmingFSM:
             )
             return []
 
-        # 6. Watchdog Stagnant HP while standing still
-        if hp_vis and (now - self._combat_last_hp_drop_ts) >= self.combat_stagnant_hp_sec and idle_no_move >= 4.0:
+        # 6. Watchdog Stagnant HP: DISABLED completely when combat_confirmed==True OR while character is chasing!
+        chase_in_progress = idle_no_move < 2.0
+        if (
+            (not self._combat_confirmed)
+            and (not chase_in_progress)
+            and hp_vis
+            and (now - self._combat_last_hp_drop_ts) >= self.combat_stagnant_hp_sec
+            and idle_no_move >= 4.0
+        ):
             logger.info("Watchdog Stagnant HP: no damage for %.1fs -> aborting target", now - self._combat_last_hp_drop_ts)
             self._record_aborted_mob(world.locked_mob, now, ttl_sec=6.0)
             self.tracker.clear_target_lock()
