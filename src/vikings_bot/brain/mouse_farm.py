@@ -35,12 +35,15 @@ class MouseFarmController:
 
         self.mob_max_engage_dist_px: float = float(f.get("mob_max_engage_dist_px", 560.0))
         self.mob_min_y_ratio: float = float(f.get("mob_min_y_ratio", 0.14))
+        self.anti_ks_min_untouched_hp_ratio: float = float(
+            config.perception.get("anti_ks_min_untouched_hp_ratio", 0.94)
+        )
         self.loot_e_close_dist_px: float = float(f.get("loot_e_close_dist_px", 85.0))
-        self.loot_e_interval_sec: float = float(f.get("loot_e_interval_sec", 0.35))
-        self.loot_click_interval_sec: float = float(f.get("loot_click_interval_sec", 0.35))
+        self.loot_e_interval_sec: float = float(f.get("loot_e_interval_sec", 0.30))
+        self.loot_click_interval_sec: float = float(f.get("loot_click_interval_sec", 0.30))
         self.loot_max_local_dist_px: float = float(f.get("loot_max_local_dist_px", 360.0))
         self.loot_close_radius_px: float = float(
-            f.get("loot_close_radius_px", f.get("loot_entry_close_dist_px", 280.0))
+            f.get("loot_close_radius_px", f.get("loot_entry_close_dist_px", 310.0))
         )
         self.loot_entry_close_dist_px: float = float(f.get("loot_entry_close_dist_px", self.loot_close_radius_px))
         self.loot_entry_kill_window_sec: float = float(f.get("loot_entry_kill_window_sec", 4.0))
@@ -225,7 +228,9 @@ class MouseFarmController:
         for mob in ordered_mobs:
             if mob.contested:
                 continue
-            if not allow_wounded and mob.has_hp_bar and (mob.hp_ratio_est is None or mob.hp_ratio_est < 0.95):
+            if not allow_wounded and mob.has_hp_bar and (
+                mob.hp_ratio_est is None or mob.hp_ratio_est < self.anti_ks_min_untouched_hp_ratio
+            ):
                 continue
             if is_ignored is not None and is_ignored(mob):
                 continue

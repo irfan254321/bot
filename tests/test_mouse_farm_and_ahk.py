@@ -685,7 +685,7 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     cfg = load_config("config/default.yaml")
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
-    assert int(cfg.farming["loot_close_radius_px"]) == 280
+    assert int(cfg.farming["loot_close_radius_px"]) == 310
 
     # (a) Pipeline with skip_all_object_detectors=True (COMBAT_WAIT):
     #     disables GoldRustlerDetector, GoldBagDetector, and CorpseDetector, while reading Target HP!
@@ -769,9 +769,9 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     assert fsm.state == BotState.LOOT
     assert fsm.kills_count == 1
 
-    # During LOOT: another mob + far Gold Bag (310px > 220px) + close Gold Bag (130px <= 220px)
+    # During LOOT: another mob + far Gold Bag (350px > 310px) + close Gold Bag (130px <= 310px)
     other_mob = _mob(cx=320, cy=320, dist=200.0, has_hp=False)
-    far_bag = _bag(cx=200, cy=420, dist=310.0)
+    far_bag = _bag(cx=160, cy=420, dist=350.0)
     close_bag = _bag(cx=440, cy=450, dist=130.0)
     w_loot1 = tracker.update(_snap(4.2, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag, close_bag)))
     ov_loot = build_overlay_frame_data(
@@ -784,12 +784,13 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     assert any(isinstance(a, ClickScreenIntent) and a.x == 440 and a.y == 450 for a in acts_l1)
     assert not any(isinstance(a, DragCameraIntent) for a in acts_l1)
 
-    # Only far bag (>280px) remains -> ignored, stays in LOOT during initial 2.0s window (t=5.5 -> elapsed 1.7s)
+    # Only far bag (>310px) remains -> ignored, stays in LOOT during initial 2.0s window (t=5.5 -> elapsed 1.7s)
+    far_bag = _bag(cx=160, cy=420, dist=350.0)
     acts_l2 = fsm.step(tracker.update(_snap(5.5, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
     assert fsm.state == BotState.LOOT
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_l2)
 
-    # After >=2.0s elapsed AND >=1.5s consecutive empty (empty since 5.5 -> 7.1 is 1.6s empty) -> SEARCH_MOB!
+    # After >=2.0s elapsed AND >=1.2s consecutive empty (empty since 5.5 -> 7.1 is 1.6s empty) -> SEARCH_MOB!
     fsm.step(tracker.update(_snap(7.1, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
     assert fsm.state == BotState.SEARCH_MOB
 
@@ -866,8 +867,8 @@ def test_combat_wait_hard_gate_post_kill_loot_e_tap_and_hybrid_green_hp_bar_dete
     assert len(snap_scan.gold_bags) == 0, "GoldBagDetector must be OFF outside BotState.LOOT!"
     assert calls["loot"] == 0
     for m in snap_scan.mobs:
-        assert not (430 <= m.click_x <= 595 and 305 <= m.click_y <= 480)
-        assert any(abs(m.click_x - (bx + 26)) <= 4 and abs(m.click_y - (by + 38)) <= 2 for bx, by in mob_bars)
+        assert not (472 <= m.click_x <= 552 and 350 <= m.click_y <= 432)
+        assert any(abs(m.click_x - (bx + 26)) <= 4 and abs(m.click_y - (by + 42)) <= 2 for bx, by in mob_bars)
 
     # 3. FSM COMBAT_WAIT Hard-Gate: injecting fake mobs + fake bags NEVER jumps to LOOT and returns len(actions)==0!
     tracker = WorldStateTracker()
@@ -899,13 +900,13 @@ def test_combat_wait_hard_gate_post_kill_loot_e_tap_and_hybrid_green_hp_bar_dete
     assert len(acts_cw) == 0
     assert fsm.active_lock is None
 
-    # 4. Post-kill LOOT taps E every 0.35s without DRAG_MMB
+    # 4. Post-kill LOOT taps E every 0.30s without DRAG_MMB
     fsm.transition(BotState.LOOT, 5.0, "test_e_tap")
     acts_e1 = fsm.step(tracker.update(_snap(5.0, fw=1024, fh=768, loot=())))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_e1)
     assert not any(isinstance(a, DragCameraIntent) for a in acts_e1)
-    assert fsm.step(tracker.update(_snap(5.2, fw=1024, fh=768, loot=()))) == []  # < 0.35s cooldown
-    acts_e2 = fsm.step(tracker.update(_snap(5.4, fw=1024, fh=768, loot=())))
+    assert fsm.step(tracker.update(_snap(5.15, fw=1024, fh=768, loot=()))) == []  # < 0.30s cooldown
+    acts_e2 = fsm.step(tracker.update(_snap(5.35, fw=1024, fh=768, loot=())))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_e2)
 
     # 5. GoldBagDetector rejects thin vertical monster-arm gleam (h > w * 1.25) AND gleam +130px below HP bar!
@@ -931,9 +932,10 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
 
     cfg = load_config("config/default.yaml")
     cfg.perception["hud_fixed_pixel_ui"] = True
-    assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 6.5
+    assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
+    assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 5.0
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
-    assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
+    assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 5.0
     assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
 
     pipe = PerceptionPipeline(cfg)
@@ -962,13 +964,11 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     )
     assert snap_nohit.hit_damage_visible is False
 
-    # 2. Expanded SELF zone (x=425..600, y=300..555): points (523, 532) and (500, 461) NEVER targeted!
+    # 2. Tight SELF zone (x=472..552, y=350..432): bar inside SELF ignored, legitimate mob outside SELF detected!
     bgr_self = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
     green_bar = cv2.cvtColor(np.full((4, 52, 3), (62, 210, 210), dtype=np.uint8), cv2.COLOR_HSV2BGR)
-    # Bar whose click_y = 494 + 38 = 532 at cx=523 (inside SELF x=425..600, y=300..555!)
-    bgr_self[494:498, 497:549] = green_bar
-    # Bar whose click_y = 423 + 38 = 461 at cx=500 (inside SELF!)
-    bgr_self[423:427, 474:526] = green_bar
+    # Bar inside tight SELF x=472..552, y=350..432
+    bgr_self[368:372, 486:538] = green_bar
     # Legitimate Gold Rustler outside SELF at (260, 260)
     bgr_self[260:264, 234:286] = green_bar
     mobs_self = pipe.mobs.detect(FramePacket(image_bgr=bgr_self, timestamp=2.0))
@@ -1005,17 +1005,17 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
         )
         assert fsm.step(w_h) == []
         assert fsm.state == BotState.COMBAT_WAIT and fsm._combat_confirmed is True
-    # Still within 2.5s of last hit (t=26.0 -> 2.0s idle) -> stays in COMBAT_WAIT
-    assert fsm.step(tracker.update(_snap(26.0, fw=1024, fh=768))) == []
+    # Still within 5.0s of last hit (t=28.0 -> 4.0s idle) -> stays in COMBAT_WAIT
+    assert fsm.step(tracker.update(_snap(28.0, fw=1024, fh=768))) == []
     assert fsm.state == BotState.COMBAT_WAIT
-    # At t=26.6 (2.6s >= 2.5s since last hit) -> MANDATORY transition to BotState.LOOT!
-    fsm.step(tracker.update(_snap(26.6, fw=1024, fh=768)))
+    # At t=29.1 (5.1s >= 5.0s since last hit) -> MANDATORY transition to BotState.LOOT!
+    fsm.step(tracker.update(_snap(29.1, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
-    # Post-kill LOOT: stays in LOOT during initial 2.0s window tapping E, exits after >=2.0s + 1.5s empty!
-    acts_loot_e = fsm.step(tracker.update(_snap(27.0, fw=1024, fh=768)))
+    # Post-kill LOOT: stays in LOOT during initial 2.0s window tapping E, exits after >=2.0s + 1.2s empty!
+    acts_loot_e = fsm.step(tracker.update(_snap(29.5, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_loot_e)
-    fsm.step(tracker.update(_snap(28.8, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(31.2, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. NAVIGATE_TO_SPOT guard: when spot_dist <= 25u and len(mobs) >= 1, stays in SEARCH_MOB & engages mob!
@@ -1059,7 +1059,7 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
     assert fsm.state == BotState.COMBAT_WAIT
 
     for step_i in range(1, 6):
-        ts = 1.0 + step_i * 1.1  # t=2.1, 3.2, 4.3, 5.4, 6.5 (passes old 5.0s stagnant HP cutoff!)
+        ts = 1.0 + step_i * 0.9  # t=1.9, 2.8, 3.7, 4.6, 5.5 (first hit lands at t=4.6s < 5.0s abort!)
         w_chase = tracker.update(
             PerceptionSnapshot(
                 timestamp=ts,
@@ -1071,7 +1071,7 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
                 minimap=MinimapReading(),
                 combat_target_hp_visible=True,
                 combat_target_hp_ratio=1.0,
-                hit_damage_visible=(step_i >= 5),  # first hit lands at t=6.5s!
+                local_hit_damage_visible=(step_i >= 4),  # first local hit lands at t=4.6s!
             )
         )
         assert fsm.step(w_chase) == []
@@ -1092,18 +1092,18 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
                 minimap=MinimapReading(),
                 combat_target_hp_visible=True,
                 combat_target_hp_ratio=0.99,
-                hit_damage_visible=True,
+                local_hit_damage_visible=True,
             )
         )
         assert fsm.step(w_fight) == []
         assert fsm.state == BotState.COMBAT_WAIT
 
-    # 4. 2.5s after last hit stops (t=23.1) -> MANDATORY BotState.LOOT BEFORE any spot-distance check!
-    fsm.step(tracker.update(_snap(23.1, x=645, y=1830, fw=1024, fh=768)))
-    assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(24.0, x=645, y=1830, fw=1024, fh=768)))
-    assert fsm.state == BotState.LOOT  # inside initial 2.0s window
+    # 4. 5.0s after last hit stops (t=25.6) -> MANDATORY BotState.LOOT BEFORE any spot-distance check!
     fsm.step(tracker.update(_snap(25.6, x=645, y=1830, fw=1024, fh=768)))
+    assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(26.5, x=645, y=1830, fw=1024, fh=768)))
+    assert fsm.state == BotState.LOOT  # inside initial 2.0s window
+    fsm.step(tracker.update(_snap(28.0, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. At drift=72u (outside 55u farm_radius, <=85u) with 2 visible mobs -> attacks mob instead of drifting/patrolling!
@@ -1206,3 +1206,219 @@ def test_ref_loot_bags_6_piles_detected_and_clicked_sequentially_in_loot():
     assert fsm.state == BotState.LOOT
     fsm.step(tracker.update(_snap(14.6, fw=1024, fh=768, loot=())))
     assert fsm.state == BotState.SEARCH_MOB
+
+
+def test_anti_ks_player_cyan_bar_external_damage_zone_wounded_hp_and_loot_avoidance():
+    """Verify Anti-KS: cyan player HP bar (<=240px), external floating damage zone (<=220px, TTL 6.0s),
+    wounded monster rejection (HP < 94%), and LOOT avoidance near other players / external damage zones."""
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    assert cfg.perception["anti_ks_enabled"] is True
+    assert int(cfg.perception["anti_ks_player_radius_px"]) == 240
+    assert int(cfg.perception["anti_ks_damage_zone_radius_px"]) == 220
+    assert float(cfg.perception["anti_ks_damage_zone_ttl_sec"]) == 6.0
+    assert float(cfg.perception["anti_ks_min_untouched_hp_ratio"]) == 0.94
+
+    pipe = PerceptionPipeline(cfg)
+    hsv_bg = np.zeros((768, 1024, 3), dtype=np.uint8)
+    hsv_bg[:, :] = (28, 120, 62)
+
+    # 1. Cyan player HP bar at (240, 320) + SELF cyan bar at (485, 380) + 2 mobs (1 within 240px of player, 1 far away)
+    bgr_pl = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    cyan_bar = cv2.cvtColor(np.full((4, 58, 3), (94, 150, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    green_bar = cv2.cvtColor(np.full((4, 68, 3), (62, 210, 210), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr_pl[320:324, 211:269] = cyan_bar  # other player at cx=240, cy=322
+    bgr_pl[380:384, 483:541] = cyan_bar  # SELF player inside x=435..590, y=305..465 -> ignored!
+    bgr_pl[280:284, 300:368] = green_bar  # Mob near other player (~95px <= 240px -> CONTESTED!)
+    bgr_pl[280:284, 740:808] = green_bar  # Far untouched mob (~534px > 240px -> SAFE!)
+
+    snap_pl = pipe.analyze(
+        FramePacket(image_bgr=bgr_pl, timestamp=1.0),
+        current_state=BotState.SEARCH_MOB,
+        check_interface_mode=False,
+    )
+    assert len(snap_pl.other_players) == 1 and abs(snap_pl.other_players[0][0] - 240) <= 6
+    assert len(snap_pl.mobs) == 1 and abs(snap_pl.mobs[0].click_x - 774) <= 6
+    assert len(snap_pl.contested_mobs) == 1 and abs(snap_pl.contested_mobs[0].click_x - 334) <= 6
+
+    # 2. External floating damage numbers (stealth Sin hitting mob at (490, 260) while SELF is idle in SEARCH_MOB!)
+    bgr_dmg = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    dmg_digit = cv2.cvtColor(np.full((22, 12, 3), (22, 160, 210), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr_dmg[245:267, 485:497] = dmg_digit  # floating '9' at (491, 256)
+    snap_dmg = pipe.analyze(
+        FramePacket(image_bgr=bgr_dmg, timestamp=2.0),
+        current_state=BotState.SEARCH_MOB,
+        check_interface_mode=False,
+    )
+    assert len(snap_dmg.external_damage_points) >= 1
+    assert any(abs(dx - 491) <= 15 and abs(dy - 256) <= 15 for dx, dy in snap_dmg.external_damage_points)
+
+    # 3. FSM Anti-KS: rejects mob under external damage zone (TTL 6.0s) AND rejects wounded mob (HP=0.85 < 0.94)!
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+
+    mob_under_dmg = _mob(cx=500, cy=300, dist=140.0, has_hp=False)
+    mob_wounded = _mob(cx=780, cy=310, dist=270.0, has_hp=True, hp=0.85)
+    w_ks = tracker.update(
+        PerceptionSnapshot(
+            timestamp=5.0,
+            frame_width=1024,
+            frame_height=768,
+            hp_ratio=1.0,
+            mp_ratio=1.0,
+            coords=CoordReading(x=615, y=1830, confidence=0.98),
+            minimap=MinimapReading(),
+            mobs=(mob_under_dmg, mob_wounded),
+            external_damage_points=((491, 256),),
+        )
+    )
+    acts_ks = fsm.step(w_ks)
+    assert fsm.state == BotState.SEARCH_MOB, "Must NOT engage mob under external damage zone or wounded (<94%) mob!"
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_ks)
+    assert len(fsm.external_combat_zones) == 1
+
+    # 4. Anti-KS in BotState.LOOT: skips GoldBag within <=220px of other_players / external_combat_zones, clicks safe bag!
+    fsm.transition(BotState.LOOT, 6.0, "test_anti_ks_loot")
+    bag_in_dmg = _bag(cx=510, cy=320, dist=120.0)   # ~67px from external damage zone (491, 256) -> SKIP!
+    bag_near_pl = _bag(cx=290, cy=340, dist=225.0)  # ~53px from other player (240, 322) -> SKIP!
+    bag_safe = _bag(cx=720, cy=410, dist=210.0)     # >220px from both -> CLICK!
+    w_loot_ks = tracker.update(
+        PerceptionSnapshot(
+            timestamp=6.5,
+            frame_width=1024,
+            frame_height=768,
+            hp_ratio=1.0,
+            mp_ratio=1.0,
+            coords=CoordReading(x=615, y=1830, confidence=0.98),
+            minimap=MinimapReading(),
+            other_players=((240, 322),),
+            loot=(bag_in_dmg, bag_near_pl, bag_safe),
+        )
+    )
+    acts_loot_ks = fsm.step(w_loot_ks)
+    clicks = [a for a in acts_loot_ks if isinstance(a, ClickScreenIntent)]
+    assert len(clicks) == 1 and clicks[0].x == 720 and clicks[0].y == 410
+
+
+def test_ref_gold_scatter_10_piles_and_ref_close_mobs_regression():
+    """Verify (1) ref_gold_scatter.jpg detects >=10 gold piles (both left & right) with 0 FP on grass/HUD/SELF,
+    and (2) ref_close_mobs detects BOTH close Gold Rustlers (green HP bar next to SELF + right-side silhouette)."""
+    from pathlib import Path
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    pipe = PerceptionPipeline(cfg)
+
+    # 1. Real ref_gold_scatter.jpg regression (resized to 1024x768)
+    scatter_path = Path(__file__).parent / "fixtures" / "ref_gold_scatter.jpg"
+    assert scatter_path.exists(), f"Missing fixture: {scatter_path}"
+    raw_sc = cv2.imread(str(scatter_path), cv2.IMREAD_COLOR)
+    assert raw_sc is not None
+    img_768 = cv2.resize(raw_sc, (1024, 768), interpolation=cv2.INTER_AREA)
+    pkt_sc = FramePacket(image_bgr=img_768, timestamp=1.0, source_name="ref_gold_scatter.jpg")
+
+    # Hard-gate: OFF in COMBAT_WAIT & SEARCH_MOB, passive ON in PAUSED, active ON in LOOT (<=310px)
+    assert pipe.analyze(pkt_sc, current_state=BotState.COMBAT_WAIT, check_interface_mode=False).gold_bags == ()
+    assert pipe.analyze(pkt_sc, current_state=BotState.SEARCH_MOB, check_interface_mode=False).gold_bags == ()
+    snap_paused = pipe.analyze(pkt_sc, current_state=BotState.PAUSED, check_interface_mode=False)
+    snap_loot = pipe.analyze(pkt_sc, current_state=BotState.LOOT, check_interface_mode=False)
+    assert len(snap_paused.gold_bags) >= 10
+    assert len(snap_loot.gold_bags) >= 10, f"Expected >=10 gold piles on ref_gold_scatter.jpg, got {len(snap_loot.gold_bags)}: {snap_loot.gold_bags}"
+    # Both left side (x < 450) and right side (x > 570) piles detected, zero inside SELF (468..556, 345..428) or chat!
+    assert sum(1 for b in snap_loot.gold_bags if b.click_x < 450) >= 2
+    assert sum(1 for b in snap_loot.gold_bags if b.click_x > 570) >= 8
+    for b in snap_loot.gold_bags:
+        assert not (468 <= b.click_x <= 556 and 345 <= b.click_y <= 428), f"FP in SELF: {b}"
+        assert not (b.click_x >= 442 and b.click_y >= 518), f"FP in chat: {b}"
+
+    # 2. Close-range Gold Rustler regression (ref_close_mobs.jpg or calibrated 1024x768 equivalent):
+    #    - Left mob at x=300..475, y=355..565 with standalone green HP bar at x=352..444, y=394 (NO purple nameplate!)
+    #    - Right mob at x=775..955, y=325..565 with metallic/dark-bronze silhouette (NO nameplate & NO HP bar!)
+    #    - SELF cyan HP bar at x=480..544, y=385 -> ignored!
+    close_path = Path(__file__).parent / "fixtures" / "ref_close_mobs.jpg"
+    if close_path.exists():
+        img_cm = cv2.imread(str(close_path), cv2.IMREAD_COLOR)
+        assert img_cm is not None
+    else:
+        hsv_cm = np.zeros((768, 1024, 3), dtype=np.uint8)
+        hsv_cm[:, :] = (32, 125, 92)  # daylight olive-green grass (med_v >= 72)
+        img_cm = cv2.cvtColor(hsv_cm, cv2.COLOR_HSV2BGR)
+        # SELF cyan HP bar inside tight SELF (472..552, 350..432)
+        img_cm[385:389, 480:544] = cv2.cvtColor(np.full((4, 64, 3), (94, 150, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+        # Left close mob standalone green HP bar at x=352..444, y=394 (92px wide, 5px tall, NO nameplate!)
+        img_cm[394:399, 352:444] = cv2.cvtColor(np.full((5, 92, 3), (60, 200, 205), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+        # Right close mob silhouette at x=785..935, y=340..520 (dark bronze + metallic gray body, NO nameplate/HP bar)
+        img_cm[340:520, 785:935] = cv2.cvtColor(np.full((180, 150, 3), (18, 70, 42), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+        img_cm[365:445, 815:905] = cv2.cvtColor(np.full((80, 90, 3), (110, 30, 125), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+
+    mobs_cm = pipe.mobs.detect(FramePacket(image_bgr=img_cm, timestamp=2.0, source_name="ref_close_mobs.jpg"))
+    assert len(mobs_cm) >= 2, f"Expected >=2 close-range Gold Rustlers (HP bar + silhouette), got {len(mobs_cm)}: {mobs_cm}"
+    assert any(300 <= m.click_x <= 475 and abs(m.click_y - 436) <= 10 for m in mobs_cm), f"Missed left HP-bar mob: {mobs_cm}"
+    assert any(775 <= m.click_x <= 955 and 325 <= m.click_y <= 565 for m in mobs_cm), f"Missed right silhouette mob: {mobs_cm}"
+
+
+def test_local_hit_damage_5s_no_hit_abort_and_5s_post_hit_loot_transition():
+    """Verify (a) local_hit_damage_visible ignores faraway damage & 5.0s without hit aborts straight to SEARCH_MOB,
+    and (b) confirmed local hit stays locked up to 5.0s after last hit then enters LOOT (10.0s)."""
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    pipe = PerceptionPipeline(cfg)
+
+    hsv_bg = np.zeros((768, 1024, 3), dtype=np.uint8)
+    hsv_bg[:, :] = (28, 120, 62)
+
+    # Faraway damage number at x=180, y=260 (outside local x=340..685) -> local_hit_damage_visible MUST be False!
+    bgr_far = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    dmg = cv2.cvtColor(np.full((18, 10, 3), (20, 200, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr_far[260:278, 180:190] = dmg
+    snap_far = pipe.analyze(FramePacket(image_bgr=bgr_far, timestamp=1.0), current_state=BotState.COMBAT_WAIT, check_interface_mode=False)
+    assert snap_far.local_hit_damage_visible is False
+
+    # Near-character damage number at x=500, y=280 (inside x=340..685, y=190..465) -> local_hit_damage_visible MUST be True!
+    bgr_near = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    bgr_near[280:298, 500:510] = dmg
+    snap_near = pipe.analyze(FramePacket(image_bgr=bgr_near, timestamp=1.5), current_state=BotState.COMBAT_WAIT, check_interface_mode=False)
+    assert snap_near.local_hit_damage_visible is True
+
+    # (a) 5.0s without local_hit_damage_visible -> abort directly to SEARCH_MOB (NEVER LOOT) + blacklist 15s!
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    m1 = _mob(cx=320, cy=330, dist=180.0, has_hp=False)
+    fsm.step(tracker.update(_snap(10.0, x=615, y=1830, fw=1024, fh=768, mobs=(m1,))))
+    assert fsm.state == BotState.COMBAT_WAIT
+    fsm.step(tracker.update(_snap(13.0, x=618, y=1832, fw=1024, fh=768)))
+    assert fsm.state == BotState.COMBAT_WAIT
+    fsm.step(tracker.update(_snap(15.1, x=619, y=1832, fw=1024, fh=768)))
+    assert fsm.state == BotState.SEARCH_MOB, "Must abort straight to SEARCH_MOB after 5.0s without local hit!"
+
+    # (b) With local_hit_damage_visible -> stays in COMBAT_WAIT until 5.0s after last hit, then enters LOOT (10.0s)!
+    m2 = _mob(cx=720, cy=320, dist=200.0, has_hp=False)
+    fsm.step(tracker.update(_snap(20.0, x=615, y=1830, fw=1024, fh=768, mobs=(m2,))))
+    assert fsm.state == BotState.COMBAT_WAIT
+    w_hit = tracker.update(
+        PerceptionSnapshot(
+            timestamp=22.0, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+            coords=CoordReading(x=615, y=1830, confidence=0.98), minimap=MinimapReading(),
+            local_hit_damage_visible=True,
+        )
+    )
+    assert fsm.step(w_hit) == [] and fsm.state == BotState.COMBAT_WAIT
+    assert fsm.step(tracker.update(_snap(26.5, fw=1024, fh=768))) == [] and fsm.state == BotState.COMBAT_WAIT  # 4.5s < 5.0s
+    fsm.step(tracker.update(_snap(27.1, fw=1024, fh=768)))  # 5.1s >= 5.0s since last local hit
+    assert fsm.state == BotState.LOOT

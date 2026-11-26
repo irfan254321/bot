@@ -31,8 +31,11 @@ class GoldRustlerDetector:
         p = config.perception
         self.hud_fixed_pixel_ui = bool(p.get("hud_fixed_pixel_ui", False))
         self.click_y_top_ratio = float(p.get("click_y_top_ratio", 0.35))
+        self.anti_ks_enabled = bool(p.get("anti_ks_enabled", True))
+        self.anti_ks_player_radius_px = float(p.get("anti_ks_player_radius_px", 240.0))
+        self.anti_ks_min_untouched_hp_ratio = float(p.get("anti_ks_min_untouched_hp_ratio", 0.94))
         self.ks_melee_radius_px = float(p.get("ks_melee_radius_px", 75.0))
-        self.ks_hp_damaged_threshold = float(p.get("ks_hp_damaged_threshold", 0.98))
+        self.ks_hp_damaged_threshold = float(p.get("ks_hp_damaged_threshold", self.anti_ks_min_untouched_hp_ratio))
 
         self.np_lo = np.array(p.get("gold_nameplate_hsv_lower", [138, 16, 48]), dtype=np.uint8)
         self.np_hi = np.array(p.get("gold_nameplate_hsv_upper", [179, 215, 255]), dtype=np.uint8)
@@ -57,6 +60,9 @@ class GoldRustlerDetector:
         # Friendly / other player green nameplate HSV (brighter & higher V than grass)
         self.pl_green_lo = np.array(p.get("player_nameplate_hsv_lower", [48, 90, 155]), dtype=np.uint8)
         self.pl_green_hi = np.array(p.get("player_nameplate_hsv_upper", [84, 255, 255]), dtype=np.uint8)
+        # Cyan/light-blue other-player HP bar HSV (H=82..105, S>=85, V>=150, w=35..95, h=3..8 outside SELF)
+        self.pl_cyan_lo = np.array(p.get("player_hp_cyan_hsv_lower", [82, 85, 150]), dtype=np.uint8)
+        self.pl_cyan_hi = np.array(p.get("player_hp_cyan_hsv_upper", [105, 255, 255]), dtype=np.uint8)
         self._kernels: dict[tuple[int, int], np.ndarray] = {}
 
     def _get_kernel(self, kx: int, ky: int) -> np.ndarray:
@@ -142,6 +148,8 @@ class GoldRustlerDetector:
                 dense_rows[r] = True
 
         best_span = 0
+        best_band_rows: tuple[int, int] = (0, 0)
+        best_x_end = 0
         r = 0
         while r < n_rows:
             if not dense_rows[r]:
@@ -160,10 +168,27 @@ class GoldRustlerDetector:
                     span = int(xs[-1] - xs[0] + 1)
                     if span >= 6 and (int(cols.sum()) / float(span)) >= 0.50 and span > best_span:
                         best_span = span
+                        best_band_rows = (r, r_end)
+                        best_x_end = int(xs[-1])
             r = r_end
 
         if best_span >= 6:
-            ratio = max(0.03, min(1.0, float(best_span) / float(expected_w)))
+            # Check if a dark/blue depleted HP bar track extends to the right of the green fill
+            r1, r2 = best_band_rows
+            right_x1 = min(strip.shape[1], best_x_end + 1)
+            right_x2 = min(strip.shape[1], right_x1 + max(6, int(round(28.0 * sx))))
+            has_depleted_track = False
+            if right_x2 - right_x1 >= 4 and r2 > r1:
+                r_patch = strip[r1:r2, right_x1:right_x2]
+                # Depleted track in RYL is dark (V <= 42) or dark-blue (H=100..140, S>=50, V<=145)
+                dark_or_blue = (r_patch[:, :, 2] <= 42) | (
+                    (r_patch[:, :, 0] >= 100) & (r_patch[:, :, 0] <= 140) & (r_patch[:, :, 1] >= 50) & (r_patch[:, :, 2] <= 145)
+                )
+                has_depleted_track = float(dark_or_blue.mean()) >= 0.35
+            if (not has_depleted_track) and best_span >= int(round(35.0 * sx)):
+                ratio = 1.0
+            else:
+                ratio = max(0.03, min(1.0, float(best_span) / float(expected_w)))
             return (True, ratio)
 
         # Pass B: Ultra-low HP sliver (1..6 green px/row stacked across 2..5 rows inside dark HP bar border)
@@ -206,10 +231,55 @@ class GoldRustlerDetector:
         self_box: tuple[int, int, int, int],
         mob_nameplates: list[tuple[int, int, int, int]],
     ) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int, int, int], ...]]:
-        """Detect other players via bright green player nameplates outside self-zone and mob HP strips."""
+        """Detect other players via cyan/light-blue HP bars AND bright green player nameplates outside SELF."""
         sx = 1.0 if self.hud_fixed_pixel_ui else (frame_w / 1920.0)
         sy = 1.0 if self.hud_fixed_pixel_ui else (frame_h / 1080.0)
+        sx_1024 = 1.0 if self.hud_fixed_pixel_ui else (frame_w / 1024.0)
+        sy_1024 = 1.0 if self.hud_fixed_pixel_ui else (frame_h / 768.0)
 
+        pts: list[tuple[int, int]] = []
+        boxes: list[tuple[int, int, int, int]] = []
+
+        # Pass A: Cyan / light-blue player HP bars (HSV H=82..105, S>=85, V>=150, w=35..95, h=3..8) outside SELF
+        cmask = cv2.bitwise_and(cv2.inRange(pf_hsv, self.pl_cyan_lo, self.pl_cyan_hi), hud_mask)
+        # Mask SELF zone (x=435..590, y=305..465 at 1024x768, scaled) + self_box
+        for ex1, ey1, ex2, ey2 in (
+            self_box,
+            (
+                int(round(435.0 * sx_1024)),
+                int(round(305.0 * sy_1024)),
+                int(round(590.0 * sx_1024)),
+                int(round(465.0 * sy_1024)),
+            ),
+        ):
+            lx1, ly1 = max(0, ex1 - ox), max(0, ey1 - oy)
+            lx2, ly2 = min(cmask.shape[1], ex2 - ox), min(cmask.shape[0], ey2 - oy)
+            if lx2 > lx1 and ly2 > ly1:
+                cmask[ly1:ly2, lx1:lx2] = 0
+
+        min_cw, max_cw = int(round(35.0 * sx_1024)), int(round(95.0 * sx_1024))
+        min_ch, max_ch = max(3, int(round(3.0 * sy_1024))), max(8, int(round(8.0 * sy_1024)))
+        if cv2.countNonZero(cmask) >= max(45, int(round(70.0 * sx_1024 * sy_1024))):
+            n_c, _lc, st_c, _ = cv2.connectedComponentsWithStats(cmask, connectivity=8)
+            for idx in range(1, n_c):
+                x = int(st_c[idx, cv2.CC_STAT_LEFT])
+                y = int(st_c[idx, cv2.CC_STAT_TOP])
+                w = int(st_c[idx, cv2.CC_STAT_WIDTH])
+                h = int(st_c[idx, cv2.CC_STAT_HEIGHT])
+                if not (min_cw <= w <= max_cw and min_ch <= h <= max_ch):
+                    continue
+                if (int(st_c[idx, cv2.CC_STAT_AREA]) / max(1.0, float(w * h))) < 0.50:
+                    continue
+                fx = ox + x + w // 2
+                fy = oy + y + h // 2
+                if any(abs(fx - px) <= 45 * sx_1024 and abs(fy - py) <= 45 * sy_1024 for px, py in pts):
+                    continue
+                pts.append((fx, fy))
+                half_bw = int(round(38.0 * sx_1024))
+                bh = int(round(115.0 * sy_1024))
+                boxes.append((max(0, fx - half_bw), max(0, fy), min(frame_w - 1, fx + half_bw), min(frame_h - 1, fy + bh)))
+
+        # Pass B: Bright green player nameplates outside self-zone and mob HP strips
         gmask = cv2.inRange(pf_hsv, self.pl_green_lo, self.pl_green_hi)
         gmask = cv2.bitwise_and(gmask, hud_mask)
 
@@ -231,14 +301,12 @@ class GoldRustlerDetector:
 
         min_raw_px = max(12, int(round(18.0 * sx * sy)))
         if cv2.countNonZero(gmask) < min_raw_px:
-            return ((), ())
+            return (tuple(pts), tuple(boxes))
 
         kx = max(7, int(round(13.0 * sx)))
         closed = cv2.morphologyEx(gmask, cv2.MORPH_CLOSE, self._get_kernel(kx, 2))
         n_lbl, _lbl, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
 
-        pts: list[tuple[int, int]] = []
-        boxes: list[tuple[int, int, int, int]] = []
         min_w = max(18, int(round(24.0 * sx)))
         max_w = int(round(190.0 * sx))
         min_h = max(4, int(round(5.0 * sy)))
@@ -365,34 +433,29 @@ class GoldRustlerDetector:
                         continue
                 raw_nps.append((ox + x, oy + y, w, h, raw_px))
 
-        # 1b. Hybrid horizontal green HP-bar detector outside SELF zone (x=425..600, y=300..555 at 1024x768)
-        #     HSV H=45..80, S>=130, V>=130, width 35..95px, height 3..7px -> click torso at (cx, bar_y + 38)!
+        # 1b. Standalone horizontal green HP-bar detector (works without magenta nameplate!)
+        #     HSV H=40..85, S>=110, V>=110, width 32..115px, height 3..9px -> click torso at (bar_cx, bar_y + 42)!
+        #     Tight SELF exclusion box (x=472..552, y=350..432 at 1024x768, scaled) so close mobs are NEVER blocked!
         hp_bar_mask = cv2.bitwise_and(
-            cv2.inRange(pf_hsv, np.array([45, 130, 130], dtype=np.uint8), np.array([80, 255, 255], dtype=np.uint8)),
+            cv2.inRange(pf_hsv, np.array([40, 110, 110], dtype=np.uint8), np.array([85, 255, 255], dtype=np.uint8)),
             hud_mask,
         )
-        sx1_s, sy1_s, sx2_s, sy2_s = self_box
-        hp_bar_mask[
-            max(0, sy1_s - oy) : min(hp_bar_mask.shape[0], sy2_s - oy),
-            max(0, sx1_s - ox) : min(hp_bar_mask.shape[1], sx2_s - ox),
-        ] = 0
-        # Explicit wide SELF exclusion box (x=425..600, y=300..555 at 1024x768, scaled)
         sx_1024 = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
         sy_1024 = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
-        self_excl_x1 = int(round(425.0 * sx_1024))
-        self_excl_y1 = int(round(300.0 * sy_1024))
-        self_excl_x2 = int(round(600.0 * sx_1024))
-        self_excl_y2 = int(round(555.0 * sy_1024))
+        self_excl_x1 = int(round(472.0 * sx_1024))
+        self_excl_y1 = int(round(350.0 * sy_1024))
+        self_excl_x2 = int(round(552.0 * sx_1024))
+        self_excl_y2 = int(round(432.0 * sy_1024))
         hp_bar_mask[
             max(0, self_excl_y1 - oy) : min(hp_bar_mask.shape[0], self_excl_y2 - oy),
             max(0, self_excl_x1 - ox) : min(hp_bar_mask.shape[1], self_excl_x2 - ox),
         ] = 0
 
         hp_bar_click_y_by_np: dict[tuple[int, int, int, int], int] = {}
-        if cv2.countNonZero(hp_bar_mask) >= max(45, int(round(70.0 * sx * sy))):
+        if cv2.countNonZero(hp_bar_mask) >= max(45, int(round(64.0 * sx_1024 * sy_1024))):
             n_hb, _lhb, st_hb, _ = cv2.connectedComponentsWithStats(hp_bar_mask, connectivity=8)
-            min_hbw, max_hbw = int(round(35.0 * sx)), int(round(95.0 * sx))
-            min_hbh, max_hbh = max(3, int(round(3.0 * sy))), max(7, int(round(7.0 * sy)))
+            min_hbw, max_hbw = int(round(32.0 * sx_1024)), int(round(115.0 * sx_1024))
+            min_hbh, max_hbh = max(3, int(round(3.0 * sy_1024))), max(9, int(round(9.0 * sy_1024)))
             for idx in range(1, n_hb):
                 hx = int(st_hb[idx, cv2.CC_STAT_LEFT])
                 hy = int(st_hb[idx, cv2.CC_STAT_TOP])
@@ -400,14 +463,14 @@ class GoldRustlerDetector:
                 hh = int(st_hb[idx, cv2.CC_STAT_HEIGHT])
                 if not (min_hbw <= hw <= max_hbw and min_hbh <= hh <= max_hbh):
                     continue
-                if (int(st_hb[idx, cv2.CC_STAT_AREA]) / max(1.0, float(hw * hh))) < 0.55:
+                if (int(st_hb[idx, cv2.CC_STAT_AREA]) / max(1.0, float(hw * hh))) < 0.50:
                     continue
                 gx, gy = ox + hx, oy + hy
-                if any(abs(gx - nx) <= 45 * sx and abs(gy - (ny + nh)) <= 24 * sy for nx, ny, _nw, nh, _ in raw_nps):
+                if any(abs(gx - nx) <= 45 * sx_1024 and abs(gy - (ny + nh)) <= 26 * sy_1024 for nx, ny, _nw, nh, _ in raw_nps):
                     continue
-                syn_np = (gx, max(oy, gy - int(round(14.0 * sy))), hw, max(8, int(round(9.0 * sy))))
+                syn_np = (gx, max(oy, gy - int(round(14.0 * sy_1024))), hw, max(8, int(round(9.0 * sy_1024))))
                 raw_nps.append((*syn_np, hw * 4))
-                hp_bar_click_y_by_np[syn_np] = min(fh - 2, int(round(gy + 38.0 * sy_1024)))
+                hp_bar_click_y_by_np[syn_np] = min(fh - 2, int(round(gy + 42.0 * sy_1024)))
 
         np_bboxes = [(x, y, w, h) for x, y, w, h, _ in raw_nps]
 
@@ -441,10 +504,19 @@ class GoldRustlerDetector:
             has_hp, hp_est = self._read_hp_bar_below_nameplate(pf_hsv, ox, oy, np_box, fw, fh)
             conf = min(1.0, max(0.45, raw_px / max(1.0, float(mw * mh) * 0.45)))
 
-            # Combat-status Anti-KS (NO blind <150px discard!)
+            # Anti-KS & Player Avoidance:
+            # Reject monsters within <=240px of other_players OR already damaged (hp_ratio < 0.94)!
             contested = False
             contest_reason = ""
-            if other_boxes:
+            if self.anti_ks_enabled and has_hp and hp_est is not None and hp_est < self.anti_ks_min_untouched_hp_ratio:
+                contested = True
+                contest_reason = f"SKIP [KS_HP<{int(self.anti_ks_min_untouched_hp_ratio * 100)}%]"
+            if not contested and other_pts and self.anti_ks_enabled:
+                player_avoid_r = self.anti_ks_player_radius_px * sx_1024
+                if any(math.hypot(click_x - opx, click_y - opy) <= player_avoid_r for opx, opy in other_pts):
+                    contested = True
+                    contest_reason = "SKIP [KS_PLAYER]"
+            if not contested and other_boxes:
                 # (a) Pre-Click Anti-PK Overlap: clicking this mob would click directly on another player
                 for pb in other_boxes:
                     if (pb[0] - pad_pk_x) <= click_x <= (pb[2] + pad_pk_x) and (pb[1] - pad_pk_y) <= click_y <= (pb[3] + pad_pk_y):
@@ -452,7 +524,7 @@ class GoldRustlerDetector:
                         contest_reason = "SKIP [PK_OVERLAP]"
                         break
 
-                # (b) Another player in direct melee (< 75px) of a damaged mob (< 98% HP)
+                # (b) Another player in direct melee (< 75px) of a damaged mob
                 if not contested and has_hp and (hp_est is None or hp_est < self.ks_hp_damaged_threshold):
                     min_p_dist = min(_bbox_dist(pb, body_bbox) for pb in other_boxes)
                     if min_p_dist < melee_ks_r:
@@ -481,10 +553,152 @@ class GoldRustlerDetector:
             else:
                 safe_mobs.append(mob)
 
+        # 3b. Close-range monster silhouette detector (for unhovered close mobs without nameplate/HP bar, e.g. ref_close_mobs.jpg)
+        if not is_night:
+            sil_mobs = self._detect_close_silhouette_mobs(
+                pf_hsv,
+                hud_mask,
+                ox,
+                oy,
+                fw,
+                fh,
+                feet_x,
+                feet_y,
+                (self_excl_x1, self_excl_y1, self_excl_x2, self_excl_y2),
+                safe_mobs + contested_mobs,
+                other_pts,
+                other_boxes,
+            )
+            for sm in sil_mobs:
+                if sm.contested:
+                    contested_mobs.append(sm)
+                else:
+                    safe_mobs.append(sm)
+
         # Sort safe mobs: engaged close mob first, then closest foot-point ground distance
         safe_mobs.sort(key=lambda m: (0 if (m.has_hp_bar and m.dist_to_player_px <= 220.0) else 1, m.dist_to_player_px))
         contested_mobs.sort(key=lambda m: m.dist_to_player_px)
         return (tuple(safe_mobs), tuple(contested_mobs), other_pts, other_boxes)
+
+    def _detect_close_silhouette_mobs(
+        self,
+        pf_hsv: np.ndarray,
+        hud_mask: np.ndarray,
+        ox: int,
+        oy: int,
+        fw: int,
+        fh: int,
+        feet_x: int,
+        feet_y: int,
+        self_excl: tuple[int, int, int, int],
+        existing_mobs: list[MobTarget],
+        other_pts: tuple[tuple[int, int], ...],
+        other_boxes: tuple[tuple[int, int, int, int], ...],
+    ) -> list[MobTarget]:
+        """Detect close-range non-grass metallic/dark-bronze monster silhouettes (area 2800..32000px^2, y=235..590)."""
+        sx = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
+        sy = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
+        y1 = max(0, int(round(235.0 * sy)) - oy)
+        y2 = min(pf_hsv.shape[0], int(round(590.0 * sy)) - oy)
+        if y2 - y1 < 32 or pf_hsv.shape[1] < 32:
+            return []
+
+        # Half-resolution stride for <0.4ms CPU cost
+        sub = pf_hsv[y1:y2:2, ::2]
+        hm_s = hud_mask[y1:y2:2, ::2]
+        h_ch, s_ch, v_ch = sub[:, :, 0], sub[:, :, 1], sub[:, :, 2]
+
+        # Require olive-green grass to be the dominant ground texture (>=35%) so non-field scenes never trigger
+        grass = (h_ch >= 24) & (h_ch <= 46) & (s_ch >= 45) & (v_ch >= 25)
+        valid_s = hm_s > 0
+        if not bool(np.any(valid_s)) or float(grass[valid_s].mean()) < 0.35:
+            return []
+
+        # Non-grass metallic gray / dark-bronze monster body pixels
+        body = (~grass) & (s_ch <= 115) & (v_ch >= 14) & (v_ch <= 185) & valid_s
+        mask = (body.astype(np.uint8)) * 255
+
+        # Mask tight SELF zone (472..552, 350..432)
+        sx1, sy1, sx2, sy2 = self_excl
+        lx1 = max(0, (sx1 - ox) // 2)
+        lx2 = min(mask.shape[1], (sx2 - ox + 1) // 2)
+        ly1 = max(0, (sy1 - oy - y1) // 2)
+        ly2 = min(mask.shape[0], (sy2 - oy - y1 + 1) // 2)
+        if lx2 > lx1 and ly2 > ly1:
+            mask[ly1:ly2, lx1:lx2] = 0
+
+        closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self._get_kernel(7, 7))
+        n_lbl, _lbl, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
+
+        # Area in 0.5x^2 space (1/4 of full-res area: 2800..32000 -> 700..8000)
+        area_scale = sx * sy * 0.25
+        min_a = max(300, int(round(2800.0 * area_scale)))
+        max_a = int(round(32000.0 * area_scale))
+        min_w = max(20, int(round(45.0 * sx * 0.5)))
+        max_w = int(round(240.0 * sx * 0.5))
+        min_h = max(25, int(round(60.0 * sy * 0.5)))
+        max_h = int(round(280.0 * sy * 0.5))
+
+        out: list[MobTarget] = []
+        player_avoid_r = self.anti_ks_player_radius_px * sx
+        for idx in range(1, n_lbl):
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            if not (min_a <= area <= max_a):
+                continue
+            bx = int(stats[idx, cv2.CC_STAT_LEFT])
+            by = int(stats[idx, cv2.CC_STAT_TOP])
+            bw = int(stats[idx, cv2.CC_STAT_WIDTH])
+            bh = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            if not (min_w <= bw <= max_w and min_h <= bh <= max_h):
+                continue
+            asp = bw / max(1.0, float(bh))
+            if not (0.40 <= asp <= 2.2):
+                continue
+            # Require mix of dark-bronze and metallic gray tones (rejects flat dirt patches / shadows)
+            pv = v_ch[by : by + bh, bx : bx + bw]
+            ps = s_ch[by : by + bh, bx : bx + bw]
+            pb = body[by : by + bh, bx : bx + bw]
+            if not bool(np.any(pb)):
+                continue
+            dark_r = float((pv[pb] <= 65).mean())
+            metal_r = float(((ps[pb] <= 65) & (pv[pb] >= 75)).mean())
+            if dark_r < 0.12 or metal_r < 0.08:
+                continue
+
+            fx1 = ox + bx * 2
+            fy1 = oy + y1 + by * 2
+            fx2 = min(fw - 1, ox + (bx + bw) * 2)
+            fy2 = min(fh - 1, oy + y1 + (by + bh) * 2)
+            cx = (fx1 + fx2) // 2
+            cy = fy1 + int(round(0.42 * (fy2 - fy1)))
+            if sx1 <= cx <= sx2 and sy1 <= cy <= sy2:
+                continue
+            if any(math.hypot(cx - m.click_x, cy - m.click_y) <= 95.0 * sx for m in existing_mobs):
+                continue
+            if any(pbx1 <= cx <= pbx2 and pby1 <= cy <= pby2 for pbx1, pby1, pbx2, pby2 in other_boxes):
+                continue
+
+            contested = self.anti_ks_enabled and any(
+                math.hypot(cx - opx, cy - opy) <= player_avoid_r for opx, opy in other_pts
+            )
+            dist_px = math.hypot(cx - feet_x, fy2 - feet_y)
+            out.append(
+                MobTarget(
+                    nameplate_bbox=(fx1, max(0, fy1 - 12), max(16, fx2 - fx1), 10),
+                    body_bbox=(fx1, fy1, fx2, fy2),
+                    click_x=cx,
+                    click_y=cy,
+                    foot_x=cx,
+                    foot_y=fy2,
+                    dist_to_player_px=float(dist_px),
+                    has_hp_bar=False,
+                    hp_ratio_est=None,
+                    confidence=0.72,
+                    contested=contested,
+                    contest_reason="SKIP [KS_PLAYER]" if contested else "",
+                )
+            )
+        return out
 
     def detect(self, frame: FramePacket) -> tuple[MobTarget, ...]:
         safe, _cont, _pts, _boxes = self.detect_with_context(frame)

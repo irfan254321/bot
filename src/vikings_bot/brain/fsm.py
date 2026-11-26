@@ -47,9 +47,14 @@ class FarmingFSM:
         self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
-        self.combat_hit_confirm_timeout_sec: float = float(f.get("combat_hit_confirm_timeout_sec", 6.5))
+        self.combat_no_hit_abort_sec: float = float(f.get("combat_no_hit_abort_sec", 5.0))
+        self.combat_hit_confirm_timeout_sec: float = float(
+            f.get("combat_hit_confirm_timeout_sec", self.combat_no_hit_abort_sec)
+        )
         self.combat_confirmed_max_sec: float = float(f.get("combat_confirmed_max_sec", 35.0))
-        self.combat_post_last_hit_idle_sec: float = float(f.get("combat_post_last_hit_idle_sec", 2.5))
+        self.combat_post_last_hit_idle_sec: float = float(
+            f.get("combat_post_last_hit_idle_sec", self.combat_no_hit_abort_sec)
+        )
         self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
         self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
         self.combat_blind_timeout_sec: float = float(f.get("combat_blind_timeout_sec", 10.0))
@@ -58,17 +63,22 @@ class FarmingFSM:
         self.combat_zero_drop_kill_sec: float = float(f.get("combat_zero_drop_kill_sec", 1.6))
         self.loot_clear_confirm_frames: int = max(2, int(f.get("loot_clear_confirm_frames", 4)))
         self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 2)))
-        self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 22)))
+        self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 20)))
         self.loot_visited_grid_ttl_sec: float = max(2.0, float(f.get("loot_visited_grid_ttl_sec", 15.0)))
         self.mandatory_loot_duration_sec: float = max(1.0, float(f.get("mandatory_loot_duration_sec", 2.0)))
         self.post_kill_loot_window_sec: float = max(
             self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 10.0))
         )
         self.loot_min_window_sec: float = max(0.5, float(f.get("loot_min_window_sec", 2.0)))
-        self.loot_empty_exit_sec: float = max(0.2, float(f.get("loot_empty_exit_sec", 1.5)))
+        self.loot_empty_exit_sec: float = max(0.2, float(f.get("loot_empty_exit_sec", 1.2)))
         self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", self.post_kill_loot_window_sec))
         self.last_kill_loot_radius_px: float = float(p.get("last_kill_loot_radius_px", 140.0))
         self.last_kill_loot_window_sec: float = float(p.get("last_kill_loot_window_sec", 0.80))
+        self.anti_ks_enabled: bool = bool(p.get("anti_ks_enabled", True))
+        self.anti_ks_player_radius_px: float = float(p.get("anti_ks_player_radius_px", 240.0))
+        self.anti_ks_damage_zone_radius_px: float = float(p.get("anti_ks_damage_zone_radius_px", 220.0))
+        self.anti_ks_damage_zone_ttl_sec: float = float(p.get("anti_ks_damage_zone_ttl_sec", 6.0))
+        self.anti_ks_min_untouched_hp_ratio: float = float(p.get("anti_ks_min_untouched_hp_ratio", 0.94))
 
         self.control_mode_setting: str = str(c.get("control_mode", "mouse")).lower()
         self.control_mode: str = str(c.get("mode", "mouse")).lower()
@@ -132,6 +142,7 @@ class FarmingFSM:
         self._combat_last_approach_ts: float = 0.0
         self._combat_loot_streak: int = 0
         self._aborted_mobs: list[tuple[float, float, float]] = []  # (expire_ts, cx, cy)
+        self.external_combat_zones: list[tuple[float, float, float]] = []  # (expire_ts, x, y)
 
         # LOOT_PICKUP sequential visited_loot_grids on 22x22px grid (TTL 15.0s, max 2 attempts per grid)
         self.visited_loot_grids: dict[tuple[int, int], tuple[int, float]] = {}
@@ -207,6 +218,39 @@ class FarmingFSM:
         self._aborted_mobs = [m for m in self._aborted_mobs if now < m[0]]
         lim = 105.0 * max(0.55, scale_x)
         return any(math.hypot(mob.click_x - ax, mob.click_y - ay) <= lim for _exp, ax, ay in self._aborted_mobs)
+
+    def _update_external_combat_zones(self, world: WorldState, now: float) -> None:
+        """Record external floating damage points observed while NOT in COMBAT_WAIT (TTL 6.0s)."""
+        self.external_combat_zones = [z for z in self.external_combat_zones if now < z[0]]
+        if not self.anti_ks_enabled or not world.external_damage_points:
+            return
+        exp = now + self.anti_ks_damage_zone_ttl_sec
+        for dx, dy in world.external_damage_points:
+            self.external_combat_zones.append((exp, float(dx), float(dy)))
+
+    def _is_in_anti_ks_zone(
+        self,
+        x: float,
+        y: float,
+        world: WorldState,
+        now: float,
+        *,
+        player_radius_px: float | None = None,
+        damage_radius_px: float | None = None,
+    ) -> bool:
+        """Return True if (x, y) is too close to another player or an external combat damage zone."""
+        if not self.anti_ks_enabled:
+            return False
+        self.external_combat_zones = [z for z in self.external_combat_zones if now < z[0]]
+        fw = max(1, world.snapshot.frame_width)
+        sx_1024 = 1.0 if fw <= 1100 else (fw / 1024.0)
+        p_rad = (self.anti_ks_player_radius_px if player_radius_px is None else player_radius_px) * sx_1024
+        d_rad = (self.anti_ks_damage_zone_radius_px if damage_radius_px is None else damage_radius_px) * sx_1024
+        if any(math.hypot(x - opx, y - opy) <= p_rad for opx, opy in world.snapshot.other_players):
+            return True
+        if any(math.hypot(x - zx, y - zy) <= d_rad for _exp, zx, zy in self.external_combat_zones):
+            return True
+        return False
 
     def transition(self, new_state: BotState, now: float, reason: str = "") -> None:
         if new_state == self.state:
@@ -642,7 +686,10 @@ class FarmingFSM:
             mob = self.farm.pick_best_gold_rustler(
                 world,
                 allow_wounded=False,
-                is_ignored=lambda m: self._is_aborted_mob(m, now, scale_x),
+                is_ignored=lambda m: (
+                    self._is_aborted_mob(m, now, scale_x)
+                    or self._is_in_anti_ks_zone(m.click_x, m.click_y, world, now)
+                ),
             )
             if mob is not None:
                 self.tracker.clear_stuck(reset_consecutive=True)
@@ -668,6 +715,8 @@ class FarmingFSM:
     def _handle_search(self, world: WorldState, now: float) -> list[ActionIntent]:
         fw = max(1, world.snapshot.frame_width)
         scale_x = fw / 1920.0
+        # Record external floating damage numbers observed while scanning (Anti-KS stealth Sin guard!)
+        self._update_external_combat_zones(world, now)
 
         # Priority 1: BotState.LOOT is strictly entered ONLY right after COMBAT_WAIT kills a monster
         # (except standalone --mode loot CLI). Never enter LOOT from SEARCH_MOB in FULL mode!
@@ -712,11 +761,14 @@ class FarmingFSM:
         if pitch_settling:
             return []
 
-        # Priority 4: Pick nearest safe Gold Rustler and CLICK ONCE -> COMBAT_WAIT!
+        # Priority 4: Pick nearest safe Gold Rustler (outside Anti-KS player/damage zones & HP >= 94%) and CLICK ONCE!
         mob = self.farm.pick_best_gold_rustler(
             world,
             allow_wounded=(self.mode == BotMode.COMBAT),
-            is_ignored=lambda m: self._is_aborted_mob(m, now, scale_x),
+            is_ignored=lambda m: (
+                self._is_aborted_mob(m, now, scale_x)
+                or self._is_in_anti_ks_zone(m.click_x, m.click_y, world, now)
+            ),
         )
         if mob is not None:
             return self._enter_combat_wait(world, mob, now, "found_gold_rustler")
@@ -805,17 +857,17 @@ class FarmingFSM:
                     self._combat_confirmed = True
                     self._combat_confirmed_at = now
 
-        # 2b. Floating hit damage confirmation ("Tulisan Hit"):
-        #     Once detected -> combat_confirmed = True & refresh last_hit_time!
-        if world.hit_damage_visible:
+        # 2b. Local floating hit damage confirmation near character (x=340..685, y=190..465):
+        #     Once detected -> combat_confirmed = True & refresh last_local_hit_time!
+        if world.local_hit_damage_visible:
             if not self._combat_confirmed:
                 self._combat_confirmed = True
                 self._combat_confirmed_at = now
-                logger.info("COMBAT_WAIT: hit damage confirmed at elapsed=%.2fs -> locking combat", elapsed)
+                logger.info("COMBAT_WAIT: local hit damage confirmed at elapsed=%.2fs -> locking combat", elapsed)
             self._combat_last_hit_time = now
 
-        # 2c. Stage 2 (Hit-Confirmed Combat): once last hit damage stops for >= 2.5s (or 30s max cap),
-        #     MANDATORY transition to BotState.LOOT (never skip straight to SEARCH_MOB / NAVIGATE_TO_SPOT)!
+        # 2c. Stage 2 (Hit-Confirmed Combat): once last local hit stops for >= 5.0s (or 35s max cap),
+        #     MANDATORY transition to BotState.LOOT (10.0s) before returning to SEARCH_MOB!
         if self._combat_confirmed and self._combat_last_hit_time is not None:
             post_hit_idle = max(0.0, now - self._combat_last_hit_time)
             confirmed_dur = max(0.0, now - (self._combat_confirmed_at or self._state_entered_at))
@@ -837,7 +889,7 @@ class FarmingFSM:
                     rsn = (
                         "hit_confirmed_post_hit_idle_mandatory_loot"
                         if post_hit_idle >= self.combat_post_last_hit_idle_sec
-                        else "hit_confirmed_max_30s_mandatory_loot"
+                        else "hit_confirmed_max_35s_mandatory_loot"
                     )
                     self.transition(BotState.LOOT, now, rsn)
                 return []
@@ -978,6 +1030,15 @@ class FarmingFSM:
         unvisited: list = []
         retryable: list = []
         for bag in local_bags:
+            if self._is_in_anti_ks_zone(
+                bag.click_x,
+                bag.click_y,
+                world,
+                now,
+                player_radius_px=220.0,
+                damage_radius_px=self.anti_ks_damage_zone_radius_px,
+            ):
+                continue
             cell = _cell_of(float(bag.click_x), float(bag.click_y))
             att = self.visited_loot_grids.get(cell, (0, 0.0))[0]
             if att == 0:

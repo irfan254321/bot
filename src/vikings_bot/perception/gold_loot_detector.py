@@ -24,17 +24,17 @@ class GoldBagDetector:
 
         p = config.perception
         self.hud_fixed_pixel_ui = bool(p.get("hud_fixed_pixel_ui", False))
-        self.glow_lo = np.array(p.get("loot_glow_hsv_lower", [8, 105, 95]), dtype=np.uint8)
-        self.glow_hi = np.array(p.get("loot_glow_hsv_upper", [32, 255, 255]), dtype=np.uint8)
-        self.dark_body_v_max = int(p.get("loot_dark_body_v_max", 85))
-        self.min_dark_ratio = float(p.get("loot_min_dark_ratio", 0.22))
-        self.min_blob_px = int(p.get("loot_min_blob_pixels", 3))
+        self.glow_lo = np.array(p.get("loot_glow_hsv_lower", [6, 115, 105]), dtype=np.uint8)
+        self.glow_hi = np.array(p.get("loot_glow_hsv_upper", [28, 255, 255]), dtype=np.uint8)
+        self.dark_body_v_max = int(p.get("loot_dark_body_v_max", 95))
+        self.min_dark_ratio = float(p.get("loot_min_dark_ratio", 0.20))
+        self.min_blob_px = int(p.get("loot_min_blob_pixels", 4))
         self.max_blob_px = int(p.get("loot_max_blob_pixels", 140))
         self.pouch_v_max = int(p.get("loot_pouch_v_max", 48))
         self.pouch_min_area = int(p.get("loot_pouch_min_area", 36))
         self.pouch_max_area = int(p.get("loot_pouch_max_area", 480))
         self.pouch_warm_min_px = int(p.get("loot_pouch_warm_min_px", 6))
-        self.cluster_radius_px = float(p.get("loot_cluster_radius_px", 18.0))
+        self.cluster_radius_px = float(p.get("loot_cluster_radius_px", 16.0))
         self.max_dist_px = float(p.get("loot_max_dist_px", 580.0))
 
         tmpl_rel = str(p.get("picked_up_template", "assets/ui_templates/picked_up_prefix.png"))
@@ -46,10 +46,10 @@ class GoldBagDetector:
         self._blacklist: list[tuple[float, float, float]] = []  # (expire_ts, x, y)
         self.last_corpse_boxes: tuple[tuple[int, int, int, int], ...] = ()
         self._corpse_kernels: dict[tuple[int, int], np.ndarray] = {}
-        self._warm_lo = np.array([6, 95, 85], dtype=np.uint8)
-        self._warm_hi = np.array([26, 255, 255], dtype=np.uint8)
-        self._sur_warm_lo = np.array([8, 80, 70], dtype=np.uint8)
-        self._sur_warm_hi = np.array([28, 255, 255], dtype=np.uint8)
+        self._warm_lo = np.array([6, 115, 105], dtype=np.uint8)
+        self._warm_hi = np.array([22, 255, 255], dtype=np.uint8)
+        self._sur_warm_lo = np.array([8, 120, 115], dtype=np.uint8)
+        self._sur_warm_hi = np.array([22, 255, 255], dtype=np.uint8)
         self._silver_lo = np.array([0, 0, 130], dtype=np.uint8)
         self._silver_hi = np.array([179, 55, 255], dtype=np.uint8)
         self._tunic_lo = np.array([68, 65, 45], dtype=np.uint8)
@@ -254,13 +254,13 @@ class GoldBagDetector:
         if hz_local > 0:
             valid[:hz_local, :] = 0
 
-        # Mask SELF character zone (x=435..590, y=305..465 at 1024x768, scaled) so own armor/feet never trigger GOLD
-        sx_1024 = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
-        sy_1024 = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
-        sbx1 = max(0, int(round(435.0 * sx_1024)) - ox)
-        sby1 = max(0, int(round(305.0 * sy_1024)) - oy)
-        sbx2 = min(valid.shape[1], int(round(590.0 * sx_1024)) - ox)
-        sby2 = min(valid.shape[0], int(round(465.0 * sy_1024)) - oy)
+        # Mask tight SELF character zone (x=468..556, y=345..428 at 1024x768, scaled)
+        sx_1024 = 1.0 if (self.hud_fixed_pixel_ui and fw == 1024) else (fw / 1024.0)
+        sy_1024 = 1.0 if (self.hud_fixed_pixel_ui and fh == 768) else (fh / 768.0)
+        sbx1 = max(0, int(round(468.0 * sx_1024)) - ox)
+        sby1 = max(0, int(round(345.0 * sy_1024)) - oy)
+        sbx2 = min(valid.shape[1], int(round(556.0 * sx_1024)) - ox)
+        sby2 = min(valid.shape[0], int(round(428.0 * sy_1024)) - oy)
         if sbx2 > sbx1 and sby2 > sby1:
             valid[sby1:sby2, sbx1:sbx2] = 0
 
@@ -311,8 +311,8 @@ class GoldBagDetector:
         raw_hits: list[tuple[int, int, int, int, float]] = []
         sur_pad_x = max(10, int(round(18.0 * scale_x)))
         sur_pad_y = max(10, int(round(18.0 * scale_y)))
-        max_sur_warm = max(85, int(round(130.0 * scale_x * scale_y)))
-        max_in_warm = max(28, int(round(46.0 * scale_x * scale_y)))
+        max_sur_warm = max(120, int(round(160.0 * sx_1024 * sy_1024)))
+        max_in_warm = max(65, int(round(80.0 * sx_1024 * sy_1024)))
 
         def _is_isolated_bag(lx: int, ly: int, lw: int, lh: int) -> bool:
             """Reject metallic monster/armor patches that have large surrounding golden-warm regions."""
@@ -326,14 +326,16 @@ class GoldBagDetector:
             sur_patch = hsv[sy1:sy2, sx1:sx2]
             return cv2.countNonZero(cv2.inRange(sur_patch, self._sur_warm_lo, self._sur_warm_hi)) <= max_sur_warm
 
-        # Cue A: Gold-orange gleam (H=8..32, S>=105, V>=95) on/above a compact dark-brown mound (bbox 6..32px on 1024x768)
+        # Cue A: Amber-orange gleam core (H=6..28, S>=115, V>=105, 4..140px^2, 4..28px) surrounded by dark bronze mound (V<=95)
         glow = cv2.bitwise_and(cv2.inRange(hsv, self.glow_lo, self.glow_hi), valid)
-        min_b = max(2, int(round(self.min_blob_px * scale_x * scale_y)))
-        max_b = max(35, int(round(self.max_blob_px * scale_x * scale_y)))
-        max_box_w = int(round(32.0 * sx_1024))
-        max_box_h = int(round(32.0 * sy_1024))
-        min_box_w = max(6, int(round(6.0 * sx_1024)))
-        min_box_h = max(6, int(round(6.0 * sy_1024)))
+        min_b = max(4, int(round(self.min_blob_px * sx_1024 * sy_1024)))
+        max_b = max(40, int(round(self.max_blob_px * sx_1024 * sy_1024)))
+        max_box_w = int(round(28.0 * sx_1024))
+        max_box_h = int(round(28.0 * sy_1024))
+        min_box_w = max(4, int(round(4.0 * sx_1024)))
+        min_box_h = max(4, int(round(4.0 * sy_1024)))
+        margin_x = max(3, int(round(4.0 * sx_1024)))
+        margin_y = max(3, int(round(4.0 * sy_1024)))
         if cv2.countNonZero(glow) >= min_b:
             n_g, _lg, st_g, _ = cv2.connectedComponentsWithStats(glow, connectivity=8)
             for idx in range(1, n_g):
@@ -344,26 +346,26 @@ class GoldBagDetector:
                 y = int(st_g[idx, cv2.CC_STAT_TOP])
                 w = int(st_g[idx, cv2.CC_STAT_WIDTH])
                 h = int(st_g[idx, cv2.CC_STAT_HEIGHT])
-                if w > max_box_w or h > max_box_h:
+                if not (3 <= w <= max_box_w and 3 <= h <= max_box_h):
                     continue
-                # Reject thin vertical golden armor gleams on living monster arms (require width >= height * 0.85)
-                if h > w * 1.25 or w < h * 0.85:
+                # Reject tall thin vertical golden armor gleams on living monster arms (e.g. 6x18)
+                if h >= max(10, int(round(12.0 * sy_1024))) and (h > w * 1.25):
                     continue
-                ry1 = max(0, y - max(2, int(round(3.0 * sy_1024))))
-                ry2 = min(hsv.shape[0], y + h + max(6, int(round(10.0 * sy_1024))))
-                rx1 = max(0, x - max(3, int(round(5.0 * sx_1024))))
-                rx2 = min(hsv.shape[1], x + w + max(3, int(round(5.0 * sx_1024))))
+                ry1 = max(0, y - margin_y)
+                ry2 = min(hsv.shape[0], y + h + margin_y)
+                rx1 = max(0, x - margin_x)
+                rx2 = min(hsv.shape[1], x + w + margin_x)
                 if ry2 <= ry1 or rx2 <= rx1:
                     continue
                 patch_v = v_ch[ry1:ry2, rx1:rx2]
                 dark_r = float((patch_v <= self.dark_body_v_max).mean())
                 if dark_r >= self.min_dark_ratio:
                     bw = max(min_box_w, min(max_box_w, rx2 - rx1))
-                    bh = max(min_box_h, min(max_box_h, ry2 - y))
-                    if bh > bw * 1.25 or bw < bh * 0.85:
+                    bh = max(min_box_h, min(max_box_h, ry2 - ry1))
+                    if bh > bw * 1.35:
                         continue
-                    if _is_isolated_bag(rx1, y, bw, bh):
-                        raw_hits.append((ox + rx1, oy + y, bw, bh, min(1.0, 0.65 + dark_r * 0.35)))
+                    if _is_isolated_bag(rx1, ry1, bw, bh):
+                        raw_hits.append((ox + rx1, oy + ry1, bw, bh, min(1.0, 0.65 + dark_r * 0.35)))
 
         # Cue B: Compact dark pouch with warm red-orange ribbon (dimmed / dusk bags)
         med_v = float(np.median(v_ch[::8, ::8])) if v_ch.size > 0 else 65.0

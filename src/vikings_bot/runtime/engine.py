@@ -346,10 +346,10 @@ class BotEngine:
                     float(
                         self.config.farming.get(
                             "loot_close_radius_px",
-                            self.config.farming.get("loot_entry_close_dist_px", 280.0),
+                            self.config.farming.get("loot_entry_close_dist_px", 310.0),
                         )
                     )
-                    if self.fsm.state == BotState.LOOT
+                    if self.fsm.state in (BotState.LOOT, BotState.PAUSED)
                     else None
                 )
                 cursor_rel_xy: tuple[int, int] | None = None

@@ -107,8 +107,8 @@ def test_anti_ks_combat_status_without_blind_150px_discard(cfg):
     # Other player nameplate at x=500..590, y=410..422 (green text, outside self zone)
     _paint_text_bar(bgr, 500, 410, 90, 12, (62, 185, 220))
 
-    # Mob A (UNTOUCHED, no HP bar) standing 115px to the right of player (x=660..736, y=410..422) -> MUST STAY SAFE!
-    _paint_text_bar(bgr, 660, 410, 76, 12, (162, 95, 225))
+    # Mob A (UNTOUCHED, no HP bar) standing safely outside Anti-KS 240px player radius (x=1120..1196) -> MUST STAY SAFE!
+    _paint_text_bar(bgr, 1120, 410, 76, 12, (162, 95, 225))
 
     # Mob B (DAMAGED HP ~55%) standing right beside player at x=545..620, y=428..440 -> MUST BE CONTESTED (SKIP)!
     _paint_text_bar(bgr, 545, 428, 76, 12, (162, 95, 225))
@@ -119,7 +119,7 @@ def test_anti_ks_combat_status_without_blind_150px_discard(cfg):
 
     safe, contested, pl_pts, pl_boxes = det.detect_with_context(FramePacket(image_bgr=bgr, timestamp=1.0))
     assert len(pl_pts) >= 1 and len(pl_boxes) >= 1
-    assert any(640 <= m.nameplate_bbox[0] <= 700 for m in safe), f"Untouched mob near player was falsely discarded: safe={safe}, cont={contested}"
+    assert any(1100 <= m.nameplate_bbox[0] <= 1160 for m in safe), f"Untouched mob outside player radius was falsely discarded: safe={safe}, cont={contested}"
     assert any(530 <= m.nameplate_bbox[0] <= 575 for m in contested), f"Damaged mob next to player should be contested: safe={safe}, cont={contested}"
 
 

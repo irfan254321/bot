@@ -133,6 +133,8 @@ class PerceptionSnapshot:
     combat_target_hp_visible: bool = False
     combat_target_hp_ratio: float | None = None
     hit_damage_visible: bool = False
+    local_hit_damage_visible: bool = False
+    external_damage_points: tuple[tuple[int, int], ...] = ()
     timings_ms: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -217,4 +219,12 @@ class WorldState:
 
     @property
     def hit_damage_visible(self) -> bool:
-        return self.snapshot.hit_damage_visible
+        return self.snapshot.local_hit_damage_visible or self.snapshot.hit_damage_visible
+
+    @property
+    def local_hit_damage_visible(self) -> bool:
+        return self.snapshot.local_hit_damage_visible or self.snapshot.hit_damage_visible
+
+    @property
+    def external_damage_points(self) -> tuple[tuple[int, int], ...]:
+        return self.snapshot.external_damage_points

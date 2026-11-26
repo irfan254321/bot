@@ -13,7 +13,7 @@ from vikings_bot.perception.coords import CoordReader
 from vikings_bot.perception.gold_detector import GoldRustlerDetector
 from vikings_bot.perception.gold_loot_detector import GoldBagDetector
 from vikings_bot.perception.hud_bars import HudBarReader
-from vikings_bot.perception.hud_mask import build_playfield_hud_mask
+from vikings_bot.perception.hud_mask import build_playfield_hud_mask, compute_self_zone
 from vikings_bot.perception.minimap import MinimapAnalyzer
 from vikings_bot.perception.ui_matcher import UiTemplateMatcher
 from vikings_bot.state.models import BotState, LootDrop, MobTarget, PerceptionSnapshot
@@ -40,6 +40,7 @@ class PerceptionPipeline:
         self.pitch_horizon_max_y: float = float(config.farming.get("pitch_horizon_max_y", 300.0))
         self.pitch_sky_ratio_min: float = float(config.farming.get("pitch_sky_ratio_min", 0.12))
         self.pitch_sky_ratio_max: float = float(config.farming.get("pitch_sky_ratio_max", 0.42))
+        self.anti_ks_enabled: bool = bool(config.perception.get("anti_ks_enabled", True))
 
     def _estimate_sky_and_horizon(
         self,
@@ -141,30 +142,33 @@ class PerceptionPipeline:
         frame_w: int,
         frame_h: int,
     ) -> bool:
-        """Detect floating orange/yellow hit damage numbers in center combat zone (x=390..635, y=200..360 at 1024x768)."""
+        """Detect local floating orange/yellow damage numbers near character (x=340..685, y=190..465 at 1024x768).
+
+        Uses HSV H=8..35, S>=115, V>=175 and contour height >= 14px so faraway player damage is ignored.
+        """
         if pf_hsv.size == 0 or frame_w < 64 or frame_h < 64:
             return False
         sx = 1.0 if self.mobs.hud_fixed_pixel_ui else (frame_w / 1024.0)
         sy = 1.0 if self.mobs.hud_fixed_pixel_ui else (frame_h / 768.0)
-        x1 = max(0, int(round(390.0 * sx)) - ox)
-        x2 = min(pf_hsv.shape[1], int(round(635.0 * sx)) - ox)
-        y1 = max(0, int(round(200.0 * sy)) - oy)
-        y2 = min(pf_hsv.shape[0], int(round(360.0 * sy)) - oy)
+        x1 = max(0, int(round(340.0 * sx)) - ox)
+        x2 = min(pf_hsv.shape[1], int(round(685.0 * sx)) - ox)
+        y1 = max(0, int(round(190.0 * sy)) - oy)
+        y2 = min(pf_hsv.shape[0], int(round(465.0 * sy)) - oy)
         if (x2 - x1) < 16 or (y2 - y1) < 16:
             return False
 
         sub = pf_hsv[y1:y2, x1:x2]
         mask = cv2.inRange(
             sub,
-            np.array([10, 140, 190], dtype=np.uint8),
-            np.array([32, 255, 255], dtype=np.uint8),
+            np.array([8, 115, 175], dtype=np.uint8),
+            np.array([35, 255, 255], dtype=np.uint8),
         )
-        min_h = max(12, int(round(16.0 * sy)))
+        min_h = max(12, int(round(14.0 * sy)))
         if cv2.countNonZero(mask) < min_h * 2:
             return False
         n_lbl, _lbl, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        max_w = int(round(160.0 * sx))
-        max_h = int(round(90.0 * sy))
+        max_w = int(round(180.0 * sx))
+        max_h = int(round(95.0 * sy))
         for idx in range(1, n_lbl):
             w = int(stats[idx, cv2.CC_STAT_WIDTH])
             h = int(stats[idx, cv2.CC_STAT_HEIGHT])
@@ -172,6 +176,56 @@ class PerceptionPipeline:
             if 3 <= w <= max_w and min_h <= h <= max_h and area >= max(16, min_h):
                 return True
         return False
+
+    def _detect_external_damage_points(
+        self,
+        pf_hsv: np.ndarray,
+        hud_mask: np.ndarray,
+        ox: int,
+        oy: int,
+        frame_w: int,
+        frame_h: int,
+    ) -> tuple[tuple[int, int], ...]:
+        """Detect external floating damage numbers across playfield during SCAN_SPOT / SEARCH_MOB (Anti-KS stealth Sin guard).
+
+        Matches HSV H=8..35, S>=95, V>=150 with contour height >= 14px (scaled from 1024x768).
+        """
+        if not self.anti_ks_enabled or pf_hsv.size == 0 or frame_w < 64 or frame_h < 64:
+            return ()
+        sx = 1.0 if self.mobs.hud_fixed_pixel_ui else (frame_w / 1024.0)
+        sy = 1.0 if self.mobs.hud_fixed_pixel_ui else (frame_h / 768.0)
+
+        mask = cv2.bitwise_and(
+            cv2.inRange(
+                pf_hsv,
+                np.array([8, 95, 150], dtype=np.uint8),
+                np.array([35, 255, 255], dtype=np.uint8),
+            ),
+            hud_mask,
+        )
+        min_h = max(12, int(round(14.0 * sy)))
+        if cv2.countNonZero(mask) < min_h * 2:
+            return ()
+
+        n_lbl, _lbl, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        max_w = int(round(180.0 * sx))
+        max_h = int(round(95.0 * sy))
+        min_area = max(18, int(round(20.0 * sx * sy)))
+        cluster_r = 45.0 * sx
+
+        pts: list[tuple[int, int]] = []
+        for idx in range(1, n_lbl):
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            if not (4 <= w <= max_w and min_h <= h <= max_h and area >= min_area):
+                continue
+            cx = ox + int(stats[idx, cv2.CC_STAT_LEFT]) + w // 2
+            cy = oy + int(stats[idx, cv2.CC_STAT_TOP]) + h // 2
+            if any(abs(cx - px) <= cluster_r and abs(cy - py) <= cluster_r for px, py in pts):
+                continue
+            pts.append((cx, cy))
+        return tuple(pts)
 
     def analyze(
         self,
@@ -192,7 +246,7 @@ class PerceptionPipeline:
         # - LOOT: NEVER run GoldRustlerDetector; run ONLY GoldBagDetector within <=220px close radius!
         in_combat_wait = current_state == BotState.COMBAT_WAIT or skip_all_object_detectors
         run_loot_detector = (not in_combat_wait) and (
-            current_state is None or current_state == BotState.LOOT
+            current_state is None or current_state in (BotState.LOOT, BotState.PAUSED)
         )
         run_mob_detector = (not in_combat_wait) and (not skip_mob_detection) and (
             current_state != BotState.LOOT
@@ -200,7 +254,7 @@ class PerceptionPipeline:
         effective_loot_radius = (
             loot_radius_limit_px
             if loot_radius_limit_px is not None
-            else (280.0 if current_state == BotState.LOOT else None)
+            else (310.0 if current_state in (BotState.LOOT, BotState.PAUSED) else None)
         )
         t_wall0 = time.perf_counter()
         timings: dict[str, float] = {}
@@ -232,6 +286,7 @@ class PerceptionPipeline:
         combat_target_hp_visible = False
         combat_target_hp_ratio: float | None = None
         hit_damage_visible = False
+        external_damage_points: tuple[tuple[int, int], ...] = ()
 
         if not skip_field_detectors:
             t_pf = time.perf_counter()
@@ -270,10 +325,31 @@ class PerceptionPipeline:
                         combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
                             shared_pf_hsv, ox, oy, frame.width, frame.height
                         )
+                        if current_state == BotState.LOOT and self.anti_ks_enabled:
+                            (_fx, _fy), s_box = compute_self_zone(
+                                frame.width,
+                                frame.height,
+                                player_center_norm=self.mobs.player_center_norm,
+                                hud_fixed_pixel_ui=self.mobs.hud_fixed_pixel_ui,
+                            )
+                            other_players, other_player_boxes = self.mobs._detect_other_players(
+                                shared_pf_hsv,
+                                hud_mask,
+                                ox,
+                                oy,
+                                frame.width,
+                                frame.height,
+                                s_box,
+                                [],
+                            )
                 else:
                     mob_list, contested_list, other_players, other_player_boxes = self.mobs.detect_with_context(
                         frame, shared_playfield_hsv=shared_pf_hsv
                     )
+                    if shared_pf_hsv is not None and current_state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE, None):
+                        external_damage_points = self._detect_external_damage_points(
+                            shared_pf_hsv, hud_mask, ox, oy, frame.width, frame.height
+                        )
                 timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
 
                 if run_loot_detector:
@@ -380,5 +456,7 @@ class PerceptionPipeline:
             combat_target_hp_visible=combat_target_hp_visible,
             combat_target_hp_ratio=combat_target_hp_ratio,
             hit_damage_visible=hit_damage_visible,
+            local_hit_damage_visible=hit_damage_visible,
+            external_damage_points=external_damage_points,
             timings_ms=timings,
         )
