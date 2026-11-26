@@ -122,6 +122,9 @@ farming:
   mob_max_engage_dist_px: 560
   mob_min_y_ratio: 0.14
   combat_miss_timeout_sec: 2.4
+  combat_hit_confirm_timeout_sec: 3.0
+  combat_confirmed_max_sec: 30.0
+  combat_post_last_hit_idle_sec: 2.5
   combat_blind_timeout_sec: 10.0
   combat_stagnant_hp_sec: 5.0
   combat_hard_timeout_sec: 28.0
@@ -133,6 +136,7 @@ farming:
   loot_close_radius_px: 220
   loot_entry_close_dist_px: 220.0
   loot_entry_kill_window_sec: 4.0
+  mandatory_loot_duration_sec: 7.0
   post_kill_loot_window_sec: 10.0
   loot_min_window_sec: 2.0
   loot_empty_exit_sec: 1.5

@@ -132,6 +132,7 @@ class PerceptionSnapshot:
     playfield_luma: float | None = None
     combat_target_hp_visible: bool = False
     combat_target_hp_ratio: float | None = None
+    hit_damage_visible: bool = False
     timings_ms: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -213,3 +214,7 @@ class WorldState:
     @property
     def horizon_y(self) -> float | None:
         return self.snapshot.horizon_y
+
+    @property
+    def hit_damage_visible(self) -> bool:
+        return self.snapshot.hit_damage_visible

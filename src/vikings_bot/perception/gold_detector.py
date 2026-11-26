@@ -354,14 +354,18 @@ class GoldRustlerDetector:
                 fill_ratio = raw_px / max(1.0, float(w * h))
                 if not (self.np_min_fill <= fill_ratio <= self.np_max_fill):
                     continue
-                # Require >=30% true magenta pixels (H>=140) at night and >=50% in daylight
+                # Require >=18px dense magenta pixels in daylight (or >=30% true magenta at night) so empty grass never triggers
                 main_px = cv2.countNonZero(pink_main[y : y + h, x : x + w])
-                req_ratio = 0.30 if is_night else 0.50
-                if main_px < max(3, int(raw_px * req_ratio)):
-                    continue
+                min_dense_magenta = max(14, int(round(18.0 * sx * sy)))
+                if is_night:
+                    if main_px < max(3, int(raw_px * 0.30)):
+                        continue
+                else:
+                    if main_px < max(min_dense_magenta, int(raw_px * 0.50)):
+                        continue
                 raw_nps.append((ox + x, oy + y, w, h, raw_px))
 
-        # 1b. Hybrid horizontal green HP-bar detector outside SELF zone (x=430..595, y=305..480 at 1024x768)
+        # 1b. Hybrid horizontal green HP-bar detector outside SELF zone (x=425..600, y=300..555 at 1024x768)
         #     HSV H=45..80, S>=130, V>=130, width 35..95px, height 3..7px -> click torso at (cx, bar_y + 38)!
         hp_bar_mask = cv2.bitwise_and(
             cv2.inRange(pf_hsv, np.array([45, 130, 130], dtype=np.uint8), np.array([80, 255, 255], dtype=np.uint8)),
@@ -372,12 +376,16 @@ class GoldRustlerDetector:
             max(0, sy1_s - oy) : min(hp_bar_mask.shape[0], sy2_s - oy),
             max(0, sx1_s - ox) : min(hp_bar_mask.shape[1], sx2_s - ox),
         ] = 0
-        # Explicit wide SELF exclusion box (x=430..595, y=305..480 at 1024x768, scaled)
+        # Explicit wide SELF exclusion box (x=425..600, y=300..555 at 1024x768, scaled)
         sx_1024 = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
         sy_1024 = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
+        self_excl_x1 = int(round(425.0 * sx_1024))
+        self_excl_y1 = int(round(300.0 * sy_1024))
+        self_excl_x2 = int(round(600.0 * sx_1024))
+        self_excl_y2 = int(round(555.0 * sy_1024))
         hp_bar_mask[
-            max(0, int(round(305.0 * sy_1024)) - oy) : min(hp_bar_mask.shape[0], int(round(480.0 * sy_1024)) - oy),
-            max(0, int(round(430.0 * sx_1024)) - ox) : min(hp_bar_mask.shape[1], int(round(595.0 * sx_1024)) - ox),
+            max(0, self_excl_y1 - oy) : min(hp_bar_mask.shape[0], self_excl_y2 - oy),
+            max(0, self_excl_x1 - ox) : min(hp_bar_mask.shape[1], self_excl_x2 - ox),
         ] = 0
 
         hp_bar_click_y_by_np: dict[tuple[int, int, int, int], int] = {}
@@ -426,6 +434,9 @@ class GoldRustlerDetector:
             )
             if np_box in hp_bar_click_y_by_np:
                 click_y = hp_bar_click_y_by_np[np_box]
+            # Reject any candidate whose click point falls inside the expanded SELF exclusion zone (425..600, 300..555)
+            if self_excl_x1 <= click_x <= self_excl_x2 and self_excl_y1 <= click_y <= self_excl_y2:
+                continue
             dist_px = math.hypot(foot_x - feet_x, foot_y - feet_y)
             has_hp, hp_est = self._read_hp_bar_below_nameplate(pf_hsv, ox, oy, np_box, fw, fh)
             conf = min(1.0, max(0.45, raw_px / max(1.0, float(mw * mh) * 0.45)))

@@ -261,8 +261,8 @@ def test_vm_1024_raw_night_screenshot_regression():
     word_a[:, ::2] = (28, 120, 50)
     word_b = np.full((10, 32, 3), (160, 110, 190), dtype=np.uint8)
     word_b[:, ::2] = (28, 120, 50)
-    bgr_syn[480:490, 400:424] = cv2.cvtColor(word_a, cv2.COLOR_HSV2BGR)
-    bgr_syn[480:490, 434:466] = cv2.cvtColor(word_b, cv2.COLOR_HSV2BGR)
+    bgr_syn[480:490, 200:224] = cv2.cvtColor(word_a, cv2.COLOR_HSV2BGR)
+    bgr_syn[480:490, 234:266] = cv2.cvtColor(word_b, cv2.COLOR_HSV2BGR)
 
     mobs_syn = pipe_vm.mobs.detect(FramePacket(image_bgr=bgr_syn, timestamp=2.0))
     assert len(mobs_syn) == 1, f"Expected 1 merged mob (and 0 solid hill smudge), got {mobs_syn}"

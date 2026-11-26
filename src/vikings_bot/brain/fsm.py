@@ -47,6 +47,9 @@ class FarmingFSM:
         self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
+        self.combat_hit_confirm_timeout_sec: float = float(f.get("combat_hit_confirm_timeout_sec", 3.0))
+        self.combat_confirmed_max_sec: float = float(f.get("combat_confirmed_max_sec", 30.0))
+        self.combat_post_last_hit_idle_sec: float = float(f.get("combat_post_last_hit_idle_sec", 2.5))
         self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
         self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
         self.combat_blind_timeout_sec: float = float(f.get("combat_blind_timeout_sec", 10.0))
@@ -56,7 +59,10 @@ class FarmingFSM:
         self.loot_clear_confirm_frames: int = max(2, int(f.get("loot_clear_confirm_frames", 4)))
         self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 3)))
         self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 24)))
-        self.post_kill_loot_window_sec: float = max(2.0, float(f.get("post_kill_loot_window_sec", 10.0)))
+        self.mandatory_loot_duration_sec: float = max(2.0, float(f.get("mandatory_loot_duration_sec", 7.0)))
+        self.post_kill_loot_window_sec: float = max(
+            self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 10.0))
+        )
         self.loot_min_window_sec: float = max(0.5, float(f.get("loot_min_window_sec", 2.0)))
         self.loot_empty_exit_sec: float = max(0.2, float(f.get("loot_empty_exit_sec", 1.5)))
         self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", self.post_kill_loot_window_sec))
@@ -107,9 +113,12 @@ class FarmingFSM:
         self._post_drag_settle_until: float = 0.0
         self._sweeps_in_search: int = 0
 
-        # COMBAT_WAIT (1-click, wait until dead) tracking
+        # COMBAT_WAIT (1-click, hit-confirmed combat, mandatory loot) tracking
         self.active_lock: MobTarget | None = None
         self._combat_click_xy: tuple[int, int] | None = None
+        self._combat_confirmed: bool = False
+        self._combat_confirmed_at: float | None = None
+        self._combat_last_hit_time: float | None = None
         self._combat_started_fresh: bool = True
         self._combat_first_hp_checked: bool = False
         self._combat_saw_hp: bool = False
@@ -419,6 +428,9 @@ class FarmingFSM:
         world.locked_mob_lost = False
         self.transition(BotState.COMBAT_WAIT, now, f"{reason}[lock#{lid}]")
         self._combat_click_xy = (int(mob.click_x), int(mob.click_y))
+        self._combat_confirmed = False
+        self._combat_confirmed_at = None
+        self._combat_last_hit_time = None
         self._combat_started_fresh = not bool(mob.has_hp_bar)
         self._combat_first_hp_checked = False
         self._combat_saw_hp = bool(mob.has_hp_bar)
@@ -665,8 +677,17 @@ class FarmingFSM:
         if rep_intents is not None:
             return rep_intents
 
-        # Priority 3: Stay inside farming spot leash
-        if self.mode == BotMode.FULL and self.navigator.is_outside_leash_exit(world.coords_smoothed):
+        # Priority 3: Stay inside farming spot leash (do NOT interrupt with NAVIGATE_TO_SPOT if <=25u and mobs visible!)
+        spot_dist = (
+            world.coords_smoothed.distance_to(self.navigator.spot_center)
+            if world.coords_smoothed is not None
+            else 9999.0
+        )
+        if (
+            self.mode == BotMode.FULL
+            and self.navigator.is_outside_leash_exit(world.coords_smoothed)
+            and not (spot_dist <= 25.0 and len(world.mobs) >= 1)
+        ):
             self.tracker.waypoint_index = 0
             self.transition(BotState.NAVIGATE_TO_SPOT, now, "drifted_outside_spot_area")
             return self.release_move_keys("spot_to_nav_release")
@@ -771,6 +792,48 @@ class FarmingFSM:
             if hp_val is not None and hp_val <= (self._combat_min_hp - 0.01):
                 self._combat_min_hp = hp_val
                 self._combat_last_hp_drop_ts = now
+                if not self._combat_confirmed:
+                    self._combat_confirmed = True
+                    self._combat_confirmed_at = now
+
+        # 2b. Floating hit damage confirmation ("Tulisan Hit"):
+        #     Once detected -> combat_confirmed = True & refresh last_hit_time!
+        if world.hit_damage_visible:
+            if not self._combat_confirmed:
+                self._combat_confirmed = True
+                self._combat_confirmed_at = now
+                logger.info("COMBAT_WAIT: hit damage confirmed at elapsed=%.2fs -> locking combat", elapsed)
+            self._combat_last_hit_time = now
+
+        # 2c. Stage 2 (Hit-Confirmed Combat): once last hit damage stops for >= 2.5s (or 30s max cap),
+        #     MANDATORY transition to BotState.LOOT (never skip straight to SEARCH_MOB / NAVIGATE_TO_SPOT)!
+        if self._combat_confirmed and self._combat_last_hit_time is not None:
+            post_hit_idle = max(0.0, now - self._combat_last_hit_time)
+            confirmed_dur = max(0.0, now - (self._combat_confirmed_at or self._state_entered_at))
+            if post_hit_idle >= self.combat_post_last_hit_idle_sec or confirmed_dur >= self.combat_confirmed_max_sec:
+                self.kills_count += 1
+                self.tracker.notify_kill()
+                self.tracker.record_kill_pos(
+                    self._combat_click_xy,
+                    now,
+                    window_sec=self.last_kill_loot_window_sec,
+                    radius_px=self.last_kill_loot_radius_px,
+                )
+                self.tracker.clear_target_lock()
+                if self.mode == BotMode.COMBAT:
+                    self.tracker.mark_loot_done()
+                    self.transition(BotState.SEARCH_MOB, now, "hit_confirmed_kill_combat_only")
+                else:
+                    self.tracker.trigger_pending_loot()
+                    rsn = (
+                        "hit_confirmed_post_hit_idle_mandatory_loot"
+                        if post_hit_idle >= self.combat_post_last_hit_idle_sec
+                        else "hit_confirmed_max_30s_mandatory_loot"
+                    )
+                    self.transition(BotState.LOOT, now, rsn)
+                return []
+            # Still actively exchanging hits -> stay silent in COMBAT_WAIT!
+            return []
 
         # 3. Kill Trigger A: Gold Bag drop appeared near feet/kill spot ONLY AFTER target HP was seen & is now gone!
         near_bags = [b for b in world.loot if b.dist_to_player_px <= 260.0 * scale_x]
@@ -816,15 +879,28 @@ class FarmingFSM:
                 self.transition(BotState.LOOT, now, "gold_kill_hp_gone_check_loot")
             return []
 
-        # 5. Anti-Ghost-Lock (1.5s when mob detector is off & neither movement nor THP appears -> blacklist 15s)
-        #    AND Watchdog Anti-Miss (2.4s when tracking mob; NEVER cancels while dist_to_player_px shrinks!)
+        # 5. Stage 1 (No Hit Confirmation within 3.0s) & Anti-Ghost-Lock (1.5s when idle):
+        #    If click missed onto empty grass (no hit_damage_visible and no HP drop), blacklist 15s -> SEARCH_MOB!
         miss_limit = self.combat_miss_timeout_sec if world.locked_mob_visible else self.combat_ghost_lock_sec
         approach_active = world.locked_mob_visible and ((now - self._combat_last_approach_ts) < miss_limit)
         coords_moving = idle_no_move < miss_limit
-        if (not self._combat_saw_hp) and elapsed >= miss_limit and (not approach_active) and (not coords_moving):
+        hit_confirm_expired = (
+            (not self._combat_confirmed)
+            and elapsed >= self.combat_hit_confirm_timeout_sec
+            and (not approach_active)
+        )
+        ghost_idle_expired = (
+            (not self._combat_saw_hp)
+            and (not self._combat_confirmed)
+            and elapsed >= miss_limit
+            and (not approach_active)
+            and (not coords_moving)
+        )
+        if hit_confirm_expired or ghost_idle_expired:
             logger.info(
-                "Anti-Ghost-Lock: idle %.1fs without movement or THP -> blacklisting %s for %.0fs",
+                "COMBAT_WAIT miss/ghost (elapsed=%.1fs, confirmed=%s) -> blacklisting %s for %.0fs",
                 elapsed,
+                self._combat_confirmed,
                 self._combat_click_xy,
                 self.combat_ghost_blacklist_sec,
             )
@@ -835,7 +911,11 @@ class FarmingFSM:
                 click_xy=self._combat_click_xy,
             )
             self.tracker.clear_target_lock()
-            self.transition(BotState.SEARCH_MOB, now, "anti_ghost_lock_idle")
+            self.transition(
+                BotState.SEARCH_MOB,
+                now,
+                "combat_miss_no_hit_confirm_3s" if hit_confirm_expired else "anti_ghost_lock_idle",
+            )
             return []
 
         # 6. Watchdog Stagnant HP while standing still
@@ -846,11 +926,17 @@ class FarmingFSM:
             self.transition(BotState.SEARCH_MOB, now, "watchdog_hp_stagnant")
             return []
 
-        # 7. Hard safety timeout cap
-        if elapsed >= self.combat_hard_timeout_sec:
-            self._record_aborted_mob(world.locked_mob, now, ttl_sec=6.0)
+        # 7. Hard safety timeout cap (if combat was confirmed -> mandatory LOOT; else back to SEARCH_MOB)
+        cap_sec = self.combat_confirmed_max_sec if self._combat_confirmed else self.combat_hard_timeout_sec
+        if elapsed >= cap_sec:
             self.tracker.clear_target_lock()
-            self.transition(BotState.SEARCH_MOB, now, "watchdog_hard_timeout")
+            if self._combat_confirmed and self.mode != BotMode.COMBAT:
+                self.kills_count += 1
+                self.tracker.trigger_pending_loot()
+                self.transition(BotState.LOOT, now, "combat_confirmed_cap_mandatory_loot")
+            else:
+                self._record_aborted_mob(world.locked_mob, now, ttl_sec=6.0)
+                self.transition(BotState.SEARCH_MOB, now, "watchdog_hard_timeout")
             return []
 
         # Stay completely silent — ZERO extra clicks until monster dies!
@@ -883,9 +969,10 @@ class FarmingFSM:
 
         empty_dur = (now - self._loot_empty_since) if self._loot_empty_since is not None else 0.0
         window_expired = elapsed >= self.post_kill_loot_window_sec
-        empty_cleared = elapsed >= self.loot_min_window_sec and empty_dur >= self.loot_empty_exit_sec
+        # Mandatory 7.0s post-kill LOOT window: never exit early before mandatory_loot_duration_sec (7.0s)!
+        mandatory_done = elapsed >= self.mandatory_loot_duration_sec and (bag_count == 0 or empty_dur >= self.loot_empty_exit_sec)
 
-        if window_expired or empty_cleared:
+        if window_expired or mandatory_done:
             self.tracker.mark_loot_done()
             if self.mode == BotMode.LOOT:
                 self._state_entered_at = now
@@ -895,7 +982,7 @@ class FarmingFSM:
             self.transition(
                 BotState.SEARCH_MOB,
                 now,
-                "post_kill_loot_cleared" if empty_cleared else "post_kill_loot_window_timeout",
+                "mandatory_loot_7s_cleared" if mandatory_done else "post_kill_loot_window_timeout",
             )
             return []
 

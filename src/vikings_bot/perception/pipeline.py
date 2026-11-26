@@ -133,6 +133,46 @@ class PerceptionPipeline:
             return (True, max(0.03, min(1.0, float(best_w) / expected_w)))
         return (False, None)
 
+    def _probe_hit_damage_numbers(
+        self,
+        pf_hsv: np.ndarray,
+        ox: int,
+        oy: int,
+        frame_w: int,
+        frame_h: int,
+    ) -> bool:
+        """Detect floating orange/yellow hit damage numbers in center combat zone (x=390..635, y=200..360 at 1024x768)."""
+        if pf_hsv.size == 0 or frame_w < 64 or frame_h < 64:
+            return False
+        sx = 1.0 if self.mobs.hud_fixed_pixel_ui else (frame_w / 1024.0)
+        sy = 1.0 if self.mobs.hud_fixed_pixel_ui else (frame_h / 768.0)
+        x1 = max(0, int(round(390.0 * sx)) - ox)
+        x2 = min(pf_hsv.shape[1], int(round(635.0 * sx)) - ox)
+        y1 = max(0, int(round(200.0 * sy)) - oy)
+        y2 = min(pf_hsv.shape[0], int(round(360.0 * sy)) - oy)
+        if (x2 - x1) < 16 or (y2 - y1) < 16:
+            return False
+
+        sub = pf_hsv[y1:y2, x1:x2]
+        mask = cv2.inRange(
+            sub,
+            np.array([10, 140, 190], dtype=np.uint8),
+            np.array([32, 255, 255], dtype=np.uint8),
+        )
+        min_h = max(12, int(round(16.0 * sy)))
+        if cv2.countNonZero(mask) < min_h * 2:
+            return False
+        n_lbl, _lbl, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        max_w = int(round(160.0 * sx))
+        max_h = int(round(90.0 * sy))
+        for idx in range(1, n_lbl):
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            if 3 <= w <= max_w and min_h <= h <= max_h and area >= max(16, min_h):
+                return True
+        return False
+
     def analyze(
         self,
         frame: FramePacket,
@@ -191,6 +231,7 @@ class PerceptionPipeline:
         camera_pitch_state: str = "ok"
         combat_target_hp_visible = False
         combat_target_hp_ratio: float | None = None
+        hit_damage_visible = False
 
         if not skip_field_detectors:
             t_pf = time.perf_counter()
@@ -216,6 +257,9 @@ class PerceptionPipeline:
             if in_combat_wait:
                 if shared_pf_hsv is not None:
                     combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
+                        shared_pf_hsv, ox, oy, frame.width, frame.height
+                    )
+                    hit_damage_visible = self._probe_hit_damage_numbers(
                         shared_pf_hsv, ox, oy, frame.width, frame.height
                     )
                 timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
@@ -335,5 +379,6 @@ class PerceptionPipeline:
             playfield_luma=playfield_luma,
             combat_target_hp_visible=combat_target_hp_visible,
             combat_target_hp_ratio=combat_target_hp_ratio,
+            hit_damage_visible=hit_damage_visible,
             timings_ms=timings,
         )

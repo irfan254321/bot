@@ -131,15 +131,15 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
     acts_l2 = fsm.step(tracker.update(_snap(4.5, mobs=(), loot=(close_bag,))))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_l2)
 
-    # 6. Bags cleared (min 2.0s post-kill window + 1.5s consecutive empty) -> returns to SEARCH_MOB -> MMB sweep!
+    # 6. Bags cleared (mandatory 7.0s post-kill LOOT window) -> returns to SEARCH_MOB -> MMB sweep!
     fsm.step(tracker.update(_snap(5.0, mobs=(), loot=())))
-    assert fsm.state == BotState.LOOT  # still inside 2.0s initial window & <1.5s empty
-    fsm.step(tracker.update(_snap(6.0, mobs=(), loot=())))
-    assert fsm.state == BotState.LOOT  # empty for 1.0s < 1.5s
-    fsm.step(tracker.update(_snap(6.6, mobs=(), loot=())))
+    assert fsm.state == BotState.LOOT  # still inside mandatory 7.0s LOOT window
+    fsm.step(tracker.update(_snap(10.0, mobs=(), loot=())))
+    assert fsm.state == BotState.LOOT  # elapsed 6.3s < 7.0s
+    fsm.step(tracker.update(_snap(10.8, mobs=(), loot=())))
     assert fsm.state == BotState.SEARCH_MOB
 
-    acts_sweep = fsm.step(tracker.update(_snap(7.0, mobs=(), loot=())))
+    acts_sweep = fsm.step(tracker.update(_snap(11.2, mobs=(), loot=())))
     assert any(isinstance(a, DragCameraIntent) and a.button == "middle" and a.dy == 0 for a in acts_sweep)
 
 
@@ -784,13 +784,13 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     assert any(isinstance(a, ClickScreenIntent) and a.x == 440 and a.y == 450 for a in acts_l1)
     assert not any(isinstance(a, DragCameraIntent) for a in acts_l1)
 
-    # Only far bag (>220px) remains -> ignored, stays in LOOT during initial 2.0s window (t=5.5 -> elapsed 1.7s)
-    acts_l2 = fsm.step(tracker.update(_snap(5.5, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
+    # Only far bag (>220px) remains -> ignored, stays in LOOT during mandatory 7.0s window (t=10.0 -> elapsed 6.2s)
+    acts_l2 = fsm.step(tracker.update(_snap(10.0, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
     assert fsm.state == BotState.LOOT
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_l2)
 
-    # After >=2.0s elapsed AND >=1.5s consecutive empty (empty started at 5.5 -> 7.1 is 1.6s empty, elapsed 3.3s) -> SEARCH_MOB!
-    fsm.step(tracker.update(_snap(7.1, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
+    # After mandatory 7.0s elapsed (t=10.9 -> elapsed 7.1s >= 7.0s) with no close bags -> SEARCH_MOB!
+    fsm.step(tracker.update(_snap(10.9, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
     assert fsm.state == BotState.SEARCH_MOB
 
     # Verify 10.0s hard post_kill_loot_window_sec cap when close bags keep appearing continuously
@@ -919,3 +919,115 @@ def test_combat_wait_hard_gate_post_kill_loot_e_tap_and_hybrid_green_hp_bar_dete
     bgr_arm[390:394, 623:628] = cv2.cvtColor(np.full((4, 5, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
     drops_arm, _ = orig_loot(FramePacket(image_bgr=bgr_arm, timestamp=6.0), mobs=(), max_dist_override_px=220.0)
     assert len(drops_arm) == 0, f"Vertical arm / +130px HP-bar armor gleam must be rejected: {drops_arm}"
+
+
+def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
+    """Verify Find -> Hit-Confirmed Combat (3s miss / 2.5s post-hit -> mandatory 7s LOOT) -> Find,
+    expanded SELF zone (425..600, 300..555), and NAVIGATE_TO_SPOT <=25u mob guard."""
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 3.0
+    assert float(cfg.farming["combat_confirmed_max_sec"]) == 30.0
+    assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
+    assert float(cfg.farming["mandatory_loot_duration_sec"]) == 7.0
+
+    pipe = PerceptionPipeline(cfg)
+
+    # 1. Pipeline detects floating orange/yellow damage digits (height >= 16px) in x=390..635, y=200..360 during COMBAT_WAIT
+    hsv_bg = np.zeros((768, 1024, 3), dtype=np.uint8)
+    hsv_bg[:, :] = (28, 120, 60)
+    bgr_hit = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    # Paint bright orange damage digits '128' (22px tall) at (480, 260)
+    dmg_col = cv2.cvtColor(np.full((22, 12, 3), (20, 220, 240), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr_hit[260:282, 480:492] = dmg_col
+    snap_hit = pipe.analyze(
+        FramePacket(image_bgr=bgr_hit, timestamp=1.0),
+        current_state=BotState.COMBAT_WAIT,
+        check_interface_mode=False,
+    )
+    assert snap_hit.hit_damage_visible is True
+    assert snap_hit.mobs == () and snap_hit.gold_bags == ()
+
+    # Plain grass frame -> hit_damage_visible is False
+    bgr_plain = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    snap_nohit = pipe.analyze(
+        FramePacket(image_bgr=bgr_plain, timestamp=1.5),
+        current_state=BotState.COMBAT_WAIT,
+        check_interface_mode=False,
+    )
+    assert snap_nohit.hit_damage_visible is False
+
+    # 2. Expanded SELF zone (x=425..600, y=300..555): points (523, 532) and (500, 461) NEVER targeted!
+    bgr_self = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    green_bar = cv2.cvtColor(np.full((4, 52, 3), (62, 210, 210), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    # Bar whose click_y = 494 + 38 = 532 at cx=523 (inside SELF x=425..600, y=300..555!)
+    bgr_self[494:498, 497:549] = green_bar
+    # Bar whose click_y = 423 + 38 = 461 at cx=500 (inside SELF!)
+    bgr_self[423:427, 474:526] = green_bar
+    # Legitimate Gold Rustler outside SELF at (260, 260)
+    bgr_self[260:264, 234:286] = green_bar
+    mobs_self = pipe.mobs.detect(FramePacket(image_bgr=bgr_self, timestamp=2.0))
+    assert len(mobs_self) == 1 and abs(mobs_self[0].click_x - 260) <= 4
+
+    # 3. Stage 1 Miss (no hit_damage_visible & no HP drop for 3.0s) -> blacklists 15s & returns to SEARCH_MOB!
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    grass_mob = _mob(cx=310, cy=320, dist=190.0, has_hp=False)
+    fsm.step(tracker.update(_snap(1.0, x=615, y=1830, fw=1024, fh=768, mobs=(grass_mob,))))
+    assert fsm.state == BotState.COMBAT_WAIT
+    # Character walks briefly (coords change) but never sees hit_damage_visible or HP drop for 3.0s!
+    fsm.step(tracker.update(_snap(2.5, x=617, y=1831, fw=1024, fh=768, mobs=())))
+    assert fsm.state == BotState.COMBAT_WAIT
+    fsm.step(tracker.update(_snap(4.1, x=618, y=1831, fw=1024, fh=768, mobs=())))
+    assert fsm.state == BotState.SEARCH_MOB
+    # Blacklisted for 15s: clicking same grass coord at t=10.0 is skipped!
+    acts_bl = fsm.step(tracker.update(_snap(10.0, x=618, y=1831, fw=1024, fh=768, mobs=(grass_mob,))))
+    assert fsm.state == BotState.SEARCH_MOB and not any(isinstance(a, ClickScreenIntent) for a in acts_bl)
+
+    # 4. Stage 2 Hit-Confirmed Combat -> 2.5s post-last-hit idle -> MANDATORY 7.0s LOOT -> SEARCH_MOB!
+    real_mob = _mob(cx=720, cy=310, dist=210.0, has_hp=False)
+    fsm.step(tracker.update(_snap(20.0, x=615, y=1830, fw=1024, fh=768, mobs=(real_mob,))))
+    assert fsm.state == BotState.COMBAT_WAIT
+    # Hit damage numbers appear at t=21.0 and t=24.0 -> combat_confirmed=True, zero mouse/camera actions!
+    for ts in (21.0, 22.5, 24.0):
+        w_h = tracker.update(
+            PerceptionSnapshot(
+                timestamp=ts, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=615, y=1830, confidence=0.98), minimap=MinimapReading(),
+                hit_damage_visible=True,
+            )
+        )
+        assert fsm.step(w_h) == []
+        assert fsm.state == BotState.COMBAT_WAIT and fsm._combat_confirmed is True
+    # Still within 2.5s of last hit (t=26.0 -> 2.0s idle) -> stays in COMBAT_WAIT
+    assert fsm.step(tracker.update(_snap(26.0, fw=1024, fh=768))) == []
+    assert fsm.state == BotState.COMBAT_WAIT
+    # At t=26.6 (2.6s >= 2.5s since last hit) -> MANDATORY transition to BotState.LOOT!
+    fsm.step(tracker.update(_snap(26.6, fw=1024, fh=768)))
+    assert fsm.state == BotState.LOOT
+    # Mandatory 7.0s LOOT: still in LOOT at t=33.0 (6.4s < 7.0s) tapping E, exits at t=33.7 (7.1s >= 7.0s)!
+    acts_loot_e = fsm.step(tracker.update(_snap(33.0, fw=1024, fh=768)))
+    assert fsm.state == BotState.LOOT
+    assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_loot_e)
+    fsm.step(tracker.update(_snap(33.7, fw=1024, fh=768)))
+    assert fsm.state == BotState.SEARCH_MOB
+
+    # 5. NAVIGATE_TO_SPOT guard: when spot_dist <= 25u and len(mobs) >= 1, stays in SEARCH_MOB & engages mob!
+    from dataclasses import replace as dc_replace
+
+    spot = fsm.navigator.spot_center
+    # Force a tight farm_radius=10 so spot_dist=20u would normally trigger leash exit
+    fsm.navigator.route = dc_replace(fsm.navigator.route, farm_radius=10.0)
+    fsm.navigator.leash_exit_margin = 0.0
+    m_near = _mob(cx=740, cy=320, dist=180.0, has_hp=False)
+    acts_no_nav = fsm.step(
+        tracker.update(_snap(35.0, x=int(spot.x + 20), y=int(spot.y), fw=1024, fh=768, mobs=(m_near,)))
+    )
+    assert fsm.state == BotState.COMBAT_WAIT
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 740 and a.y == 320 for a in acts_no_nav)
