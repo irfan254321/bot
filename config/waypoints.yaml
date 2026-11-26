@@ -1,0 +1,198 @@
+# Vikings Online Farming Routes (World Coordinates: +X = East, +Y = North)
+# Tight Gold Rustler spot centered around (615, 1830), leashed to +-20 X / +-20 Y so bot stays in area
+active_route: gold_rustler_spot
+
+routes:
+  gold_rustler_spot:
+    farm_radius: 22.0
+    arrival_radius: 7.0
+    loop: true
+    # Calibrated from Video 4 (19-39-18.mp4): Addon Keep (1409,1779) -> Gold Rustler (624,1818)
+    travel_waypoints:
+      - name: addon_west_1
+        x: 1356.0
+        y: 1774.0
+      - name: addon_west_2
+        x: 1234.0
+        y: 1760.0
+      - name: addon_west_3
+        x: 1113.0
+        y: 1747.0
+      - name: addon_west_4
+        x: 992.0
+        y: 1733.0
+      - name: addon_west_5
+        x: 871.0
+        y: 1720.0
+      - name: addon_west_6
+        x: 810.0
+        y: 1723.0
+      - name: river_east_bank
+        x: 750.0
+        y: 1734.0
+      - name: river_west_bank
+        x: 690.0
+        y: 1746.0
+      - name: gold_approach
+        x: 639.0
+        y: 1768.0
+      - name: gold_spot_entry
+        x: 624.0
+        y: 1818.0
+    waypoints:
+      - name: spot_center
+        x: 615.0
+        y: 1830.0
+      - name: spot_north_east
+        x: 629.0
+        y: 1844.0
+      - name: spot_south_east
+        x: 629.0
+        y: 1816.0
+      - name: spot_south_west
+        x: 601.0
+        y: 1816.0
+      - name: spot_north_west
+        x: 601.0
+        y: 1844.0
+
+  gem_rustler_spot:
+    farm_radius: 22.0
+    arrival_radius: 7.0
+    loop: true
+    # Calibrated from Video 2026-11-25_19-18-21.mp4: Addon Keep (1409,1779) -> New Gem Rustler Spot (1195,1568)
+    travel_waypoints:
+      - name: gem_sw_1
+        x: 1377.0
+        y: 1770.0
+      - name: gem_sw_2
+        x: 1339.0
+        y: 1756.0
+      - name: gem_sw_3
+        x: 1313.0
+        y: 1727.0
+      - name: gem_sw_4
+        x: 1293.0
+        y: 1691.0
+      - name: gem_sw_5
+        x: 1275.0
+        y: 1655.0
+      - name: gem_sw_6
+        x: 1257.0
+        y: 1619.0
+      - name: gem_sw_7
+        x: 1229.0
+        y: 1590.0
+      - name: gem_approach
+        x: 1212.0
+        y: 1579.0
+      - name: gem_spot_entry
+        x: 1195.0
+        y: 1568.0
+    waypoints:
+      - name: gem_center
+        x: 1195.0
+        y: 1568.0
+      - name: gem_north_east
+        x: 1207.0
+        y: 1580.0
+      - name: gem_south_east
+        x: 1207.0
+        y: 1556.0
+      - name: gem_south_west
+        x: 1183.0
+        y: 1556.0
+      - name: gem_north_west
+        x: 1183.0
+        y: 1580.0
+
+  gem_rustler_fallback_spot:
+    farm_radius: 22.0
+    arrival_radius: 7.0
+    loop: true
+    # Fallback Gem Rustler spot after 2 deaths: Addon Keep (1409,1779) -> Old Gem Rustler (1092,1115)
+    travel_waypoints:
+      - name: addon_sw_1
+        x: 1368.0
+        y: 1764.0
+      - name: addon_sw_2
+        x: 1326.0
+        y: 1743.0
+      - name: addon_sw_3
+        x: 1288.0
+        y: 1648.0
+      - name: river_north_bank
+        x: 1250.0
+        y: 1554.0
+      - name: river_crossing
+        x: 1213.0
+        y: 1460.0
+      - name: hill_south_1
+        x: 1175.0
+        y: 1365.0
+      - name: hill_south_2
+        x: 1137.0
+        y: 1271.0
+      - name: gem_approach
+        x: 1100.0
+        y: 1176.0
+      - name: gem_spot_entry
+        x: 1092.0
+        y: 1119.0
+    waypoints:
+      - name: gem_center
+        x: 1092.0
+        y: 1115.0
+      - name: gem_north_east
+        x: 1106.0
+        y: 1129.0
+      - name: gem_south_east
+        x: 1106.0
+        y: 1101.0
+      - name: gem_south_west
+        x: 1078.0
+        y: 1101.0
+      - name: gem_north_west
+        x: 1078.0
+        y: 1129.0
+
+  metal_rustler_spot:
+    farm_radius: 22.0
+    arrival_radius: 7.0
+    loop: true
+    # Calibrated from Video 1 (19-36-01.mp4): Addon Keep (1409,1779) -> Riverbank (1197,1567)
+    travel_waypoints:
+      - name: rb_sw_1
+        x: 1352.0
+        y: 1762.0
+      - name: rb_sw_2
+        x: 1322.0
+        y: 1738.0
+      - name: rb_sw_3
+        x: 1291.0
+        y: 1685.0
+      - name: rb_sw_4
+        x: 1256.0
+        y: 1636.0
+      - name: rb_sw_5
+        x: 1216.0
+        y: 1586.0
+      - name: rb_spot_entry
+        x: 1197.0
+        y: 1567.0
+    waypoints:
+      - name: metal_center
+        x: 1197.0
+        y: 1567.0
+      - name: metal_ne
+        x: 1209.0
+        y: 1579.0
+      - name: metal_se
+        x: 1209.0
+        y: 1555.0
+      - name: metal_sw
+        x: 1185.0
+        y: 1555.0
+      - name: metal_nw
+        x: 1185.0
+        y: 1579.0

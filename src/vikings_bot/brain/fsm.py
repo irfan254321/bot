@@ -1,0 +1,782 @@
+"""Mouse-Mode Farming, Death Respawn, Return-to-Spot & 80m Auto-Repair Finite State Machine."""
+
+from __future__ import annotations
+
+import logging
+import math
+
+from vikings_bot.brain.mouse_farm import MouseFarmController
+from vikings_bot.brain.navigation import MouseModeNavigator
+from vikings_bot.brain.respawn_travel import RespawnTravelController
+from vikings_bot.config import BotConfig
+from vikings_bot.input.actions import (
+    ActionIntent,
+    DragCameraIntent,
+    HoldKeyIntent,
+    TapKeyIntent,
+)
+from vikings_bot.state.models import BotMode, BotState, MobTarget, Point2D, WorldState
+from vikings_bot.state.tracker import WorldStateTracker
+
+logger = logging.getLogger(__name__)
+
+
+class FarmingFSM:
+    """Orchestrates Auto-ESC Mouse Guard -> Search -> 1x Click Combat Wait -> Loot -> MMB Sweep -> 80m Repair -> Respawn."""
+
+    def __init__(
+        self,
+        config: BotConfig,
+        tracker: WorldStateTracker,
+        mode: BotMode = BotMode.FULL,
+    ) -> None:
+        self.config = config
+        self.tracker = tracker
+        self.mode = mode
+        self.navigator = MouseModeNavigator(config, tracker)
+        self.farm = MouseFarmController(config, tracker)
+        self.respawn_travel = RespawnTravelController(config, tracker)
+
+        f = config.farming
+        c = config.controls
+        p = config.perception
+
+        self.recovery_duration_sec = float(f.get("recovery_duration_sec", 1.4))
+        self.anchor_spot_on_resume = bool(f.get("anchor_spot_on_resume", True))
+        self.fallback_route_name: str | None = str(f.get("fallback_route_name") or "").strip() or None
+        self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
+        self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
+        self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
+        self.combat_stagnant_hp_sec: float = float(f.get("combat_stagnant_hp_sec", 5.0))
+        self.combat_hard_timeout_sec: float = float(f.get("combat_hard_timeout_sec", 28.0))
+        self.combat_zero_drop_kill_sec: float = float(f.get("combat_zero_drop_kill_sec", 1.6))
+        self.loot_clear_confirm_frames: int = max(2, int(f.get("loot_clear_confirm_frames", 4)))
+        self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 3)))
+        self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", 18.0))
+        self.last_kill_loot_radius_px: float = float(p.get("last_kill_loot_radius_px", 140.0))
+        self.last_kill_loot_window_sec: float = float(p.get("last_kill_loot_window_sec", 0.80))
+
+        self.control_mode_setting: str = str(c.get("control_mode", "mouse")).lower()
+        self.control_mode: str = str(c.get("mode", "mouse")).lower()
+        self.forward_key: str = str(c.get("move_forward_key", "w"))
+        self.back_key: str = str(c.get("move_back_key", "s"))
+        self.strafe_left_key: str = str(c.get("strafe_left_key", "a"))
+        self.strafe_right_key: str = str(c.get("strafe_right_key", "d"))
+        self.hp_potion_key = c.get("hp_potion_key", "0")
+        self.mp_potion_key = c.get("mp_potion_key", "9")
+        self.hp_threshold = float(c.get("hp_potion_threshold", c.get("hp_threshold", 0.65)))
+        self.mp_threshold = float(c.get("mp_potion_threshold", c.get("mp_threshold", 0.30)))
+        self.hp_cd = float(c.get("hp_potion_cooldown_sec", 1.5))
+        self.mp_cd = float(c.get("mp_potion_cooldown_sec", 2.0))
+        self.weapon_swap_key = str(c.get("weapon_swap_key", "q"))
+        self.weapon_min_ea = int(c.get("weapon_min_ea", 130))
+        self.weapon_swap_cd = float(c.get("weapon_swap_cooldown_sec", 2.5))
+        self.auto_restore_mouse_mode: bool = (
+            bool(c.get("auto_restore_mouse_mode", True)) and self.control_mode == "mouse"
+        )
+
+        self.state: BotState = BotState.PAUSED
+        self._need_dynamic_anchor: bool = False
+        self._just_resumed: bool = False
+        self._state_entered_at: float = 0.0
+        self._recovery_attempts: int = 0
+        self.kills_count: int = 0
+        self.deaths_count: int = 0
+        self.repairs_count: int = 0
+        self._active_farming_sec: float = 0.0
+        self._last_step_ts: float | None = None
+        self._repair_weapon_checked: bool = False
+        self._force_repair_requested: bool = False
+        self._fallback_route_activated: bool = False
+
+        # Auto-ESC Mouse Mode guard state
+        self._mouse_mode_verified: bool = False
+        self._mouse_restore_wait_until: float = 0.0
+        self._post_drag_settle_until: float = 0.0
+        self._sweeps_in_search: int = 0
+
+        # COMBAT_WAIT (1-click, wait until dead) tracking
+        self._combat_click_xy: tuple[int, int] | None = None
+        self._combat_started_fresh: bool = True
+        self._combat_first_hp_checked: bool = False
+        self._combat_saw_hp: bool = False
+        self._combat_last_hp_ts: float | None = None
+        self._combat_min_hp: float = 1.0
+        self._combat_last_hp_drop_ts: float = 0.0
+        self._combat_anchor_pos: Point2D | None = None
+        self._combat_last_move_ts: float = 0.0
+        self._combat_min_dist_px: float = 9999.0
+        self._combat_last_approach_ts: float = 0.0
+        self._combat_loot_streak: int = 0
+        self._aborted_mobs: list[tuple[float, float, float]] = []  # (expire_ts, cx, cy)
+
+        # LOOT_PICKUP per-bag retry cap (max 3 attempts -> blacklist 120s)
+        self._loot_bag_xy: tuple[float, float] | None = None
+        self._loot_bag_attempts: int = 0
+        self._loot_prev_count: int = 0
+        self._loot_clear_streak: int = 0
+        self.last_blacklisted_loot: tuple[float, float] | None = None
+
+    def set_control_mode(self, mode: str) -> None:
+        m = str(mode).strip().lower()
+        if m in ("mouse", "keyboard"):
+            self.control_mode = m
+            self.navigator.control_mode = m
+            self.respawn_travel.control_mode = m
+            self.auto_restore_mouse_mode = (
+                bool(self.config.controls.get("auto_restore_mouse_mode", True)) and m == "mouse"
+            )
+
+    def release_move_keys(self, reason: str) -> list[ActionIntent]:
+        self.tracker.notify_movement_stopped()
+        return [
+            HoldKeyIntent(key=self.forward_key, hold=False, reason=reason),
+            HoldKeyIntent(key=self.back_key, hold=False, reason=reason),
+            HoldKeyIntent(key=self.strafe_left_key, hold=False, reason=reason),
+            HoldKeyIntent(key=self.strafe_right_key, hold=False, reason=reason),
+        ]
+
+    def _check_survival_potions(self, state: WorldState, now: float) -> list[ActionIntent]:
+        intents: list[ActionIntent] = []
+        if (
+            self.hp_potion_key
+            and 0.01 < state.hp_ratio < self.hp_threshold
+            and self.tracker.is_ready("hp_potion", now)
+        ):
+            self.tracker.set_cooldown("hp_potion", now, self.hp_cd)
+            intents.append(TapKeyIntent(key=str(self.hp_potion_key), reason=f"hp_pot({state.hp_ratio:.0%})"))
+
+        if (
+            self.mp_potion_key
+            and state.mp_ratio < self.mp_threshold
+            and self.tracker.is_ready("mp_potion", now)
+        ):
+            self.tracker.set_cooldown("mp_potion", now, self.mp_cd)
+            intents.append(TapKeyIntent(key=str(self.mp_potion_key), reason=f"mp_pot({state.mp_ratio:.0%})"))
+        return intents
+
+    def _check_weapon_swap(self, state: WorldState, now: float) -> list[ActionIntent]:
+        ea = state.snapshot.ea_value
+        if ea is None or ea >= self.weapon_min_ea or not self.weapon_swap_key:
+            return []
+        if not self.tracker.is_ready("weapon_swap", now):
+            return []
+        self.tracker.set_cooldown("weapon_swap", now, self.weapon_swap_cd)
+        return [TapKeyIntent(key=self.weapon_swap_key, reason=f"weapon_swap_ea({ea}<{self.weapon_min_ea})")]
+
+    def _record_aborted_mob(self, mob: MobTarget | None, now: float, ttl_sec: float = 6.0) -> None:
+        self._aborted_mobs = [m for m in self._aborted_mobs if now < m[0]]
+        if mob is not None:
+            self._aborted_mobs.append((now + ttl_sec, float(mob.click_x), float(mob.click_y)))
+
+    def _is_aborted_mob(self, mob: MobTarget, now: float, scale_x: float) -> bool:
+        if not self._aborted_mobs:
+            return False
+        self._aborted_mobs = [m for m in self._aborted_mobs if now < m[0]]
+        lim = 105.0 * max(0.55, scale_x)
+        return any(math.hypot(mob.click_x - ax, mob.click_y - ay) <= lim for _exp, ax, ay in self._aborted_mobs)
+
+    def transition(self, new_state: BotState, now: float, reason: str = "") -> None:
+        if new_state == self.state:
+            return
+        old = self.state
+        self.state = new_state
+        self._state_entered_at = now
+        if new_state in (BotState.PAUSED, BotState.EMERGENCY_STOP):
+            self.tracker.clear_target_lock()
+            self.tracker.notify_movement_stopped()
+        elif new_state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE):
+            self._sweeps_in_search = 0
+            self.farm.reset_sweep_direction()
+            self.tracker.clear_target_lock()
+            self.tracker.notify_movement_stopped()
+        elif new_state == BotState.COMBAT_WAIT:
+            self._combat_loot_streak = 0
+            self._combat_first_hp_checked = False
+            self.tracker.notify_movement_stopped()
+        elif new_state == BotState.LOOT:
+            self._loot_bag_xy = None
+            self._loot_bag_attempts = 0
+            self._loot_prev_count = 0
+            self._loot_clear_streak = 0
+            self.tracker.clear_target_lock()
+            self.tracker.notify_movement_stopped()
+        elif new_state == BotState.DEAD_RESPAWN:
+            self.tracker.reset_for_respawn()
+            self.respawn_travel.reset_teleport_state(now)
+            self.respawn_travel.reset_travel_state()
+        elif new_state == BotState.REPAIR_RECALL:
+            self.tracker.clear_target_lock()
+            self.tracker.notify_movement_stopped()
+            self.respawn_travel.reset_repair_recall_state(now)
+        elif new_state == BotState.REPAIR_AT_NPC:
+            self.tracker.clear_target_lock()
+            self.tracker.notify_movement_stopped()
+            self.respawn_travel.reset_repair_npc_state(now)
+            self._mouse_mode_verified = False
+        elif new_state == BotState.TELEPORT_TO_SPOT:
+            self.tracker.clear_target_lock()
+            self.tracker.notify_movement_stopped()
+            self.respawn_travel.reset_teleport_state(now)
+            self._mouse_mode_verified = False
+        elif new_state == BotState.TRAVEL_TO_SPOT:
+            self.tracker.clear_target_lock()
+            self.tracker.notify_movement_stopped()
+            self.respawn_travel.reset_travel_state()
+            self._mouse_mode_verified = False
+        elif new_state == BotState.RECOVER_STUCK:
+            self._recovery_attempts += 1
+            self.tracker.clear_target_lock()
+        logger.info("FSM %s -> %s (%s)", old.value, new_state.value, reason)
+
+    def resume(self, now: float) -> None:
+        if self.state == BotState.EMERGENCY_STOP:
+            return
+        self._just_resumed = True
+        self._mouse_mode_verified = False
+        if self.mode == BotMode.NAVIGATE:
+            self.transition(BotState.NAVIGATE_TO_SPOT, now, "resume_navigate")
+        elif self.mode == BotMode.LOOT:
+            self.transition(BotState.LOOT, now, "resume_loot")
+        elif self.mode == BotMode.COMBAT:
+            self.transition(BotState.SEARCH_MOB, now, "resume_combat")
+        else:
+            self._need_dynamic_anchor = self.anchor_spot_on_resume
+            self.transition(
+                BotState.SEARCH_MOB if self.anchor_spot_on_resume else BotState.NAVIGATE_TO_SPOT,
+                now,
+                "resume_full",
+            )
+
+    def pause(self, now: float, reason: str = "manual_pause") -> None:
+        if self.state != BotState.EMERGENCY_STOP:
+            self._just_resumed = False
+            self._last_step_ts = None
+            self.transition(BotState.PAUSED, now, reason)
+
+    def request_repair_now(self) -> None:
+        self._force_repair_requested = True
+
+    @property
+    def repair_remaining_minutes(self) -> float | None:
+        if not self.respawn_travel.repair_enabled:
+            return None
+        if self._force_repair_requested:
+            return 0.0
+        return max(0.0, (self.respawn_travel.repair_interval_sec - self._active_farming_sec) / 60.0)
+
+    def emergency_stop(self, now: float, reason: str = "kill_switch") -> None:
+        self._just_resumed = False
+        self.transition(BotState.EMERGENCY_STOP, now, reason)
+
+    @property
+    def configured_spot_center(self) -> Point2D:
+        if self.navigator.route.waypoints:
+            w0 = self.navigator.route.waypoints[0]
+            return Point2D(w0.x, w0.y)
+        return self.navigator.spot_center
+
+    @property
+    def travel_status_desc(self) -> str:
+        if self.state == BotState.DEAD_RESPAWN:
+            return f"RESPAWN #{self.deaths_count}"
+        if self.state == BotState.REPAIR_RECALL:
+            return "RECALL /kill"
+        if self.state == BotState.REPAIR_AT_NPC:
+            return f"REPAIR:{self.respawn_travel._repair_phase}"
+        if self.state == BotState.TELEPORT_TO_SPOT:
+            return f"TELE:{self.respawn_travel._tele_phase}"
+        if self.state == BotState.TRAVEL_TO_SPOT:
+            total = max(1, len(self.navigator.route.travel_waypoints))
+            cur = min(total, self.tracker.travel_waypoint_index + 1)
+            return f"WP {cur}/{total}"
+        return ""
+
+    def _activate_fallback_route_if_needed(self) -> None:
+        if (
+            self._fallback_route_activated
+            or not self.fallback_route_name
+            or self.fallback_after_deaths <= 0
+            or self.deaths_count < self.fallback_after_deaths
+            or self.fallback_route_name not in self.config.routes
+        ):
+            return
+        self._fallback_route_activated = True
+        old_route = self.config.active_route_name
+        self.config.active_route_name = self.fallback_route_name
+        self.navigator.route = self.config.active_route
+        self.navigator.set_dynamic_anchor(None)
+        self.tracker.waypoint_index = 0
+        self.tracker.travel_waypoint_index = 0
+        fb_c = self.configured_spot_center
+        logger.warning(
+            "[SPOT FALLBACK] Mati %dx di spot utama -> pindah otomatis dari %s ke %s (%.0f, %.0f)!",
+            self.deaths_count,
+            old_route,
+            self.fallback_route_name,
+            fb_c.x,
+            fb_c.y,
+        )
+
+    def _check_periodic_repair_due(self, world: WorldState, now: float) -> list[ActionIntent] | None:
+        if self.mode != BotMode.FULL or world.pending_loot:
+            return None
+        due = self._force_repair_requested or (
+            self.respawn_travel.repair_enabled and self._active_farming_sec >= self.respawn_travel.repair_interval_sec
+        )
+        if not due:
+            return None
+        if (
+            not self._repair_weapon_checked
+            and world.snapshot.ea_value is not None
+            and world.snapshot.ea_value < self.weapon_min_ea
+        ):
+            self._repair_weapon_checked = True
+            return self._check_weapon_swap(world, now)
+        rsn = (
+            "manual_repair_now"
+            if self._force_repair_requested
+            else f"periodic_repair_{self.respawn_travel.repair_interval_sec / 60.0:.0f}m"
+        )
+        self._force_repair_requested = False
+        self._need_dynamic_anchor = False
+        if self.respawn_travel.is_in_city(world.coords_smoothed):
+            self.transition(BotState.REPAIR_AT_NPC, now, f"{rsn}_already_in_town")
+            return self.respawn_travel.release_all_move_keys("repair_in_town_start")
+        self.transition(BotState.REPAIR_RECALL, now, rsn)
+        return self.respawn_travel.release_all_move_keys("enter_repair_recall")
+
+    def _enter_combat_wait(self, world: WorldState, mob: MobTarget, now: float, reason: str) -> list[ActionIntent]:
+        lid = self.tracker.lock_target(mob, now)
+        world.locked_mob = mob
+        world.locked_mob_id = lid
+        world.locked_mob_visible = True
+        world.locked_mob_lost = False
+        self.transition(BotState.COMBAT_WAIT, now, f"{reason}[lock#{lid}]")
+        self._combat_click_xy = (int(mob.click_x), int(mob.click_y))
+        self._combat_started_fresh = not bool(mob.has_hp_bar)
+        self._combat_first_hp_checked = False
+        self._combat_saw_hp = bool(mob.has_hp_bar)
+        self._combat_last_hp_ts = now if mob.has_hp_bar else None
+        self._combat_min_hp = float(mob.hp_ratio_est) if mob.hp_ratio_est is not None else 1.0
+        self._combat_last_hp_drop_ts = now
+        self._combat_anchor_pos = world.coords_smoothed
+        self._combat_last_move_ts = now
+        self._combat_min_dist_px = float(mob.dist_to_player_px)
+        self._combat_last_approach_ts = now
+        self._combat_loot_streak = 0
+        return self.farm.build_engage_click(mob)
+
+    def step(self, world: WorldState) -> list[ActionIntent]:
+        now = world.snapshot.timestamp
+        self.last_blacklisted_loot = None
+        if self.state in (BotState.PAUSED, BotState.EMERGENCY_STOP):
+            self._last_step_ts = None
+            return []
+
+        if self._last_step_ts is not None and self.state not in (BotState.REPAIR_RECALL, BotState.REPAIR_AT_NPC):
+            dt = min(1.0, max(0.0, now - self._last_step_ts))
+            self._active_farming_sec += dt
+        self._last_step_ts = now
+
+        # --- AUTO-ESC MOUSE MODE GUARD ---
+        # Jika terlihat banner atas 'INTERFACE TYPE: Keyboard', tekan ESC 1x untuk balik ke Mouse Mode!
+        if self.auto_restore_mouse_mode and self.state not in (
+            BotState.DEAD_RESPAWN,
+            BotState.REPAIR_RECALL,
+            BotState.REPAIR_AT_NPC,
+        ):
+            imode = world.snapshot.interface_mode
+            esc_key = str(self.config.respawn_travel.get("mode_toggle_key", "esc"))
+            if imode == "mouse_banner":
+                self._mouse_mode_verified = True
+                self._mouse_restore_wait_until = 0.0
+            elif imode == "keyboard_banner":
+                if self.tracker.is_ready("auto_mouse_mode_esc", now):
+                    self.tracker.set_cooldown("auto_mouse_mode_esc", now, 2.2)
+                    self._mouse_restore_wait_until = now + 0.35
+                    logger.warning("INTERFACE TYPE: Keyboard detected -> pressing ESC once to switch to Mouse Mode")
+                    return [TapKeyIntent(key=esc_key, hold_sec=0.05, reason="auto_restore_mouse_mode_banner")]
+                return []
+            elif now < self._mouse_restore_wait_until:
+                return []
+
+        # --- GLOBAL DEATH INTERCEPTION ---
+        if (
+            self.mode == BotMode.FULL
+            and self.respawn_travel.enabled
+            and world.is_dead
+            and self.state not in (BotState.DEAD_RESPAWN, BotState.REPAIR_RECALL)
+        ):
+            self.deaths_count += 1
+            self._activate_fallback_route_if_needed()
+            prev_st = self.state.value
+            self._need_dynamic_anchor = False
+            self._just_resumed = False
+            self.transition(BotState.DEAD_RESPAWN, now, f"died_in_{prev_st}#death_{self.deaths_count}")
+            return self.respawn_travel.release_all_move_keys("died_release_all")
+
+        # --- SMART RESUME LOCATION CHECK ---
+        if self._just_resumed and world.coords_smoothed is not None:
+            self._just_resumed = False
+            if self.mode == BotMode.FULL and self.respawn_travel.enabled:
+                if self.respawn_travel.is_in_city(world.coords_smoothed):
+                    self._need_dynamic_anchor = False
+                    self.transition(BotState.TELEPORT_TO_SPOT, now, "resumed_in_town_auto_teleport")
+                elif self.respawn_travel.is_near_addon_keep(world.coords_smoothed):
+                    self._need_dynamic_anchor = False
+                    self.tracker.travel_waypoint_index = self.respawn_travel.choose_starting_travel_index(
+                        world.coords_smoothed, self.navigator.route.travel_waypoints
+                    )
+                    self.transition(BotState.TRAVEL_TO_SPOT, now, "resumed_at_addon_keep_auto_travel")
+
+        if (
+            self._need_dynamic_anchor
+            and world.coords_smoothed is not None
+            and self.state
+            not in (
+                BotState.DEAD_RESPAWN,
+                BotState.REPAIR_RECALL,
+                BotState.REPAIR_AT_NPC,
+                BotState.TELEPORT_TO_SPOT,
+                BotState.TRAVEL_TO_SPOT,
+            )
+        ):
+            self.navigator.set_dynamic_anchor(world.coords_smoothed)
+            self._need_dynamic_anchor = False
+            logger.info(
+                "Anchored farm spot center to current position (%.0f, %.0f) radius=%.0f",
+                world.coords_smoothed.x,
+                world.coords_smoothed.y,
+                self.navigator.route.farm_radius,
+            )
+
+        intents: list[ActionIntent] = (
+            [] if self.state == BotState.DEAD_RESPAWN else self._check_survival_potions(world, now)
+        )
+        if self.state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE, BotState.COMBAT_WAIT):
+            intents.extend(self._check_weapon_swap(world, now))
+
+        elapsed = max(0.0, now - self._state_entered_at)
+
+        if self.state == BotState.DEAD_RESPAWN:
+            rt_intents, nxt, rsn = self.respawn_travel.step_dead_respawn(world, now, elapsed)
+            intents.extend(rt_intents)
+            if nxt is not None:
+                if (
+                    nxt == BotState.TELEPORT_TO_SPOT
+                    and self.respawn_travel.repair_enabled
+                    and self._active_farming_sec >= (self.respawn_travel.repair_interval_sec * 0.85)
+                ):
+                    self.transition(BotState.REPAIR_AT_NPC, now, "respawned_in_town_opportunistic_repair")
+                else:
+                    self.transition(nxt, now, rsn)
+        elif self.state == BotState.REPAIR_RECALL:
+            rt_intents, nxt, rsn = self.respawn_travel.step_repair_recall(world, now, elapsed)
+            intents.extend(rt_intents)
+            if nxt is not None:
+                self.transition(nxt, now, rsn)
+        elif self.state == BotState.REPAIR_AT_NPC:
+            rt_intents, nxt, rsn = self.respawn_travel.step_repair_at_npc(world, now)
+            intents.extend(rt_intents)
+            if nxt is not None:
+                if nxt == BotState.TELEPORT_TO_SPOT:
+                    self.repairs_count += 1
+                    self._active_farming_sec = 0.0
+                    self._repair_weapon_checked = False
+                self.transition(nxt, now, rsn)
+        elif self.state == BotState.TELEPORT_TO_SPOT:
+            rt_intents, nxt, rsn = self.respawn_travel.step_teleport_to_spot(world, now)
+            intents.extend(rt_intents)
+            if nxt is not None:
+                self.transition(nxt, now, rsn)
+        elif self.state == BotState.TRAVEL_TO_SPOT:
+            spot_c = self.configured_spot_center
+            rt_intents, nxt, rsn = self.respawn_travel.step_travel_to_spot(
+                world,
+                now,
+                travel_waypoints=self.navigator.route.travel_waypoints,
+                spot_center=spot_c,
+                farm_radius=self.navigator.route.farm_radius,
+            )
+            intents.extend(rt_intents)
+            if nxt is not None:
+                if nxt in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE):
+                    self.navigator.set_dynamic_anchor(spot_c)
+                    self._need_dynamic_anchor = False
+                self.transition(nxt, now, rsn)
+        elif self.state == BotState.NAVIGATE_TO_SPOT:
+            intents.extend(self._handle_navigate(world, now))
+        elif self.state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE):
+            intents.extend(self._handle_search(world, now))
+        elif self.state == BotState.COMBAT_WAIT:
+            intents.extend(self._handle_combat_wait(world, now, elapsed))
+        elif self.state == BotState.LOOT:
+            intents.extend(self._handle_loot(world, now, elapsed))
+        elif self.state == BotState.RECOVER_STUCK:
+            intents.extend(self._handle_recover(world, now, elapsed))
+
+        return intents
+
+    def _handle_navigate(self, world: WorldState, now: float) -> list[ActionIntent]:
+        if world.is_stuck:
+            self.transition(BotState.RECOVER_STUCK, now, "stuck_navigating")
+            return self.release_move_keys("nav_stuck_release")
+
+        rep_intents = self._check_periodic_repair_due(world, now)
+        if rep_intents is not None:
+            return rep_intents
+
+        if self.navigator.is_arrived(world.coords_smoothed):
+            if self.mode == BotMode.NAVIGATE:
+                self.navigator.advance_waypoint()
+                return self.navigator.step_to_waypoint(world, now)
+            self.transition(BotState.SEARCH_MOB, now, "arrived_at_spot")
+            return self.release_move_keys("arrived_at_spot")
+
+        return self.navigator.step_to_waypoint(world, now)
+
+    def _handle_search(self, world: WorldState, now: float) -> list[ActionIntent]:
+        fw = max(1, world.snapshot.frame_width)
+        scale_x = fw / 1920.0
+
+        # Priority 1: Pick up pending kill loot or nearby Gold Bags first
+        local_loot = self.farm.select_local_loot(world)
+        if self.mode in (BotMode.FULL, BotMode.LOOT) and (world.pending_loot or local_loot):
+            self.transition(BotState.LOOT, now, "gold_bags_waiting")
+            return []
+
+        # Priority 2: Scheduled 80m Auto-Repair once loot is clean
+        rep_intents = self._check_periodic_repair_due(world, now)
+        if rep_intents is not None:
+            return rep_intents
+
+        # Priority 3: Stay inside farming spot leash
+        if self.mode == BotMode.FULL and self.navigator.is_outside_leash_exit(world.coords_smoothed):
+            self.tracker.waypoint_index = 0
+            self.transition(BotState.NAVIGATE_TO_SPOT, now, "drifted_outside_spot_area")
+            return self.release_move_keys("spot_to_nav_release")
+
+        # Wait settle window after MMB camera drag so we never click stale pre-drag coordinates
+        if now < self._post_drag_settle_until:
+            return []
+
+        # Priority 4: Pick nearest safe Gold Rustler and CLICK ONCE -> COMBAT_WAIT!
+        mob = self.farm.pick_best_gold_rustler(
+            world,
+            allow_wounded=(self.mode == BotMode.COMBAT),
+            is_ignored=lambda m: self._is_aborted_mob(m, now, scale_x),
+        )
+        if mob is not None:
+            return self._enter_combat_wait(world, mob, now, "found_gold_rustler")
+
+        # Priority 5: Screen empty -> rotate camera horizontally with Middle Mouse drag
+        sweep = self.farm.build_mmb_camera_sweep(world, now)
+        if sweep:
+            if any(isinstance(a, DragCameraIntent) for a in sweep):
+                self._post_drag_settle_until = now + 0.18
+            self._sweeps_in_search += 1
+            if self.mode == BotMode.FULL and self._sweeps_in_search >= self.max_sweeps_before_patrol:
+                self.navigator.advance_waypoint()
+                self.transition(BotState.NAVIGATE_TO_SPOT, now, "patrol_next_spot_point")
+                return []
+        return sweep
+
+    def _handle_combat_wait(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
+        """Wait calmly after 1x click with ZERO extra clicks until target dies, KS occurs, or watchdog triggers."""
+        scale_x = max(0.55, world.snapshot.frame_width / 1920.0)
+
+        # 1. Anti-KS: locked mob flagged contested by another player -> abort immediately!
+        if world.locked_mob_contested_ks:
+            logger.info("Anti-KS: locked target contested -> releasing lock")
+            self._record_aborted_mob(world.locked_mob, now, ttl_sec=6.0)
+            self.tracker.clear_target_lock()
+            self.transition(BotState.SEARCH_MOB, now, "anti_ks_contested_drop")
+            return []
+
+        # 2. Update movement & active approach distance progress (User Refinement #1!)
+        if world.coords_smoothed is not None:
+            if self._combat_anchor_pos is None:
+                self._combat_anchor_pos = world.coords_smoothed
+                self._combat_last_move_ts = now
+            elif world.coords_smoothed.distance_to(self._combat_anchor_pos) >= 0.8:
+                self._combat_anchor_pos = world.coords_smoothed
+                self._combat_last_move_ts = now
+
+        hp_vis = False
+        hp_val: float | None = None
+        if world.locked_mob is not None and world.locked_mob_visible:
+            lm = world.locked_mob
+            self._combat_click_xy = (int(lm.click_x), int(lm.click_y))
+            # Track shrinking screen distance to player so Watchdog Anti-Miss NEVER cancels an active run-up!
+            if float(lm.dist_to_player_px) <= (self._combat_min_dist_px - 4.0 * scale_x):
+                self._combat_min_dist_px = float(lm.dist_to_player_px)
+                self._combat_last_approach_ts = now
+            if lm.has_hp_bar:
+                hp_vis = True
+                hp_val = lm.hp_ratio_est
+
+        if hp_vis:
+            # Anti-KS First-HP Verify: fresh target already < 72% HP on first reading -> another player hit it!
+            if hp_val is not None and not self._combat_first_hp_checked:
+                self._combat_first_hp_checked = True
+                if (
+                    self.mode == BotMode.FULL
+                    and self._combat_started_fresh
+                    and 0.25 <= elapsed <= 1.20
+                    and hp_val < 0.72
+                    and not world.loot
+                ):
+                    logger.info("Anti-KS: first HP reading already %.0f%% -> aborting", hp_val * 100.0)
+                    self._record_aborted_mob(world.locked_mob, now, ttl_sec=6.0)
+                    self.tracker.clear_target_lock()
+                    self.transition(BotState.SEARCH_MOB, now, "anti_ks_damaged_on_verify")
+                    return []
+
+            if not self._combat_saw_hp:
+                self._combat_last_hp_drop_ts = now
+            self._combat_saw_hp = True
+            self._combat_last_hp_ts = now
+            if hp_val is not None and hp_val <= (self._combat_min_hp - 0.01):
+                self._combat_min_hp = hp_val
+                self._combat_last_hp_drop_ts = now
+
+        # 3. Kill Trigger A: Gold Bag drop appeared near feet/kill spot while target HP gone (or lethal blow)
+        near_bags = [b for b in world.loot if b.dist_to_player_px <= 260.0 * scale_x]
+        loot_kill_ok = (
+            bool(near_bags)
+            and elapsed >= 0.70
+            and ((not hp_vis) or (self._combat_min_hp <= 0.35 and len(near_bags) >= 2))
+        )
+        self._combat_loot_streak = (self._combat_loot_streak + 1) if loot_kill_ok else 0
+        confirm_need = 1 if (len(near_bags) >= 2 and not hp_vis and elapsed >= 0.90) else 2
+        if self._combat_loot_streak >= confirm_need:
+            self.kills_count += 1
+            self.tracker.notify_kill()
+            self.tracker.record_kill_pos(
+                self._combat_click_xy,
+                now,
+                window_sec=self.last_kill_loot_window_sec,
+                radius_px=self.last_kill_loot_radius_px,
+            )
+            next_st = BotState.SEARCH_MOB if self.mode == BotMode.COMBAT else BotState.LOOT
+            self.transition(next_st, now, "gold_kill_loot_detected")
+            return []
+
+        idle_no_move = max(0.0, now - self._combat_last_move_ts)
+        hp_gone_sec = (now - self._combat_last_hp_ts) if self._combat_last_hp_ts is not None else elapsed
+
+        # 4. Kill Trigger B: Target HP bar disappeared after combat with 0 drops
+        if self._combat_saw_hp and (not hp_vis) and hp_gone_sec >= self.combat_zero_drop_kill_sec and idle_no_move >= 1.2:
+            self.kills_count += 1
+            self.tracker.record_kill_pos(
+                self._combat_click_xy,
+                now,
+                window_sec=self.last_kill_loot_window_sec,
+                radius_px=self.last_kill_loot_radius_px,
+            )
+            self.tracker.clear_target_lock()
+            self.tracker.mark_loot_done()
+            self.transition(BotState.SEARCH_MOB, now, "gold_kill_zero_drops")
+            return []
+
+        # 5. Watchdog Anti-Miss (2.4s) WITH Active Approach Guard (Refinement #1):
+        # NEVER cancel lock while dist_to_player_px is actively decreasing or character is moving!
+        approach_active = (now - self._combat_last_approach_ts) < self.combat_miss_timeout_sec
+        coords_moving = idle_no_move < self.combat_miss_timeout_sec
+        if (not self._combat_saw_hp) and elapsed >= self.combat_miss_timeout_sec and (not approach_active) and (not coords_moving):
+            logger.info("Watchdog Anti-Miss: idle %.1fs without approach or HP bar -> unlocking", elapsed)
+            self._record_aborted_mob(world.locked_mob, now, ttl_sec=4.0)
+            self.tracker.clear_target_lock()
+            self.transition(BotState.SEARCH_MOB, now, "watchdog_click_missed_idle")
+            return []
+
+        # 6. Watchdog Stagnant HP while standing still
+        if hp_vis and (now - self._combat_last_hp_drop_ts) >= self.combat_stagnant_hp_sec and idle_no_move >= 4.0:
+            logger.info("Watchdog Stagnant HP: no damage for %.1fs -> aborting target", now - self._combat_last_hp_drop_ts)
+            self._record_aborted_mob(world.locked_mob, now, ttl_sec=6.0)
+            self.tracker.clear_target_lock()
+            self.transition(BotState.SEARCH_MOB, now, "watchdog_hp_stagnant")
+            return []
+
+        # 7. Hard safety timeout cap
+        if elapsed >= self.combat_hard_timeout_sec:
+            self._record_aborted_mob(world.locked_mob, now, ttl_sec=6.0)
+            self.tracker.clear_target_lock()
+            self.transition(BotState.SEARCH_MOB, now, "watchdog_hard_timeout")
+            return []
+
+        # Stay completely silent — ZERO extra clicks until monster dies!
+        return []
+
+    def _handle_loot(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
+        """Pick up Gold Bags via E / click with max 3 attempts per bag coord -> blacklist 120s (Refinement #2)."""
+        scale_x = max(0.55, world.snapshot.frame_width / 1920.0)
+        local_bags = self.farm.select_local_loot(world)
+        bag_count = len(local_bags)
+
+        # Reset attempt counter on real pickup progress
+        if world.snapshot.pickup_log_changed or (self._loot_prev_count > 0 and bag_count < self._loot_prev_count):
+            self._loot_bag_attempts = 0
+            self._loot_bag_xy = None
+        self._loot_prev_count = bag_count
+
+        if bag_count == 0 and not world.snapshot.pickup_log_changed:
+            self._loot_clear_streak += 1
+        else:
+            self._loot_clear_streak = 0
+
+        if self._loot_clear_streak >= self.loot_clear_confirm_frames or elapsed >= self.loot_max_total_sec:
+            self.tracker.mark_loot_done()
+            if self.mode == BotMode.LOOT:
+                self._state_entered_at = now
+                self._loot_clear_streak = 0
+                return []
+            self.transition(
+                BotState.SEARCH_MOB,
+                now,
+                "all_gold_bags_cleared" if self._loot_clear_streak >= self.loot_clear_confirm_frames else "loot_max_timeout",
+            )
+            return []
+
+        intents, target_bag, act_kind = self.farm.build_loot_step(world, now)
+        if target_bag is not None and act_kind in ("tap_e", "click_bag"):
+            bx, by = float(target_bag.click_x), float(target_bag.click_y)
+            if (
+                self._loot_bag_xy is not None
+                and math.hypot(bx - self._loot_bag_xy[0], by - self._loot_bag_xy[1]) <= 42.0 * scale_x
+            ):
+                self._loot_bag_attempts += 1
+            else:
+                self._loot_bag_xy = (bx, by)
+                self._loot_bag_attempts = 1
+
+            # Refinement #2: max 3 pickup attempts per bag coord -> blacklist_point(x, y, ttl=120s)!
+            if self._loot_bag_attempts >= self.loot_max_attempts_per_bag:
+                logger.info(
+                    "Loot retry cap (%dx) at (%.0f, %.0f) -> blacklisting 120s so repair/farming never stalls",
+                    self._loot_bag_attempts,
+                    bx,
+                    by,
+                )
+                self.last_blacklisted_loot = (bx, by)
+                self._loot_bag_attempts = 0
+                self._loot_bag_xy = None
+                if bag_count <= 1 and self.mode == BotMode.FULL:
+                    self.tracker.mark_loot_done()
+                    self.transition(BotState.SEARCH_MOB, now, "loot_bag_blacklisted_max_3")
+                    return []
+
+        return intents
+
+    def _handle_recover(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
+        if elapsed >= self.recovery_duration_sec:
+            self.tracker.clear_stuck(reset_consecutive=False)
+            if not self.navigator.is_outside_farm_radius(world.coords_smoothed):
+                next_state = BotState.SEARCH_MOB
+            else:
+                self.tracker.waypoint_index = 0
+                next_state = BotState.NAVIGATE_TO_SPOT
+            self.transition(next_state, now, "recovery_complete")
+            return self.release_move_keys("recovery_complete_release")
+        return self.navigator.build_recovery_step(world, now, self._recovery_attempts)

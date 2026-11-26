@@ -1,0 +1,35 @@
+# Vikings Online Spot Route Profiles (Gold / Gems / Metal)
+
+targets:
+  - id: gold
+    display_name: "GOLD"
+    mob_name: "Gold Rustler"
+    status: "ready"
+    route_name: "gold_rustler_spot"
+    accent_color: "#F5B731"
+    subtitle: "Gold Spot Route"
+    description: "Route spot untuk farm Gold."
+    overrides: {}
+
+  - id: gems
+    display_name: "GEMS"
+    mob_name: "Gem Rustler"
+    status: "ready"
+    route_name: "gem_rustler_spot"
+    accent_color: "#38BDF8"
+    subtitle: "Gems Spot Route + 2-Death Fallback"
+    description: "Route spot utama untuk Gems dengan fallback otomatis setelah 2x mati."
+    overrides:
+      farming:
+        fallback_route_name: "gem_rustler_fallback_spot"
+        fallback_after_deaths: 2
+
+  - id: metal
+    display_name: "METAL"
+    mob_name: "Metal Monster"
+    status: "coming_soon"
+    route_name: "gold_rustler_spot"
+    accent_color: "#94A3B8"
+    subtitle: "Next Version • Profile Slot Ready"
+    description: "Slot route untuk versi berikutnya."
+    overrides: {}

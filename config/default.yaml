@@ -1,0 +1,197 @@
+# Vikings Bot v2 — Mouse Mode • VM-Ready • AutoHotkey v2 • Pure OpenCV (Gold Target)
+
+window:
+  process_name: "Minia.exe"
+  process_aliases: ["Minia.exe", "Login.exe", "Client.exe", "RYL.exe"]
+  title_substring: "Vikings"
+  title_aliases: ["Vikings", "RYL", "Risk Your Life", "Minia"]
+  require_focus: true
+  capture_backend: "mss" # mss (VM foreground, <2ms) | printwindow (host background test) | auto
+  capture_fps: 25
+  black_frame_threshold: 2.0
+  black_frame_limit: 15
+
+rois:
+  minimap: [0.0026, 0.0046, 0.0573, 0.1065]
+  coords: [0.0021, 0.1111, 0.0583, 0.1296]
+  hp_bar: [0.0094, 0.9361, 0.0510, 0.9472]
+  mp_bar: [0.0625, 0.9361, 0.1036, 0.9472]
+  playfield: [0.0450, 0.0556, 0.9750, 0.9450]
+  loot_area: [0.1100, 0.1600, 0.9000, 0.7800]
+  chat_log: [0.7031, 0.7870, 0.9948, 0.9676]
+  ea_stat: [0.0135, 0.9768, 0.0583, 0.9963]
+  player_center: [0.50, 0.52]
+
+perception:
+  digit_templates_dir: "assets/digit_templates"
+  picked_up_template: "assets/ui_templates/picked_up_prefix.png"
+  hud_fixed_pixel_ui: false # set true via --vm-1024 for VMware 1024x768 fixed-pixel UI
+  interface_mode_roi: [0.12, 0.05, 0.88, 0.22]
+  interface_mode_threshold: 0.68
+  coord_max_jump: 120.0
+  coord_min_confidence: 0.58
+
+  # Pure OpenCV Gold Rustler nameplate + HP bar + Combat-Status Anti-KS
+  click_y_top_ratio: 0.35
+  ks_melee_radius_px: 75.0
+  ks_hp_damaged_threshold: 0.98
+  lock_iou_threshold: 0.30
+  lock_dist_threshold_px: 85.0
+  last_kill_loot_radius_px: 140.0
+  last_kill_loot_window_sec: 0.80
+  gold_nameplate_hsv_lower: [146, 30, 112]
+  gold_nameplate_hsv_upper: [179, 170, 255]
+  gold_nameplate_min_width: 22
+  gold_nameplate_max_width: 160
+  gold_nameplate_min_height: 5
+  gold_nameplate_max_height: 28
+  gold_nameplate_min_pixels: 12
+  mob_hp_bar_hsv_lower: [48, 110, 105]
+  mob_hp_bar_hsv_upper: [76, 255, 255]
+  mob_hp_bar_min_pixels: 10
+  player_nameplate_hsv_lower: [48, 90, 155]
+  player_nameplate_hsv_upper: [84, 255, 255]
+
+  # Dual-Cue Gold Bag detector
+  loot_glow_hsv_lower: [10, 105, 155]
+  loot_glow_hsv_upper: [25, 255, 255]
+  loot_dark_body_v_max: 78
+  loot_min_dark_ratio: 0.25
+  loot_min_blob_pixels: 3
+  loot_max_blob_pixels: 120
+  loot_pouch_v_max: 48
+  loot_pouch_min_area: 45
+  loot_pouch_max_area: 480
+  loot_pouch_warm_min_px: 8
+  loot_cluster_radius_px: 20
+  loot_max_dist_px: 580
+
+  # Minimap red blips & cyan facing cone
+  minimap_red_hsv_lower_1: [0, 140, 120]
+  minimap_red_hsv_upper_1: [10, 255, 255]
+  minimap_red_hsv_lower_2: [170, 140, 120]
+  minimap_red_hsv_upper_2: [179, 255, 255]
+  minimap_cyan_hsv_lower: [82, 95, 140]
+  minimap_cyan_hsv_upper: [108, 255, 255]
+
+controls:
+  # Single focused mode: Mouse Mode + Auto-ESC guard when Keyboard Mode banner appears
+  control_mode: "mouse"
+  mode: "mouse"
+  auto_restore_mouse_mode: true
+  # AutoHotkey v2 persistent input bridge (vm_foreground | host_background)
+  input_backend: "ahk"
+  ahk_mode: "vm_foreground"
+  ahk_script_path: "ahk/vikings_input_bridge.ahk"
+  ahk_exe_path: null
+  ahk_compiled_exe: null
+  ahk_win32_fallback: true
+  vm_absolute_mouse: true
+  attack_button: "left"
+  pickup_key: "e"
+  camera_rotate_button: "middle"
+  move_forward_key: "w"
+  move_back_key: "s"
+  strafe_left_key: "a"
+  strafe_right_key: "d"
+  hp_potion_key: "0"
+  hp_potion_threshold: 0.65
+  hp_potion_cooldown_sec: 1.5
+  weapon_swap_key: "q"
+  weapon_min_ea: 130
+  weapon_swap_cooldown_sec: 2.5
+  mp_potion_key: null
+  mp_potion_threshold: 0.30
+  mp_potion_cooldown_sec: 2.0
+  click_jitter_px: 0
+  kb_max_turn_px: 135
+  kb_yaw_px_per_deg: 2.5
+  humanize: true
+
+farming:
+  tick_hz: 20.0
+  waypoints_file: "config/waypoints.yaml"
+  anchor_spot_on_resume: true
+  mob_max_engage_dist_px: 560
+  mob_min_y_ratio: 0.14
+  combat_miss_timeout_sec: 2.4
+  combat_stagnant_hp_sec: 5.0
+  combat_hard_timeout_sec: 28.0
+  combat_zero_drop_kill_sec: 1.6
+  loot_e_close_dist_px: 85.0
+  loot_e_interval_sec: 0.14
+  loot_click_interval_sec: 0.42
+  loot_max_local_dist_px: 360.0
+  loot_clear_confirm_frames: 4
+  loot_max_attempts_per_bag: 3
+  loot_max_total_sec: 18.0
+  move_click_interval_sec: 0.55
+  move_click_radius_x_ratio: 0.145
+  move_click_radius_y_ratio: 0.175
+  camera_sweep_interval_sec: 0.85
+  camera_sweep_drag_px: 185
+  max_sweeps_before_patrol: 4
+  spot_leash_exit_margin: 6.0
+  spot_leash_reentry_margin: 6.0
+  stuck_timeout_sec: 2.2
+  stuck_min_move_units: 2.5
+  recovery_duration_sec: 0.85
+
+respawn_travel:
+  enabled: true
+  repeat_forever: true
+  mouse_only_travel: true
+  city_spawn: [1075.0, 2631.0]
+  city_radius: 55.0
+  npc_stand_coord: [1060.0, 2626.0]
+  npc_arrival_radius: 4.0
+  addon_keep_landing: [1409.0, 1779.0]
+  addon_keep_radius: 75.0
+  addon_keep_sign_template: "assets/ui_templates/addon_keep_sign.png"
+  teleport_menu_template: "assets/ui_templates/teleport_menu.png"
+  npc_talk_ok_template: "assets/ui_templates/npc_talk_ok.png"
+  sign_match_threshold: 0.78
+  menu_match_threshold: 0.62
+  npc_talk_ok_threshold: 0.72
+  npc_body_offset_y_px: 38
+  cursor_toggle_key: "esc"
+  cursor_fallback_key: "tab"
+  mode_toggle_key: "esc"
+  respawn_auto_wait_sec: 1.5
+  respawn_fallback_key: "space"
+  teleport_load_timeout_sec: 12.0
+  travel_arrival_radius: 13.0
+  travel_final_radius: 12.0
+  travel_stuck_timeout_sec: 1.8
+
+repair:
+  enabled: true
+  interval_minutes: 80.0
+  suicide_command: "/kill"
+  suicide_wait_sec: 18.0
+  suicide_retry_sec: 22.0
+  merchant_stand_coord: [1094.0, 2643.0]
+  merchant_arrival_radius: 4.5
+  town_hub_waypoint: [1075.0, 2631.0]
+  merchant_sign_template: "assets/ui_templates/merchant_sign.png"
+  trade_menu_template: "assets/ui_templates/trade_menu.png"
+  repair_all_template: "assets/ui_templates/repair_all_btn.png"
+  repair_yes_template: "assets/ui_templates/repair_yes_btn.png"
+  inventory_tab_template: "assets/ui_templates/inventory_tab.png"
+  merchant_sign_threshold: 0.76
+  trade_menu_threshold: 0.62
+  repair_btn_threshold: 0.72
+  repair_yes_threshold: 0.72
+  inventory_tab_threshold: 0.74
+
+safety:
+  kill_switch: "F10"
+  pause_toggle: "F9"
+  snapshot_key: "F7"
+  overlay_toggle: "F6"
+  audio_cues: true
+  death_zero_hp_frames: 12
+  max_consecutive_stuck: 6
+  snapshots_dir: "logs/snapshots"
+  max_snapshots: 40
+  overlay_scale: 0.5

@@ -1,0 +1,9 @@
+# Vikings Bot v2 — Lightweight CPU-only dependencies (Pure OpenCV + AutoHotkey v2)
+opencv-python-headless>=4.9
+numpy>=1.26
+mss>=9.0
+PyYAML>=6.0
+pywin32>=306
+pillow>=10.0
+psutil>=5.9
+pytest>=8.0
