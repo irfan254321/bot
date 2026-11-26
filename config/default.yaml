@@ -142,7 +142,7 @@ farming:
   max_sweeps_before_patrol: 4
   spot_leash_exit_margin: 6.0
   spot_leash_reentry_margin: 6.0
-  stuck_timeout_sec: 2.2
+  stuck_timeout_sec: 3.5
   stuck_min_move_units: 2.5
   recovery_duration_sec: 0.85
   # Auto-daylight weather lock via AHK v2 CHAT_CMD (/setweather 11)

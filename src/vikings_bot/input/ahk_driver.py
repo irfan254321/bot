@@ -59,7 +59,7 @@ def resolve_bridge_command(
     exe = find_ahk_executable(ahk_exe)
     if exe is None or not sp.exists():
         return None
-    return [str(exe), str(sp.resolve())]
+    return [str(exe), "/ErrorStdOut=UTF-8", str(sp.resolve())]
 
 
 class AhkInputDriver(InputDriver):
@@ -96,6 +96,11 @@ class AhkInputDriver(InputDriver):
         self._proc: subprocess.Popen[str] | None = None
         self._started_once = False
         self._warned_missing = False
+        self._consecutive_failures: int = 0
+        self._next_respawn_at: float = 0.0
+        self._respawn_base_cooldown_sec: float = 5.0
+        self._respawn_max_cooldown_sec: float = 30.0
+        self.last_stderr: str = ""
         self.history: list[str] = []
 
     @property
@@ -119,9 +124,57 @@ class AhkInputDriver(InputDriver):
             return (hwnd, max(0, int(screen_x - win.left)), max(0, int(screen_y - win.top)))
         return (hwnd, int(screen_x), int(screen_y))
 
+    @staticmethod
+    def _drain_stderr(proc: subprocess.Popen[str] | None) -> str:
+        """Read available stderr output from an exited or failed AHK v2 process without hanging."""
+        if proc is None or proc.stderr is None:
+            return ""
+        try:
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=0.15)
+                except Exception:
+                    return ""
+            txt = proc.stderr.read()
+            return str(txt).strip() if txt else ""
+        except Exception:
+            return ""
+
+    def _record_bridge_failure(self, reason: str, proc: subprocess.Popen[str] | None = None) -> None:
+        err_out = self._drain_stderr(proc)
+        if err_out:
+            self.last_stderr = err_out
+        self._consecutive_failures += 1
+        backoff = min(
+            self._respawn_max_cooldown_sec,
+            self._respawn_base_cooldown_sec * (2 ** min(3, self._consecutive_failures - 1)),
+        )
+        self._next_respawn_at = time.monotonic() + backoff
+        if err_out:
+            logger.warning(
+                "AHK v2 bridge error (%s) | stderr=%r | pausing respawn for %.1fs (Win32 fallback active)",
+                reason,
+                err_out,
+                backoff,
+            )
+        else:
+            logger.warning(
+                "AHK v2 bridge error (%s) | pausing respawn for %.1fs (Win32 fallback active)",
+                reason,
+                backoff,
+            )
+
     def _ensure_process(self) -> subprocess.Popen[str] | None:
         if self._proc is not None and self._proc.poll() is None:
             return self._proc
+        if self._proc is not None and self._proc.poll() is not None:
+            dead_proc = self._proc
+            self._proc = None
+            self._record_bridge_failure(f"exited_code={dead_proc.returncode}", dead_proc)
+
+        if time.monotonic() < self._next_respawn_at:
+            return None
+
         cmd = resolve_bridge_command(self.script_path, self.ahk_exe, self.compiled_exe)
         if cmd is None:
             if not self._warned_missing:
@@ -131,6 +184,7 @@ class AhkInputDriver(InputDriver):
                     self.script_path,
                     self.script_path.name,
                 )
+            self._next_respawn_at = time.monotonic() + self._respawn_max_cooldown_sec
             return None
         try:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -141,6 +195,7 @@ class AhkInputDriver(InputDriver):
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 creationflags=creationflags,
             )
@@ -150,12 +205,17 @@ class AhkInputDriver(InputDriver):
                 logger.info("AHK v2 input bridge started (%s | mode=%s)", cmd[0], self.ahk_mode)
                 self._proc = proc
                 self._started_once = True
+                self._consecutive_failures = 0
+                self._next_respawn_at = 0.0
                 return proc
-            logger.warning("Unexpected AHK bridge startup reply: %r", ready)
-            proc.terminate()
+            self._record_bridge_failure(f"unexpected_startup_reply={ready!r}", proc)
+            try:
+                proc.terminate()
+            except Exception:
+                pass
             return None
         except Exception as exc:
-            logger.warning("Failed to start AHK v2 bridge: %s", exc)
+            self._record_bridge_failure(f"spawn_exception={exc}")
             return None
 
     def send_raw(self, command_line: str) -> str:
@@ -172,10 +232,12 @@ class AhkInputDriver(InputDriver):
                 proc.stdin.write(cmd + "\n")
                 proc.stdin.flush()
                 reply = proc.stdout.readline().strip()
-                return reply or "ERR|EMPTY_REPLY"
+                if not reply:
+                    self._terminate_locked(record_reason=f"empty_reply_on_{cmd.split('|', 1)[0]}")
+                    return "ERR|EMPTY_REPLY"
+                return reply
             except Exception as exc:
-                logger.warning("AHK bridge pipe error on %r: %s", cmd, exc)
-                self._terminate_locked()
+                self._terminate_locked(record_reason=f"pipe_error({cmd.split('|', 1)[0]}): {exc}")
                 return f"ERR|{exc}"
 
     def health_check(self) -> tuple[bool, str]:
@@ -185,7 +247,7 @@ class AhkInputDriver(InputDriver):
 
     def _run_or_fallback(self, cmd: str, fallback_fn: Callable[[], None] | None = None) -> None:
         reply = self.send_raw(cmd)
-        if reply.startswith("ERR|NO_AHK_PROCESS") and self._fallback is not None and fallback_fn is not None:
+        if reply.startswith("ERR|") and self._fallback is not None and fallback_fn is not None:
             fallback_fn()
 
     def key_down(self, key: str) -> None:
@@ -297,7 +359,7 @@ class AhkInputDriver(InputDriver):
             (lambda: self._fallback.release_all()) if self._fallback is not None else None,
         )
 
-    def _terminate_locked(self) -> None:
+    def _terminate_locked(self, record_reason: str | None = None) -> None:
         proc = self._proc
         self._proc = None
         if proc is None:
@@ -306,12 +368,14 @@ class AhkInputDriver(InputDriver):
             if proc.poll() is None and proc.stdin is not None:
                 proc.stdin.write("QUIT\n")
                 proc.stdin.flush()
-                proc.wait(timeout=1.0)
+                proc.wait(timeout=0.5)
         except Exception:
             try:
                 proc.terminate()
             except Exception:
                 pass
+        if record_reason is not None:
+            self._record_bridge_failure(record_reason, proc)
 
     def close(self) -> None:
         with self._lock:

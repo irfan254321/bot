@@ -69,7 +69,7 @@ ExitApp 0
 WriteReply(msg) {
     global gStdOut
     gStdOut.WriteLine(msg)
-    gStdOut.Read(0) ; flush stdout immediately
+    try DllCall("FlushFileBuffers", "Ptr", gStdOut.Handle)
 }
 
 MapKeyName(k) {
@@ -149,9 +149,13 @@ HandleCommand(line) {
         } else {
             DllCall("SetCursorPos", "Int", x, "Int", y)
             Sleep 12
-            Click(x . " " . y . " " . btn . " Down")
+            Click(btn . " Down")
+            gHeldButtons[btn] := true
             Sleep holdMs
             Click(btn . " Up")
+            if gHeldButtons.Has(btn) {
+                gHeldButtons.Delete(btn)
+            }
         }
         return "OK|CLICK"
     }

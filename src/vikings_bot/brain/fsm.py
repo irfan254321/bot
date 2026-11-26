@@ -237,6 +237,8 @@ class FarmingFSM:
             return
         self._just_resumed = True
         self._mouse_mode_verified = False
+        self._recovery_attempts = 0
+        self.tracker.reset_for_resume()
         self.farm.request_daylight_weather_sync()
         if self.mode == BotMode.NAVIGATE:
             self.transition(BotState.NAVIGATE_TO_SPOT, now, "resume_navigate")
@@ -556,6 +558,25 @@ class FarmingFSM:
         return intents
 
     def _handle_navigate(self, world: WorldState, now: float) -> list[ActionIntent]:
+        # Priority 0: If already within 60 coord units of spot center and a safe Gold Rustler is visible,
+        # engage it directly instead of rotating camera / risking stuck_navigating!
+        if (
+            self.mode == BotMode.FULL
+            and world.coords_smoothed is not None
+            and world.coords_smoothed.distance_to(self.navigator.spot_center) <= 60.0
+            and world.mobs
+        ):
+            fw = max(1, world.snapshot.frame_width)
+            scale_x = fw / 1920.0
+            mob = self.farm.pick_best_gold_rustler(
+                world,
+                allow_wounded=False,
+                is_ignored=lambda m: self._is_aborted_mob(m, now, scale_x),
+            )
+            if mob is not None:
+                self.tracker.clear_stuck(reset_consecutive=True)
+                return self._enter_combat_wait(world, mob, now, "nav_spotted_gold_rustler_near_spot")
+
         if world.is_stuck:
             self.transition(BotState.RECOVER_STUCK, now, "stuck_navigating")
             return self.release_move_keys("nav_stuck_release")

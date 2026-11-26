@@ -444,3 +444,51 @@ def test_auto_daylight_weather_sends_setweather_in_scan_spot_and_never_in_combat
         isinstance(a, TypeChatCommandIntent) and a.command == "/setweather 11" and "interval" in a.reason
         for a in acts_int
     )
+
+
+def test_ahk_pipe_errno22_fallback_f9_stuck_reset_and_nav_mob_priority():
+    """Verify AHK Errno 22 falls back to Win32, F9 resets consecutive_stuck, and NAVIGATE_TO_SPOT engages mobs <=60u."""
+    from vikings_bot.input.driver import DryRunInputDriver
+    from vikings_bot.runtime.safety import SafetyMonitor
+
+    # 1. AHK pipe throws ERR|[Errno 22] Invalid argument -> Win32 fallback executes click, ESC, MMB drag, and chat cmd!
+    fb = DryRunInputDriver()
+    drv = AhkInputDriver(
+        ahk_mode="vm_foreground",
+        command_transport=lambda _cmd: "ERR|[Errno 22] Invalid argument",
+        fallback_driver=fb,
+    )
+    drv.mouse_click(512, 340, button="left", hold_sec=0.04)
+    drv.tap_key("esc", hold_sec=0.05)
+    drv.mouse_drag_rel(dx=160, dy=0, button="middle", steps=8, start_x=512, start_y=384)
+    drv.send_chat_command("/setweather 11")
+    assert any("mouse_click" in h and "512" in h and "340" in h for h in fb.history), fb.history
+    assert any("tap_key" in h and "esc" in h for h in fb.history), fb.history
+    assert any("mouse_drag_rel" in h and "160" in h for h in fb.history), fb.history
+    assert any("send_chat_command(/setweather 11)" in h for h in fb.history), fb.history
+
+    # 2. F9 resume() resets consecutive_stuck=0 & stuck timer so SafetyMonitor never auto-pauses on next tick!
+    cfg = load_config("config/default.yaml")
+    assert float(cfg.farming["stuck_timeout_sec"]) >= 3.5
+    tracker = WorldStateTracker(stuck_timeout_sec=float(cfg.farming["stuck_timeout_sec"]))
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    safety = SafetyMonitor(cfg, enable_hotkeys=False)
+
+    tracker._consecutive_stuck = 6
+    tracker._is_stuck = True
+    fsm.resume(5.0)
+    w_resumed = tracker.update(_snap(5.1, x=615, y=1830, fw=1024, fh=768))
+    assert w_resumed.consecutive_stuck == 0
+    assert w_resumed.is_stuck is False
+    chk = safety.check(w_resumed, is_running_active=True)
+    assert chk.force_pause_reason is None
+
+    # 3. NAVIGATE_TO_SPOT within <= 60 coord units of spot with visible mob -> engages directly (COMBAT_WAIT)!
+    spot = fsm.navigator.spot_center
+    fsm.transition(BotState.NAVIGATE_TO_SPOT, 6.0, "test_nav_near_spot")
+    m_near = _mob(cx=520, cy=330, dist=160.0, has_hp=False)
+    acts_nav = fsm.step(
+        tracker.update(_snap(6.2, x=int(spot.x + 40), y=int(spot.y + 15), fw=1024, fh=768, mobs=(m_near,)))
+    )
+    assert fsm.state == BotState.COMBAT_WAIT
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 520 and a.y == 330 for a in acts_nav)

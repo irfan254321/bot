@@ -160,6 +160,14 @@ class WorldStateTracker:
         if reset_consecutive:
             self._consecutive_stuck = 0
 
+    def reset_for_resume(self) -> None:
+        """Reset stuck counters, stuck timer, and navigation history cleanly on F9 resume."""
+        self.clear_stuck(reset_consecutive=True)
+        self.notify_movement_stopped()
+        self._coord_history.clear()
+        self._last_click_coord = None
+        self._last_click_rel_angle_deg = None
+
     def accept_teleport_jump(self) -> None:
         self._accept_next_jump = True
         self._pending_jump_coords.clear()
