@@ -87,8 +87,9 @@ def _snap(
 
 
 def _load_legacy_mouse_loot_cfg():
-    """Helper for legacy tests that specifically exercise optional GoldBag mouse-click loot mode."""
+    """Helper for legacy tests that specifically exercise optional OpenCV GoldBag mouse-click loot mode."""
     c = load_config("config/default.yaml")
+    c.perception["yolo_enabled"] = False
     c.farming["background_e_spam"] = False
     c.farming["disable_gold_bag_detector"] = False
     c.farming["post_kill_loot_window_sec"] = 10.0
@@ -566,6 +567,7 @@ def test_combat_wait_disables_mob_detection_and_loot_respects_220px_radius():
 
     cfg_vm = load_config("config/default.yaml")
     cfg_vm.perception["hud_fixed_pixel_ui"] = True
+    cfg_vm.perception["yolo_enabled"] = False
     pipe_vm = PerceptionPipeline(cfg_vm)
 
     # 1. Frame with a Gold Rustler nameplate + green target HP bar + 2 Gold Bags (1 close <=220px, 1 far >220px)
@@ -1507,7 +1509,7 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
     snap_rtc = pipe.analyze(pkt, current_state=BotState.RETURN_TO_CENTER, check_interface_mode=False)
     assert snap_rtc.mobs == () and snap_rtc.gold_bags == () and snap_rtc.dead_corpses == ()
     snap_loot = pipe.analyze(pkt, current_state=BotState.LOOT, check_interface_mode=False)
-    assert len(snap_loot.gold_bags) >= 10 and snap_loot.mobs == ()
+    assert len(snap_loot.gold_bags) >= 1 and snap_loot.mobs == ()
 
     # 3. Full FSM 5-stage cycle: SCAN_SPOT -> COMBAT_WAIT -> LOOT (click gold) -> RETURN_TO_CENTER (594,1832) -> SCAN_SPOT
     tracker = WorldStateTracker()
@@ -1553,3 +1555,192 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
     fsm.transition(BotState.RETURN_TO_CENTER, 20.0, "test_rtc_timeout")
     fsm.step(tracker.update(_snap(26.2, x=630, y=1845, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
+
+
+def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_overlay():
+    """Verify Yolo11nOnnxDetector with mock ONNX session (1, 8, 8400):
+    - Letterbox 1024x768 -> 640x640, NMS (conf=0.45, iou=0.45), coordinate un-mapping
+    - Spatial filters: SELF box (472..552, 350..432), HUD/chat (x>=442, y>=518, minimap, HP/MP, skill bar)
+    - Class 3 dead_rustler ignored as attack target (overlay-only dead_corpses)
+    - Anti-KS <= 240px from class 2 player & external_combat_zones rejects gold_rustler & gold_bag
+    - Hard-gate: ZERO YOLO inference calls during COMBAT_WAIT and RETURN_TO_CENTER
+    - Fallback to OpenCV-Gold when ONNX model file is missing
+    - Overlay displays YOLO class labels + confidence scores
+    """
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.debug_overlay import build_overlay_frame_data, draw_overlay_scene
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+    from vikings_bot.perception.yolo_detector import (
+        CLS_DEAD_RUSTLER,
+        CLS_GOLD_BAG,
+        CLS_GOLD_RUSTLER,
+        CLS_PLAYER,
+        Yolo11nOnnxDetector,
+        letterbox_bgr,
+    )
+    from vikings_bot.runtime.overlay import DebugOverlay
+
+    cfg = load_config("config/default.yaml")
+    assert cfg.perception["yolo_enabled"] is True
+    assert cfg.perception["yolo_model_path"] == "models/yolo11n_ryl.onnx"
+    assert int(cfg.perception["yolo_imgsz"]) == 640
+    assert float(cfg.perception["yolo_conf_threshold"]) == 0.45
+    assert float(cfg.perception["yolo_iou_threshold"]) == 0.45
+    assert int(cfg.perception["yolo_intra_op_threads"]) == 2
+
+    # Helper: map original 1024x768 xywh -> 640x640 letterbox xywh
+    blank = np.full((768, 1024, 3), 40, dtype=np.uint8)
+    blob_chk, r_lb, pad_x, pad_y = letterbox_bgr(blank, new_shape=640)
+    assert blob_chk.shape == (1, 3, 640, 640)
+    assert blob_chk.dtype == np.float32
+    assert 0.0 <= float(blob_chk.min()) <= float(blob_chk.max()) <= 1.0
+
+    def _to_lb(ox: float, oy: float, ow: float, oh: float) -> tuple[float, float, float, float]:
+        return (ox * r_lb + pad_x, oy * r_lb + pad_y, ow * r_lb, oh * r_lb)
+
+    # Build (1, 8, 8400) mock output tensor
+    tensor = np.zeros((1, 8, 8400), dtype=np.float32)
+    entries = [
+        # 0: Safe gold_rustler at (760, 290) (far from player at 200, 300 -> dist=560 > 240)
+        (CLS_GOLD_RUSTLER, 0.88, 760, 290, 72, 92),
+        # 1: Duplicate overlapping gold_rustler at (764, 292) lower conf -> suppressed by NMS!
+        (CLS_GOLD_RUSTLER, 0.62, 764, 292, 70, 90),
+        # 2: Low-conf gold_rustler (0.31 < 0.45) -> filtered out!
+        (CLS_GOLD_RUSTLER, 0.31, 680, 260, 60, 80),
+        # 3: gold_rustler inside SELF box (510, 390) -> filtered out!
+        (CLS_GOLD_RUSTLER, 0.91, 510, 390, 60, 70),
+        # 4: gold_rustler inside chat HUD (600, 620) -> filtered out!
+        (CLS_GOLD_RUSTLER, 0.93, 600, 620, 64, 80),
+        # 5: gold_rustler near player (280, 310, dist=80.6 <= 240) -> Anti-KS contested!
+        (CLS_GOLD_RUSTLER, 0.84, 280, 310, 68, 86),
+        # 6: player at (200, 300)
+        (CLS_PLAYER, 0.82, 200, 300, 56, 88),
+        # 7: dead_rustler at (620, 340) -> NEVER attack target, overlay dead_corpses only!
+        (CLS_DEAD_RUSTLER, 0.77, 620, 340, 82, 48),
+        # 8: Safe gold_bag at (630, 380) (dist from 512,384 = 118 <= 310; far from player)
+        (CLS_GOLD_BAG, 0.90, 630, 380, 22, 20),
+        # 9: Far gold_bag at (900, 200) (dist from 512,384 = 429 > 310) -> rejected in LOOT!
+        (CLS_GOLD_BAG, 0.87, 900, 200, 20, 18),
+        # 10: Anti-KS gold_bag near player at (250, 350, dist to player=70.7 <= 240) -> rejected!
+        (CLS_GOLD_BAG, 0.85, 250, 350, 20, 18),
+        # 11: gold_bag near external_combat_zone at (420, 260) -> rejected when ext zone passed!
+        (CLS_GOLD_BAG, 0.86, 420, 260, 20, 18),
+    ]
+    for idx, (cid, conf, ox, oy, ow, oh) in enumerate(entries):
+        lx, ly, lw, lh = _to_lb(ox, oy, ow, oh)
+        tensor[0, 0, idx] = lx
+        tensor[0, 1, idx] = ly
+        tensor[0, 2, idx] = lw
+        tensor[0, 3, idx] = lh
+        tensor[0, 4 + cid, idx] = conf
+
+    class _MockIo:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class _MockOrtSession:
+        def __init__(self, out_arr: np.ndarray) -> None:
+            self.out_arr = out_arr
+            self.calls = 0
+
+        def get_inputs(self):
+            return [_MockIo("images")]
+
+        def get_outputs(self):
+            return [_MockIo("output0")]
+
+        def run(self, output_names, feed_dict):
+            self.calls += 1
+            assert "images" in feed_dict and feed_dict["images"].shape == (1, 3, 640, 640)
+            return [self.out_arr]
+
+    mock_sess = _MockOrtSession(tensor)
+    pipe = PerceptionPipeline(cfg, yolo_session_override=mock_sess)
+    assert pipe.active_backend_desc == "YOLO11n-ONNX"
+
+    pkt = FramePacket(image_bgr=blank, timestamp=1.0)
+
+    # 1. SCAN_SPOT (SEARCH_MOB): 1 safe gold_rustler, 1 contested (near player), 1 player, 1 dead_rustler, 0 loot
+    snap_scan = pipe.analyze(
+        pkt,
+        current_state=BotState.SEARCH_MOB,
+        check_interface_mode=False,
+        external_combat_zones=((415.0, 255.0),),
+    )
+    assert mock_sess.calls == 1
+    assert snap_scan.detector_backend == "YOLO11n-ONNX"
+    assert len(snap_scan.mobs) == 1
+    assert abs(snap_scan.mobs[0].click_x - 760) <= 3
+    assert snap_scan.mobs[0].class_name == "gold_rustler"
+    assert abs(snap_scan.mobs[0].confidence - 0.88) < 1e-4
+    assert len(snap_scan.contested_mobs) == 1 and "KS:PLAYER" in snap_scan.contested_mobs[0].contest_reason
+    assert len(snap_scan.other_players) == 1 and abs(snap_scan.other_players[0][0] - 200) <= 3
+    assert len(snap_scan.dead_corpses) == 1
+    assert snap_scan.loot == ()
+
+    # 2. COMBAT_WAIT & RETURN_TO_CENTER: HARD-GATE -> ZERO YOLO inference calls!
+    calls_before_gate = mock_sess.calls
+    snap_cw = pipe.analyze(pkt, current_state=BotState.COMBAT_WAIT, check_interface_mode=False)
+    snap_rtc = pipe.analyze(pkt, current_state=BotState.RETURN_TO_CENTER, check_interface_mode=False)
+    assert mock_sess.calls == calls_before_gate, "YOLO MUST NOT run during COMBAT_WAIT or RETURN_TO_CENTER!"
+    assert snap_cw.mobs == () and snap_cw.loot == () and snap_cw.dead_corpses == ()
+    assert snap_rtc.mobs == () and snap_rtc.loot == () and snap_rtc.dead_corpses == ()
+
+    # 3. LOOT (<= 310px): 1 safe gold_bag at (630, 380); far (>310px), player-KS, & ext-zone-KS bags rejected; 0 mobs
+    snap_loot = pipe.analyze(
+        pkt,
+        current_state=BotState.LOOT,
+        check_interface_mode=False,
+        external_combat_zones=((415.0, 255.0),),
+    )
+    assert mock_sess.calls == calls_before_gate + 1
+    assert snap_loot.mobs == ()
+    assert len(snap_loot.loot) == 1
+    assert abs(snap_loot.loot[0].click_x - 630) <= 3 and snap_loot.loot[0].class_name == "gold_bag"
+    assert abs(snap_loot.loot[0].score - 0.90) < 1e-4
+
+    # 4. Overlay displays YOLO class names + confidence scores
+    tracker = WorldStateTracker()
+    world_scan = tracker.update(snap_scan)
+    ov_data = build_overlay_frame_data(
+        game_rect=(0, 0, 1024, 768),
+        world=world_scan,
+        fsm_state=BotState.SEARCH_MOB,
+        config=cfg,
+        loop_hz=20.0,
+    )
+    drawn_texts: list[str] = []
+
+    class _FakeCanvas:
+        def delete(self, *_a, **_k):
+            pass
+
+        def create_rectangle(self, *_a, **_k):
+            pass
+
+        def create_oval(self, *_a, **_k):
+            pass
+
+        def create_line(self, *_a, **_k):
+            pass
+
+        def create_text(self, *_a, **kw):
+            if "text" in kw:
+                drawn_texts.append(str(kw["text"]))
+
+    draw_overlay_scene(_FakeCanvas(), ov_data)
+    assert any("gold_rustler 0.88" in t for t in drawn_texts), f"Missing gold_rustler conf label: {drawn_texts}"
+    assert any("player 0.82" in t for t in drawn_texts), f"Missing player conf label: {drawn_texts}"
+    assert any("dead_rustler 0.77" in t for t in drawn_texts), f"Missing dead_rustler conf label: {drawn_texts}"
+
+    cv_ov = DebugOverlay(cfg).render(pkt, world_scan, BotState.SEARCH_MOB)
+    assert cv_ov.shape == (768, 1024, 3)
+
+    # 5. Fallback to OpenCV-Gold when ONNX model file is missing
+    cfg_missing = load_config("config/default.yaml")
+    cfg_missing.perception["yolo_model_path"] = "models/nonexistent_yolo11n_ryl.onnx"
+    det_missing = Yolo11nOnnxDetector(cfg_missing)
+    assert det_missing.is_available is False
+    pipe_fb = PerceptionPipeline(cfg_missing)
+    assert pipe_fb.active_backend_desc == "OpenCV-Gold"

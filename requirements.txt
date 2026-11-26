@@ -1,6 +1,7 @@
-# Vikings Bot v2 — Lightweight CPU-only dependencies (Pure OpenCV + AutoHotkey v2)
+# Vikings Bot v2 — Lightweight CPU-only dependencies (OpenCV + ONNX Runtime CPU + AutoHotkey v2)
 opencv-python-headless>=4.9
 numpy>=1.26
+onnxruntime>=1.17
 mss>=9.0
 PyYAML>=6.0
 pywin32>=306

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+from typing import Any, Sequence
+
 import cv2
 import numpy as np
 
@@ -16,19 +18,26 @@ from vikings_bot.perception.hud_bars import HudBarReader
 from vikings_bot.perception.hud_mask import build_playfield_hud_mask, compute_self_zone
 from vikings_bot.perception.minimap import MinimapAnalyzer
 from vikings_bot.perception.ui_matcher import UiTemplateMatcher
+from vikings_bot.perception.yolo_detector import Yolo11nOnnxDetector
 from vikings_bot.state.models import BotState, LootDrop, MobTarget, PerceptionSnapshot
 
 
 class PerceptionPipeline:
-    """Runs HUD, Coords, Minimap, UI templates, and Pure OpenCV Gold Rustler + Gold Bag extractors."""
+    """Runs HUD, Coords, Minimap, UI templates, and YOLO11n ONNX (with OpenCV fallback) object detectors."""
 
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(self, config: BotConfig, *, yolo_session_override: Any | None = None) -> None:
         self.hud_bars = HudBarReader(config)
         self.coords = CoordReader(config)
         self.minimap = MinimapAnalyzer(config)
         self.ui_matcher = UiTemplateMatcher(config)
         self.mobs = GoldRustlerDetector(config)
         self.loot = GoldBagDetector(config)
+        self.yolo_enabled: bool = bool(config.perception.get("yolo_enabled", True))
+        self.yolo: Yolo11nOnnxDetector | None = (
+            Yolo11nOnnxDetector(config, session_override=yolo_session_override)
+            if (self.yolo_enabled or yolo_session_override is not None)
+            else None
+        )
         self.playfield_roi = config.roi("playfield")
         self.ea_roi = config.roi("ea_stat") if "ea_stat" in config.rois else None
 
@@ -89,6 +98,8 @@ class PerceptionPipeline:
 
     @property
     def active_backend_desc(self) -> str:
+        if self.yolo is not None and self.yolo.is_available:
+            return "YOLO11n-ONNX"
         return "OpenCV-Gold"
 
     def close(self) -> None:
@@ -240,6 +251,7 @@ class PerceptionPipeline:
         skip_all_object_detectors: bool = False,
         loot_radius_limit_px: float | None = None,
         current_state: BotState | None = None,
+        external_combat_zones: Sequence[tuple[float, float]] = (),
     ) -> PerceptionSnapshot:
         # Hard-gate at perception entry based on FSM state:
         # - COMBAT_WAIT: NEVER run GoldRustlerDetector, GoldBagDetector, or CorpseDetector (THP & Player HP only!)
@@ -282,8 +294,10 @@ class PerceptionPipeline:
         contested_list: tuple[MobTarget, ...] = ()
         other_players: tuple[tuple[int, int], ...] = ()
         other_player_boxes: tuple[tuple[int, int, int, int], ...] = ()
+        other_player_confs: tuple[float, ...] = ()
         loot_list: tuple[LootDrop, ...] = ()
         dead_corpses: tuple[tuple[int, int, int, int], ...] = ()
+        dead_corpse_confs: tuple[float, ...] = ()
         pickup_changed = False
         playfield_luma: float | None = None
         sky_ratio: float | None = None
@@ -293,6 +307,8 @@ class PerceptionPipeline:
         combat_target_hp_ratio: float | None = None
         hit_damage_visible = False
         external_damage_points: tuple[tuple[int, int], ...] = ()
+
+        use_yolo = self.yolo is not None and self.yolo.is_available
 
         if not skip_field_detectors:
             t_pf = time.perf_counter()
@@ -316,6 +332,7 @@ class PerceptionPipeline:
 
             t_m = time.perf_counter()
             if skip_all_objs:
+                # Hard-gate: ZERO YOLO or OpenCV object inference in COMBAT_WAIT and RETURN_TO_CENTER!
                 if in_combat_wait and shared_pf_hsv is not None:
                     combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
                         shared_pf_hsv, ox, oy, frame.width, frame.height
@@ -323,8 +340,41 @@ class PerceptionPipeline:
                     hit_damage_visible = self._probe_hit_damage_numbers(
                         shared_pf_hsv, ox, oy, frame.width, frame.height
                     )
+                timings["yolo"] = 0.0
                 timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
                 timings["gold_loot"] = 0.0
+            elif use_yolo and self.yolo is not None:
+                if shared_pf_hsv is not None and current_state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE, None):
+                    external_damage_points = self._detect_external_damage_points(
+                        shared_pf_hsv, hud_mask, ox, oy, frame.width, frame.height
+                    )
+                if not run_mob_detector and shared_pf_hsv is not None:
+                    combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
+                        shared_pf_hsv, ox, oy, frame.width, frame.height
+                    )
+                if run_mob_detector or run_loot_detector:
+                    ext_zones = tuple((float(zx), float(zy)) for zx, zy in external_combat_zones) + tuple(
+                        (float(dx), float(dy)) for dx, dy in external_damage_points
+                    )
+                    yres = self.yolo.detect(
+                        frame.image_bgr,
+                        include_mobs=run_mob_detector,
+                        include_loot=run_loot_detector,
+                        external_combat_zones=ext_zones,
+                        loot_radius_limit_px=effective_loot_radius,
+                    )
+                    mob_list = yres.mobs if run_mob_detector else ()
+                    contested_list = yres.contested_mobs if run_mob_detector else ()
+                    loot_list = yres.loot if run_loot_detector else ()
+                    other_players = yres.other_players
+                    other_player_boxes = yres.other_player_boxes
+                    other_player_confs = yres.other_player_confs
+                    dead_corpses = yres.dead_corpses
+                    dead_corpse_confs = yres.dead_corpse_confs
+                t_yolo_ms = (time.perf_counter() - t_m) * 1000.0
+                timings["yolo"] = t_yolo_ms
+                timings["gold_mobs"] = t_yolo_ms if run_mob_detector else 0.0
+                timings["gold_loot"] = t_yolo_ms if run_loot_detector else 0.0
             else:
                 if not run_mob_detector:
                     if shared_pf_hsv is not None:
@@ -439,8 +489,10 @@ class PerceptionPipeline:
             contested_mobs=contested_list,
             other_players=other_players,
             other_player_boxes=other_player_boxes,
+            other_player_confs=other_player_confs,
             loot=loot_list,
             dead_corpses=dead_corpses,
+            dead_corpse_confs=dead_corpse_confs,
             pickup_log_changed=pickup_changed,
             ea_value=ea_value,
             addon_keep_sign_bbox=sign_bbox,

@@ -1,0 +1,8 @@
+path: C:/Users/Desto/OneDrive/Documents/NEWNEW/dataset/yolo
+train: images/train
+val: images/val
+names:
+  0: gold_rustler
+  1: gold_bag
+  2: player
+  3: dead_rustler

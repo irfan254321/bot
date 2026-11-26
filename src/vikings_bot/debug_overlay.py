@@ -193,6 +193,7 @@ class OverlayMob:
     locked: bool = False
     hp_ratio: float | None = None
     label: str = ""
+    class_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -201,6 +202,8 @@ class OverlayPlayer:
     cx: int
     cy: int
     ks_radius_px: float = 75.0
+    conf: float | None = None
+    class_name: str = "player"
 
 
 @dataclass(frozen=True)
@@ -210,12 +213,15 @@ class OverlayLoot:
     click_y: int
     score: float = 1.0
     index: int = 1
+    class_name: str = ""
 
 
 @dataclass(frozen=True)
 class OverlayCorpse:
     bbox: tuple[int, int, int, int]
     label: str = "DEAD / MAYAT"
+    conf: float | None = None
+    class_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -374,6 +380,7 @@ def build_overlay_frame_data(
                 locked=is_locked,
                 hp_ratio=mob.hp_ratio_est,
                 label=f"LOCK#{world.locked_mob_id}" if is_locked and world.locked_mob_id is not None else "",
+                class_name=mob.class_name,
             )
             mobs_out.append(om)
             if is_locked:
@@ -391,6 +398,7 @@ def build_overlay_frame_data(
                 locked=True,
                 hp_ratio=lm.hp_ratio_est,
                 label=f"LOCK#{world.locked_mob_id}" if world.locked_mob_id is not None else "LOCK",
+                class_name=lm.class_name,
             )
 
         for cm in snap.contested_mobs:
@@ -405,6 +413,7 @@ def build_overlay_frame_data(
                     locked=False,
                     hp_ratio=cm.hp_ratio_est,
                     label=cm.contest_reason or "SKIP [KS]",
+                    class_name=cm.class_name,
                 )
             )
 
@@ -417,8 +426,10 @@ def build_overlay_frame_data(
                 cx=(int(bx1) + int(bx2)) // 2,
                 cy=int(by1) + int(round(0.35 * max(1, int(by2) - int(by1)))),
                 ks_radius_px=ks_radius,
+                conf=snap.other_player_confs[i] if i < len(snap.other_player_confs) else None,
+                class_name="player",
             )
-            for bx1, by1, bx2, by2 in snap.other_player_boxes
+            for i, (bx1, by1, bx2, by2) in enumerate(snap.other_player_boxes)
         )
     )
 
@@ -433,6 +444,7 @@ def build_overlay_frame_data(
                 click_y=int(bag.click_y),
                 score=float(bag.score),
                 index=idx,
+                class_name=bag.class_name,
             )
             for idx, bag in enumerate(world.loot, start=1)
         )
@@ -442,8 +454,17 @@ def build_overlay_frame_data(
         ()
         if in_combat_wait
         else tuple(
-            OverlayCorpse(bbox=(int(cx1), int(cy1), int(cx2), int(cy2)))
-            for cx1, cy1, cx2, cy2 in snap.dead_corpses
+            OverlayCorpse(
+                bbox=(int(cx1), int(cy1), int(cx2), int(cy2)),
+                label=(
+                    f"dead_rustler {snap.dead_corpse_confs[i]:.2f}"
+                    if i < len(snap.dead_corpse_confs)
+                    else "DEAD / MAYAT"
+                ),
+                conf=snap.dead_corpse_confs[i] if i < len(snap.dead_corpse_confs) else None,
+                class_name="dead_rustler" if i < len(snap.dead_corpse_confs) else "",
+            )
+            for i, (cx1, cy1, cx2, cy2) in enumerate(snap.dead_corpses)
         )
     )
 
@@ -555,7 +576,12 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
         cx, cy = _x(pl.cx), _y(pl.cy)
         canvas.create_oval(cx - rx, cy - ry, cx + rx, cy + ry, outline="#FF3B3B", width=2, dash=(6, 4))
         canvas.create_rectangle(_x(px1), _y(py1), _x(px2), _y(py2), outline="#FF3B3B", width=2)
-        _text_tag(_x(px1), _y(py1) - 16, f"PLAYER (R={int(round(pl.ks_radius_px))}px)", "#FCA5A5", bg="#450A0A")
+        pl_lbl = (
+            f"{pl.class_name} {pl.conf:.2f} (R={int(round(pl.ks_radius_px))}px)"
+            if pl.conf is not None
+            else f"PLAYER (R={int(round(pl.ks_radius_px))}px)"
+        )
+        _text_tag(_x(px1), _y(py1) - 16, pl_lbl, "#FCA5A5", bg="#450A0A")
         drawn += 2
 
     for cp in data.corpses:
@@ -570,7 +596,12 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
         bcx, bcy = _x(bag.click_x), _y(bag.click_y)
         canvas.create_oval(bcx - 3, bcy - 3, bcx + 3, bcy + 3, fill="#FEF08A", outline="#CA8A04", width=1)
         if bag.index <= 8:
-            _text_tag(_x(lx1), _y(ly1) - 15, f"GOLD#{bag.index}", "#FEF08A", bg="#422006")
+            bag_lbl = (
+                f"{bag.class_name} {bag.score:.2f}"
+                if bag.class_name
+                else f"GOLD#{bag.index}"
+            )
+            _text_tag(_x(lx1), _y(ly1) - 15, bag_lbl, "#FEF08A", bg="#422006")
         drawn += 2
 
     safe_count = 0
@@ -585,11 +616,15 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
         mx1, my1, mx2, my2 = mob.bbox
         if mob.safe:
             hp_s = f" HP:{mob.hp_ratio:.0%}" if mob.hp_ratio is not None else ""
-            lbl = f"GOLD {int(round(mob.dist_px))}px{hp_s}"
+            if mob.class_name:
+                lbl = f"{mob.class_name} {mob.conf:.2f} {int(round(mob.dist_px))}px{hp_s}"
+            else:
+                lbl = f"GOLD {int(round(mob.dist_px))}px{hp_s}"
             canvas.create_rectangle(_x(mx1), _y(my1), _x(mx2), _y(my2), outline="#00FF66", width=2)
             _text_tag(_x(mx1), _y(my1) - 16, lbl, "#86EFAC", bg="#052E16")
         else:
-            lbl = mob.label or "SKIP [KS]"
+            base_lbl = mob.label or "SKIP [KS]"
+            lbl = f"{mob.class_name} {mob.conf:.2f} {base_lbl}" if mob.class_name else base_lbl
             canvas.create_rectangle(_x(mx1), _y(my1), _x(mx2), _y(my2), outline="#FB923C", width=2, dash=(4, 3))
             _text_tag(_x(mx1), _y(my1) - 16, lbl, "#FED7AA", bg="#431407")
         drawn += 1
@@ -604,7 +639,8 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
         canvas.create_oval(ax - 3, ay - 3, ax + 3, ay + 3, fill="#FACC15", outline="#FF2D2D", width=1)
         hp_s = f" HP:{lm.hp_ratio:.0%}" if lm.hp_ratio is not None else ""
         head = lm.label or "LOCK"
-        _text_tag(_x(lx1), _y(ly1) - 18, f"{head} {int(round(lm.dist_px))}px{hp_s}", "#67E8F9", bg="#083344", font_sz=9)
+        cls_s = f" {lm.class_name} {lm.conf:.2f}" if lm.class_name else ""
+        _text_tag(_x(lx1), _y(ly1) - 18, f"{head}{cls_s} {int(round(lm.dist_px))}px{hp_s}", "#67E8F9", bg="#083344", font_sz=9)
         drawn += 4
 
     bx1 = max(124, int(round(cw * 0.068)))

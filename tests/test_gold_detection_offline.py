@@ -172,6 +172,7 @@ def test_pure_opencv_vm_cpu_latency_budget(cfg):
     """Ensure 1024x768 VM frame runs Pure OpenCV perception rapidly on CPU (no GPU/PyTorch)."""
     cfg_vm = load_config("config/default.yaml")
     cfg_vm.perception["hud_fixed_pixel_ui"] = True
+    cfg_vm.perception["yolo_enabled"] = False
     pipe_vm = PerceptionPipeline(cfg_vm)
 
     img = np.full((768, 1024, 3), (38, 82, 46), dtype=np.uint8)

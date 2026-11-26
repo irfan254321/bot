@@ -412,6 +412,9 @@ class BotEngine:
                     if cpos is not None:
                         cursor_rel_xy = (cpos[0] - frame.origin_x, cpos[1] - frame.origin_y)
 
+                active_ext_zones = tuple(
+                    (zx, zy) for exp, zx, zy in self.fsm.external_combat_zones if now < exp
+                )
                 snapshot = self.pipeline.analyze(
                     frame,
                     check_tele_ui=need_tele_ui,
@@ -423,6 +426,7 @@ class BotEngine:
                     skip_all_object_detectors=skip_all_objs,
                     loot_radius_limit_px=loot_rad_lim,
                     current_state=self.fsm.state,
+                    external_combat_zones=active_ext_zones,
                 )
                 world = self.tracker.update(snapshot)
 

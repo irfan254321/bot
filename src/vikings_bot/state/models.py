@@ -84,6 +84,7 @@ class MobTarget:
     confidence: float = 1.0
     contested: bool = False
     contest_reason: str = ""
+    class_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ class LootDrop:
     dist_to_player_px: float
     score: float = 1.0
     near_last_kill: bool = False
+    class_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -111,8 +113,10 @@ class PerceptionSnapshot:
     contested_mobs: tuple[MobTarget, ...] = ()
     other_players: tuple[tuple[int, int], ...] = ()
     other_player_boxes: tuple[tuple[int, int, int, int], ...] = ()
+    other_player_confs: tuple[float, ...] = ()
     loot: tuple[LootDrop, ...] = ()
     dead_corpses: tuple[tuple[int, int, int, int], ...] = ()
+    dead_corpse_confs: tuple[float, ...] = ()
     pickup_log_changed: bool = False
     ea_value: int | None = None
     addon_keep_sign_bbox: tuple[int, int, int, int] | None = None

@@ -49,7 +49,7 @@ class DebugOverlay:
         py = int(round(h * self.config.player_center_norm()[1]))
         cv2.circle(canvas, (px, py), 6, (255, 255, 0), 2)
 
-        if fsm_state not in (BotState.COMBAT_WAIT, BotState.LOOT):
+        if fsm_state not in (BotState.COMBAT_WAIT, BotState.LOOT, BotState.RETURN_TO_CENTER):
             for idx, mob in enumerate(world.mobs):
                 bx1, by1, bx2, by2 = mob.body_bbox
                 is_locked = world.locked_mob is not None and mob.nameplate_bbox == world.locked_mob.nameplate_bbox
@@ -58,15 +58,24 @@ class DebugOverlay:
                 cv2.rectangle(canvas, (bx1, by1), (bx2, by2), color, thickness)
                 cv2.drawMarker(canvas, (mob.click_x, mob.click_y), color, cv2.MARKER_CROSS, 18, thickness)
                 hp_s = f" {mob.hp_ratio_est:.0%}" if mob.hp_ratio_est is not None else ""
-                lbl = f"LOCK#{world.locked_mob_id}{hp_s}" if is_locked else f"GR#{idx + 1} {mob.dist_to_player_px:.0f}px{hp_s}"
+                if mob.class_name:
+                    base = f"{mob.class_name} {mob.confidence:.2f}"
+                    lbl = f"LOCK#{world.locked_mob_id} {base}{hp_s}" if is_locked else f"{base} {mob.dist_to_player_px:.0f}px{hp_s}"
+                else:
+                    lbl = f"LOCK#{world.locked_mob_id}{hp_s}" if is_locked else f"GR#{idx + 1} {mob.dist_to_player_px:.0f}px{hp_s}"
                 cv2.putText(canvas, lbl, (bx1, max(16, by1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2)
 
             for cm in world.snapshot.contested_mobs:
                 bx1, by1, bx2, by2 = cm.body_bbox
                 cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (60, 146, 251), 1)
+                cm_lbl = (
+                    f"{cm.class_name} {cm.confidence:.2f} {cm.contest_reason or 'SKIP [KS]'}"
+                    if cm.class_name
+                    else (cm.contest_reason or "SKIP [KS]")
+                )
                 cv2.putText(
                     canvas,
-                    cm.contest_reason or "SKIP [KS]",
+                    cm_lbl,
                     (bx1, max(16, by1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.48,
@@ -74,20 +83,29 @@ class DebugOverlay:
                     1,
                 )
 
-        if fsm_state != BotState.COMBAT_WAIT:
-            for pb in world.snapshot.other_player_boxes:
+        if fsm_state not in (BotState.COMBAT_WAIT, BotState.RETURN_TO_CENTER):
+            for idx, pb in enumerate(world.snapshot.other_player_boxes):
                 cv2.rectangle(canvas, (pb[0], pb[1]), (pb[2], pb[3]), (60, 60, 255), 2)
+                if idx < len(world.snapshot.other_player_confs):
+                    pl_lbl = f"player {world.snapshot.other_player_confs[idx]:.2f}"
+                    cv2.putText(canvas, pl_lbl, (pb[0], max(16, pb[1] - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (80, 120, 255), 1)
 
-            for cx1, cy1, cx2, cy2 in world.snapshot.dead_corpses:
+            for idx, (cx1, cy1, cx2, cy2) in enumerate(world.snapshot.dead_corpses):
                 cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), (240, 120, 200), 2)
-                cv2.putText(canvas, "DEAD / MAYAT", (cx1, max(16, cy1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 160, 220), 1)
+                cp_lbl = (
+                    f"dead_rustler {world.snapshot.dead_corpse_confs[idx]:.2f}"
+                    if idx < len(world.snapshot.dead_corpse_confs)
+                    else "DEAD / MAYAT"
+                )
+                cv2.putText(canvas, cp_lbl, (cx1, max(16, cy1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 160, 220), 1)
 
             for idx, bag in enumerate(world.loot):
                 lx, ly, lw, lh = bag.bbox
                 cv2.rectangle(canvas, (lx, ly), (lx + lw, ly + lh), (0, 215, 255), 2)
                 cv2.circle(canvas, (bag.click_x, bag.click_y), 4, (0, 255, 255), -1)
-                if idx < 5:
-                    cv2.putText(canvas, f"G{idx + 1}", (lx, max(14, ly - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1)
+                if idx < 8:
+                    b_lbl = f"{bag.class_name} {bag.score:.2f}" if bag.class_name else f"G{idx + 1}"
+                    cv2.putText(canvas, b_lbl, (lx, max(14, ly - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1)
 
         if waypoint is not None and world.coords_smoothed is not None:
             dx_w = waypoint.x - world.coords_smoothed.x

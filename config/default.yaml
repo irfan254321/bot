@@ -31,7 +31,15 @@ perception:
   coord_max_jump: 120.0
   coord_min_confidence: 0.58
 
-  # Pure OpenCV Gold Rustler nameplate + HP bar + Combat-Status Anti-KS
+  # YOLO11n ONNX Runtime CPU detector (4 classes: 0=gold_rustler, 1=gold_bag, 2=player, 3=dead_rustler)
+  yolo_enabled: true
+  yolo_model_path: "models/yolo11n_ryl.onnx"
+  yolo_imgsz: 640
+  yolo_conf_threshold: 0.45
+  yolo_iou_threshold: 0.45
+  yolo_intra_op_threads: 2
+
+  # Pure OpenCV Gold Rustler nameplate + HP bar + Combat-Status Anti-KS (fallback when ONNX unavailable)
   anti_ks_enabled: true
   anti_ks_player_radius_px: 240
   anti_ks_damage_zone_radius_px: 220
@@ -124,7 +132,7 @@ farming:
   tick_hz: 20.0
   waypoints_file: "config/waypoints.yaml"
   anchor_spot_on_resume: true
-  mob_max_engage_dist_px: 560
+    engage_dist_px: 560
   mob_min_y_ratio: 0.14
   combat_miss_timeout_sec: 2.4
   combat_no_hit_abort_sec: 5.0

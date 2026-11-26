@@ -1050,8 +1050,8 @@ class FarmingFSM:
                 bag.click_y,
                 world,
                 now,
-                player_radius_px=220.0,
-                damage_radius_px=self.anti_ks_damage_zone_radius_px,
+                player_radius_px=self.anti_ks_player_radius_px,
+                damage_radius_px=self.anti_ks_player_radius_px,
             ):
                 continue
             cell = _cell_of(float(bag.click_x), float(bag.click_y))
