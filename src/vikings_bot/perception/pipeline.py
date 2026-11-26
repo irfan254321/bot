@@ -51,6 +51,7 @@ class PerceptionPipeline:
         self.pitch_sky_ratio_max: float = float(config.farming.get("pitch_sky_ratio_max", 0.42))
         self.anti_ks_enabled: bool = bool(config.perception.get("anti_ks_enabled", True))
         self.anti_ks_use_hsv_damage: bool = bool(config.perception.get("anti_ks_use_hsv_damage", False))
+        self.loot_tiled_enabled: bool = bool(config.perception.get("loot_tiled_enabled", True))
         self.disable_gold_bag_detector: bool = bool(config.farming.get("disable_gold_bag_detector", False))
 
     def _estimate_sky_and_horizon(
@@ -364,13 +365,21 @@ class PerceptionPipeline:
                         if self.anti_ks_use_hsv_damage
                         else ()
                     )
-                    yres = self.yolo.detect(
-                        frame.image_bgr,
-                        include_mobs=run_mob_detector,
-                        include_loot=run_loot_detector,
-                        external_combat_zones=ext_zones,
-                        loot_radius_limit_px=effective_loot_radius,
-                    )
+                    if current_state == BotState.LOOT and run_loot_detector and self.loot_tiled_enabled:
+                        # High-res 3-crop 512x512 tiled YOLO inference across playable ground for desynced gold_bags!
+                        yres = self.yolo.detect_loot_tiled(
+                            frame.image_bgr,
+                            external_combat_zones=ext_zones,
+                            loot_radius_limit_px=None,
+                        )
+                    else:
+                        yres = self.yolo.detect(
+                            frame.image_bgr,
+                            include_mobs=run_mob_detector,
+                            include_loot=run_loot_detector,
+                            external_combat_zones=ext_zones,
+                            loot_radius_limit_px=effective_loot_radius,
+                        )
                     mob_list = yres.mobs if run_mob_detector else ()
                     contested_list = yres.contested_mobs if run_mob_detector else ()
                     loot_list = yres.loot if run_loot_detector else ()

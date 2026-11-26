@@ -595,7 +595,7 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
         canvas.create_rectangle(_x(lx1), _y(ly1), _x(lx2), _y(ly2), outline="#FFD700", width=2)
         bcx, bcy = _x(bag.click_x), _y(bag.click_y)
         canvas.create_oval(bcx - 3, bcy - 3, bcx + 3, bcy + 3, fill="#FEF08A", outline="#CA8A04", width=1)
-        if bag.index <= 8:
+        if bag.index <= 16:
             bag_lbl = (
                 f"{bag.class_name} {bag.score:.2f}"
                 if bag.class_name

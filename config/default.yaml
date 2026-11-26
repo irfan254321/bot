@@ -36,7 +36,9 @@ perception:
   yolo_model_path: "models/yolo11n_ryl.onnx"
   yolo_imgsz: 640
   yolo_conf_threshold: 0.45
-  gold_bag_conf_threshold: 0.25
+  gold_bag_conf_threshold: 0.22
+  loot_tiled_enabled: true
+  loot_tiled_gold_bag_conf_threshold: 0.22
   dead_rustler_conf_threshold: 0.35
   yolo_click_y_ratio: 0.68
   yolo_iou_threshold: 0.45
@@ -159,20 +161,21 @@ farming:
   loot_e_close_dist_px: 85.0
   loot_e_interval_sec: 0.30
   loot_click_interval_sec: 0.30
-  loot_max_local_dist_px: 360.0
+  loot_max_local_dist_px: 650.0
   loot_close_radius_px: 310
   loot_entry_close_dist_px: 310.0
   loot_entry_kill_window_sec: 4.0
   loot_dead_point_sweep: true
   mandatory_loot_duration_sec: 2.5
-  post_kill_loot_window_sec: 10.0
+  post_kill_loot_window_sec: 8.0
   loot_min_window_sec: 2.5
-  loot_empty_exit_sec: 1.2
+  loot_empty_exit_sec: 0.8
+  loot_target_move_timeout_sec: 1.4
   loot_clear_confirm_frames: 4
   loot_max_attempts_per_bag: 2
-  loot_attempt_grid_px: 20
+  loot_attempt_grid_px: 24
   loot_visited_grid_ttl_sec: 15.0
-  loot_max_total_sec: 10.0
+  loot_max_total_sec: 8.0
   # Conditional post-LOOT Return-to-Center: only when drifted >35u from (594, 1832) or no mobs after 1x sweep
   spot_x: 594
   spot_y: 1832

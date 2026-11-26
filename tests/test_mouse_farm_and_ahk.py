@@ -97,6 +97,7 @@ def _load_legacy_mouse_loot_cfg():
     c.farming["return_center_min_drift_units"] = 0.0
     c.farming["post_kill_loot_window_sec"] = 10.0
     c.farming["loot_min_window_sec"] = 2.0
+    c.farming["loot_empty_exit_sec"] = 1.2
     return c
 
 
@@ -1463,7 +1464,7 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
     assert cfg.farming["background_e_spam"] is True
     assert cfg.farming["disable_gold_bag_detector"] is False
     assert cfg.farming["loot_mouse_click_enabled"] is True
-    assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 8.0
     assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
     assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
@@ -1593,8 +1594,12 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert cfg.perception["yolo_model_path"] == "models/yolo11n_ryl.onnx"
     assert int(cfg.perception["yolo_imgsz"]) == 640
     assert float(cfg.perception["yolo_conf_threshold"]) == 0.45
-    assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.25
+    assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.22
+    assert cfg.perception["loot_tiled_enabled"] is True
+    assert float(cfg.perception["loot_tiled_gold_bag_conf_threshold"]) == 0.22
     assert float(cfg.perception["dead_rustler_conf_threshold"]) == 0.35
+    # Test single-frame path here; 3-crop tiled path is verified in test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase
+    cfg.perception["loot_tiled_enabled"] = False
     assert float(cfg.perception["yolo_click_y_ratio"]) == 0.68
     assert float(cfg.perception["yolo_iou_threshold"]) == 0.45
     assert int(cfg.perception["yolo_intra_op_threads"]) == 2
@@ -1823,3 +1828,142 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert det_missing.is_available is False
     pipe_fb = PerceptionPipeline(cfg_missing)
     assert pipe_fb.active_backend_desc == "OpenCV-Gold"
+
+
+def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
+    """Verify 3-crop 512x512 overlapping tiled LOOT detection (y=140..652), full-frame coordinate mapping,
+    class-wise NMS (iou=0.45), conf=0.22, SELF/HUD/Anti-KS filtering, overlay rendering, and FSM chase
+    (8.0s max, 24x24 grid, 1.4s move timeout, 0.8s empty exit, dead_rustler 1x click)."""
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.debug_overlay import build_overlay_frame_data, draw_overlay_scene
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+    from vikings_bot.perception.yolo_detector import (
+        CLS_DEAD_RUSTLER,
+        CLS_GOLD_BAG,
+        CLS_PLAYER,
+        letterbox_bgr,
+    )
+
+    cfg = load_config("config/default.yaml")
+    assert cfg.perception["loot_tiled_enabled"] is True
+    assert float(cfg.perception["loot_tiled_gold_bag_conf_threshold"]) == 0.22
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 8.0
+    assert int(cfg.farming["loot_attempt_grid_px"]) == 24
+    assert float(cfg.farming["loot_empty_exit_sec"]) == 0.8
+    assert float(cfg.farming["loot_target_move_timeout_sec"]) == 1.4
+
+    # 512x512 tile -> 640x640 letterbox ratio = 640 / 512 = 1.25, pad = 0
+    tile_dummy = np.zeros((512, 512, 3), dtype=np.uint8)
+    _b, r_tile, px_tile, py_tile = letterbox_bgr(tile_dummy, new_shape=640)
+    assert abs(r_tile - 1.25) < 1e-4 and px_tile == 0.0 and py_tile == 0.0
+
+    def _tile_tensor(items: list[tuple[int, float, float, float, float, float]]) -> np.ndarray:
+        arr = np.zeros((1, 8, 8400), dtype=np.float32)
+        for i, (cid, conf, tx, ty, tw, th) in enumerate(items):
+            arr[0, 0, i] = tx * r_tile + px_tile
+            arr[0, 1, i] = ty * r_tile + py_tile
+            arr[0, 2, i] = tw * r_tile
+            arr[0, 3, i] = th * r_tile
+            arr[0, 4 + cid, i] = conf
+        return arr
+
+    # Tile 0 (Left: x=0..512, y=140..652):
+    #   - Overlapping gold_bag at full (430, 360) -> tile (430, 220), conf=0.60 (dist to player 150,340 = 281 > 240)
+    #   - Player at full (150, 340) -> tile (150, 200), conf=0.85
+    #   - Anti-KS gold_bag near player at full (210, 350) -> tile (210, 210), conf=0.80 (dist to player=61 <= 240 -> rejected!)
+    t_left = _tile_tensor(
+        [
+            (CLS_GOLD_BAG, 0.60, 430, 220, 20, 18),
+            (CLS_PLAYER, 0.85, 150, 200, 54, 86),
+            (CLS_GOLD_BAG, 0.80, 210, 210, 20, 18),
+        ]
+    )
+    # Tile 1 (Center: x=256..768, y=140..652):
+    #   - Same overlapping gold_bag at full (432, 360) -> tile (176, 220), conf=0.88 (higher conf -> wins NMS!)
+    #   - SELF gold_bag at full (512, 390) -> tile (256, 250), conf=0.92 (rejected by SELF box!)
+    #   - HUD chat gold_bag at full (600, 580) -> tile (344, 440), conf=0.91 (rejected by HUD/chat!)
+    #   - dead_rustler at full (620, 340) -> tile (364, 200), conf=0.42
+    t_center = _tile_tensor(
+        [
+            (CLS_GOLD_BAG, 0.88, 176, 220, 20, 18),
+            (CLS_GOLD_BAG, 0.92, 256, 250, 18, 18),
+            (CLS_GOLD_BAG, 0.91, 344, 440, 20, 18),
+            (CLS_DEAD_RUSTLER, 0.42, 364, 200, 76, 48),
+        ]
+    )
+    # Tile 2 (Right: x=512..1024, y=140..652):
+    #   - Desynced far-right gold_bag at full (880, 380) -> tile (368, 240), conf=0.23 (>= 0.22 threshold -> MUST BE DETECTED!)
+    t_right = _tile_tensor([(CLS_GOLD_BAG, 0.23, 368, 240, 16, 16)])
+
+    class _Io:
+        def __init__(self, name, shape):
+            self.name = name
+            self.shape = shape
+
+    class _TiledMockSession:
+        def __init__(self):
+            self.outputs = [t_left, t_center, t_right]
+            self.calls = 0
+
+        def get_inputs(self):
+            return [_Io("images", [1, 3, 640, 640])]
+
+        def get_outputs(self):
+            return [_Io("output0", [1, 8, 8400])]
+
+        def run(self, _out_names, feed_dict):
+            assert feed_dict["images"].shape == (1, 3, 640, 640)
+            out = self.outputs[self.calls % 3]
+            self.calls += 1
+            return [out]
+
+    sess = _TiledMockSession()
+    pipe = PerceptionPipeline(cfg, yolo_session_override=sess)
+    blank = np.full((768, 1024, 3), 40, dtype=np.uint8)
+    pkt = FramePacket(image_bgr=blank, timestamp=1.0)
+
+    snap_loot = pipe.analyze(pkt, current_state=BotState.LOOT, check_interface_mode=False)
+    assert sess.calls == 3, f"Expected exactly 3 tiled ONNX calls in LOOT, got {sess.calls}"
+    assert snap_loot.mobs == ()
+    assert len(snap_loot.loot) == 2, f"Expected 2 merged unique gold_bags (NMS + SELF/HUD/Anti-KS), got {snap_loot.loot}"
+    # Bag #1: merged overlap at ~(432, 360) with winning conf=0.88 (closest to 512,384)
+    assert abs(snap_loot.loot[0].click_x - 432) <= 3 and abs(snap_loot.loot[0].score - 0.88) < 1e-4
+    # Bag #2: desynced far-right at ~(880, 380) with conf=0.23 (>= 0.22)
+    assert abs(snap_loot.loot[1].click_x - 880) <= 3 and abs(snap_loot.loot[1].score - 0.23) < 1e-4
+    assert len(snap_loot.dead_corpses) == 1
+
+    # Verify overlay renders tiled gold_bag boxes + conf scores during LOOT
+    tracker = WorldStateTracker()
+    w_loot = tracker.update(snap_loot)
+    ov = build_overlay_frame_data(game_rect=(0, 0, 1024, 768), world=w_loot, fsm_state=BotState.LOOT, config=cfg, loop_hz=20.0)
+    assert len(ov.loot) == 2
+    texts: list[str] = []
+
+    class _Canvas:
+        def delete(self, *_a, **_k): pass
+        def create_rectangle(self, *_a, **_k): pass
+        def create_oval(self, *_a, **_k): pass
+        def create_line(self, *_a, **_k): pass
+        def create_text(self, *_a, **kw):
+            if "text" in kw:
+                texts.append(str(kw["text"]))
+
+    draw_overlay_scene(_Canvas(), ov)
+    assert any("gold_bag 0.88" in t for t in texts) and any("gold_bag 0.23" in t for t in texts)
+
+    # Verify FSM LOOT 1.4s move timeout marks stuck grid visited & advances to next gold_bag, then exits after 0.8s empty!
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    fsm.transition(BotState.LOOT, 10.0, "test_tiled_chase")
+    # Tick 1: clicks nearest bag (432, 360)
+    acts1 = fsm.step(tracker.update(_snap(10.1, x=640, y=1840, fw=1024, fh=768, loot=snap_loot.loot)))
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.x - 432) <= 3 for a in acts1)
+    # After 1.4s moving toward (432, 360) -> grid force-marked visited -> immediately clicks next bag (880, 380)!
+    acts2 = fsm.step(tracker.update(_snap(11.6, x=640, y=1840, fw=1024, fh=768, loot=snap_loot.loot)))
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.x - 880) <= 3 for a in acts2)
+    # Bags cleared for >=0.8s (past 2.5s min) -> exits to RETURN_TO_CENTER (dist=46.7 > 35u)!
+    fsm.step(tracker.update(_snap(12.2, x=640, y=1840, fw=1024, fh=768, loot=())))
+    assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(13.1, x=640, y=1840, fw=1024, fh=768, loot=())))
+    assert fsm.state == BotState.RETURN_TO_CENTER

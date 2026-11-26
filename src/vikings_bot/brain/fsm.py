@@ -73,14 +73,15 @@ class FarmingFSM:
         self.combat_zero_drop_kill_sec: float = float(f.get("combat_zero_drop_kill_sec", 1.6))
         self.loot_clear_confirm_frames: int = max(2, int(f.get("loot_clear_confirm_frames", 4)))
         self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 2)))
-        self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 20)))
+        self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 24)))
         self.loot_visited_grid_ttl_sec: float = max(2.0, float(f.get("loot_visited_grid_ttl_sec", 15.0)))
         self.mandatory_loot_duration_sec: float = max(1.0, float(f.get("mandatory_loot_duration_sec", 2.5)))
         self.post_kill_loot_window_sec: float = max(
-            self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 10.0))
+            self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 8.0))
         )
         self.loot_min_window_sec: float = max(0.5, float(f.get("loot_min_window_sec", 2.5)))
-        self.loot_empty_exit_sec: float = max(0.2, float(f.get("loot_empty_exit_sec", 1.2)))
+        self.loot_empty_exit_sec: float = max(0.2, float(f.get("loot_empty_exit_sec", 0.8)))
+        self.loot_target_move_timeout_sec: float = max(0.4, float(f.get("loot_target_move_timeout_sec", 1.4)))
         self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", self.post_kill_loot_window_sec))
         self.last_kill_loot_radius_px: float = float(p.get("last_kill_loot_radius_px", 140.0))
         self.last_kill_loot_window_sec: float = float(p.get("last_kill_loot_window_sec", 0.80))
@@ -154,9 +155,11 @@ class FarmingFSM:
         self._aborted_mobs: list[tuple[float, float, float]] = []  # (expire_ts, cx, cy)
         self.external_combat_zones: list[tuple[float, float, float]] = []  # (expire_ts, x, y)
 
-        # LOOT_PICKUP sequential visited_loot_grids on 22x22px grid (TTL 15.0s, max 2 attempts per grid)
+        # LOOT_PICKUP sequential visited_loot_grids on 24x24px grid (TTL 15.0s, max 2 attempts / 1.4s move timeout)
         self.visited_loot_grids: dict[tuple[int, int], tuple[int, float]] = {}
         self._loot_grid_attempts: dict[tuple[int, int], int] = {}
+        self._loot_active_grid: tuple[int, int] | None = None
+        self._loot_active_grid_since: float = 0.0
         self._loot_prev_count: int = 0
         self._loot_clear_streak: int = 0
         self._loot_empty_since: float | None = None
@@ -283,6 +286,8 @@ class FarmingFSM:
         elif new_state == BotState.LOOT:
             self.visited_loot_grids.clear()
             self._loot_grid_attempts.clear()
+            self._loot_active_grid = None
+            self._loot_active_grid_since = now
             self._loot_prev_count = 0
             self._loot_clear_streak = 0
             self._loot_empty_since = None
@@ -1081,6 +1086,19 @@ class FarmingFSM:
             cell: (att, exp) for cell, (att, exp) in self.visited_loot_grids.items() if now < exp
         }
 
+        # Anti-stuck: if character has been moving toward the same loot grid for >= 1.4s, mark it visited
+        # so we immediately advance to the next gold_bag pile!
+        if (
+            self._loot_active_grid is not None
+            and (now - self._loot_active_grid_since) >= self.loot_target_move_timeout_sec
+        ):
+            self.visited_loot_grids[self._loot_active_grid] = (
+                self.loot_max_attempts_per_bag,
+                now + self.loot_visited_grid_ttl_sec,
+            )
+            self._loot_grid_attempts[self._loot_active_grid] = self.loot_max_attempts_per_bag
+            self._loot_active_grid = None
+
         local_bags = self.farm.select_local_loot(world)
         grid = float(self.loot_attempt_grid_px)
 
@@ -1196,6 +1214,9 @@ class FarmingFSM:
         if target_bag is not None and act_kind in ("tap_e", "click_bag"):
             bx, by = float(target_bag.click_x), float(target_bag.click_y)
             cell = _cell_of(bx, by)
+            if self._loot_active_grid != cell:
+                self._loot_active_grid = cell
+                self._loot_active_grid_since = now
             prev_att = self.visited_loot_grids.get(cell, (0, 0.0))[0]
             attempts = prev_att + 1
             self.visited_loot_grids[cell] = (attempts, now + self.loot_visited_grid_ttl_sec)

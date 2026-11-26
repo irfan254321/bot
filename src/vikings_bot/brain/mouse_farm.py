@@ -313,12 +313,14 @@ class MouseFarmController:
         return any(bag.dist_to_player_px <= self.loot_entry_close_dist_px for bag in local_loot)
 
     def select_local_loot(self, world: WorldState) -> list[LootDrop]:
-        """Return safe Gold Bag drops strictly within near-character radius (<=220px scaled)."""
+        """Return safe Gold Bag drops within playable chase radius (full-screen <=650px for YOLO tiled gold_bag, <=310px for OpenCV)."""
         fw = max(1, world.snapshot.frame_width)
         scale_x = 1.0 if fw <= 1100 else max(0.85, fw / 1920.0)
-        lim = self.loot_close_radius_px * scale_x
+        lim_cv = self.loot_close_radius_px * scale_x
+        lim_yolo = self.loot_max_local_dist_px * scale_x
         out: list[LootDrop] = []
         for bag in world.loot:
+            lim = lim_yolo if bag.class_name == "gold_bag" else lim_cv
             if bag.dist_to_player_px > lim and not bag.near_last_kill:
                 continue
             if self.is_point_blocked_by_player(bag.click_x, bag.click_y, world, pad_x=22.0, pad_y=16.0):

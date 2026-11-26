@@ -193,7 +193,10 @@ class Yolo11nOnnxDetector:
         self.imgsz_h: int = self.imgsz
         self.imgsz_w: int = self.imgsz
         self.conf_threshold: float = float(p.get("yolo_conf_threshold", 0.45))
-        self.gold_bag_conf_threshold: float = float(p.get("gold_bag_conf_threshold", 0.25))
+        self.gold_bag_conf_threshold: float = float(p.get("gold_bag_conf_threshold", 0.22))
+        self.loot_tiled_gold_bag_conf_threshold: float = float(
+            p.get("loot_tiled_gold_bag_conf_threshold", self.gold_bag_conf_threshold)
+        )
         self.dead_rustler_conf_threshold: float = float(p.get("dead_rustler_conf_threshold", 0.35))
         self.iou_threshold: float = float(p.get("yolo_iou_threshold", 0.45))
         self.intra_op_threads: int = max(1, int(p.get("yolo_intra_op_threads", 2)))
@@ -283,52 +286,66 @@ class Yolo11nOnnxDetector:
     def load_error(self) -> str | None:
         return self._load_error
 
-    def infer_raw(self, image_bgr: np.ndarray) -> list[YoloRawDetection]:
-        """Run YOLO11n ONNX inference, decode (1, 8, 8400) + NMS, un-letterbox, and filter SELF + HUD/chat."""
-        if self._session is None or image_bgr.size == 0:
-            return []
+    def _infer_crop_candidates(
+        self,
+        crop_bgr: np.ndarray,
+        *,
+        offset_x: int = 0,
+        offset_y: int = 0,
+        frame_w: int | None = None,
+        frame_h: int | None = None,
+        gold_bag_conf_override: float | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run ONNX on a single crop and return pre-NMS (boxes_xyxy, scores, class_ids) in full-frame pixels."""
+        empty_b = np.zeros((0, 4), dtype=np.float32)
+        empty_s = np.zeros((0,), dtype=np.float32)
+        empty_c = np.zeros((0,), dtype=np.int64)
+        if self._session is None or crop_bgr.size == 0:
+            return (empty_b, empty_s, empty_c)
 
-        fh, fw = image_bgr.shape[:2]
-        blob, ratio, pad_x, pad_y = letterbox_bgr(image_bgr, new_shape=(self.imgsz_h, self.imgsz_w))
+        ch, cw = crop_bgr.shape[:2]
+        fw = cw if frame_w is None else frame_w
+        fh = ch if frame_h is None else frame_h
+        blob, ratio, pad_x, pad_y = letterbox_bgr(crop_bgr, new_shape=(self.imgsz_h, self.imgsz_w))
         outputs = self._session.run([self._output_name], {self._input_name: blob})
         if not outputs:
-            return []
+            return (empty_b, empty_s, empty_c)
 
         raw = np.asarray(outputs[0], dtype=np.float32)
         if raw.ndim == 3:
             raw = raw[0]
         if raw.ndim != 2:
-            return []
+            return (empty_b, empty_s, empty_c)
 
-        # Standard YOLO11n export is (8, 8400) = [cx, cy, w, h, cls0, cls1, cls2, cls3]
         if raw.shape[0] == 8 and raw.shape[1] != 8:
-            preds = raw.T  # (8400, 8)
+            preds = raw.T
         elif raw.shape[1] == 8:
-            preds = raw  # (8400, 8)
+            preds = raw
         elif raw.shape[0] < raw.shape[1] and raw.shape[0] >= 5:
             preds = raw.T
         else:
             preds = raw
 
         if preds.shape[1] < 5:
-            return []
+            return (empty_b, empty_s, empty_c)
 
         cls_scores = preds[:, 4 : 4 + len(YOLO_CLASS_NAMES)]
         class_ids = np.argmax(cls_scores, axis=1)
         confs = cls_scores[np.arange(preds.shape[0]), class_ids]
 
+        gb_th = self.gold_bag_conf_threshold if gold_bag_conf_override is None else float(gold_bag_conf_override)
         cls_thresholds = np.array(
             [
                 self.conf_threshold,  # 0: gold_rustler
-                self.gold_bag_conf_threshold,  # 1: gold_bag (0.25 for small ground drops)
+                gb_th,  # 1: gold_bag
                 self.conf_threshold,  # 2: player
-                self.dead_rustler_conf_threshold,  # 3: dead_rustler (0.35)
+                self.dead_rustler_conf_threshold,  # 3: dead_rustler
             ],
             dtype=np.float32,
         )
         valid = confs >= cls_thresholds[class_ids]
         if not np.any(valid):
-            return []
+            return (empty_b, empty_s, empty_c)
 
         preds = preds[valid]
         class_ids = class_ids[valid]
@@ -339,14 +356,25 @@ class Yolo11nOnnxDetector:
         bw = preds[:, 2]
         bh = preds[:, 3]
 
-        # Convert letterbox xywh -> original frame xyxy
         inv_r = 1.0 / max(1e-6, ratio)
-        x1 = np.clip((cx - bw * 0.5 - pad_x) * inv_r, 0.0, float(fw))
-        y1 = np.clip((cy - bh * 0.5 - pad_y) * inv_r, 0.0, float(fh))
-        x2 = np.clip((cx + bw * 0.5 - pad_x) * inv_r, 0.0, float(fw))
-        y2 = np.clip((cy + bh * 0.5 - pad_y) * inv_r, 0.0, float(fh))
+        x1 = np.clip((cx - bw * 0.5 - pad_x) * inv_r + float(offset_x), 0.0, float(fw))
+        y1 = np.clip((cy - bh * 0.5 - pad_y) * inv_r + float(offset_y), 0.0, float(fh))
+        x2 = np.clip((cx + bw * 0.5 - pad_x) * inv_r + float(offset_x), 0.0, float(fw))
+        y2 = np.clip((cy + bh * 0.5 - pad_y) * inv_r + float(offset_y), 0.0, float(fh))
         boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
+        return (boxes_xyxy, confs, class_ids)
 
+    def _finalize_nms_and_spatial_filter(
+        self,
+        boxes_xyxy: np.ndarray,
+        confs: np.ndarray,
+        class_ids: np.ndarray,
+        fw: int,
+        fh: int,
+    ) -> list[YoloRawDetection]:
+        """Apply class-wise NMS (iou_threshold=0.45) and mandatory SELF + HUD/chat exclusions."""
+        if boxes_xyxy.shape[0] == 0:
+            return []
         detections: list[YoloRawDetection] = []
         for cid in range(len(YOLO_CLASS_NAMES)):
             cls_mask = class_ids == cid
@@ -362,7 +390,6 @@ class Yolo11nOnnxDetector:
                     continue
                 bcx = 0.5 * (bx1 + bx2)
                 bcy = 0.5 * (by1 + by2)
-                # Mandatory spatial exclusions: SELF box and static HUD / chat regions
                 if is_in_self_box(bcx, bcy, fw, fh):
                     continue
                 if is_in_hud_or_chat(bcx, bcy, fw, fh):
@@ -377,6 +404,82 @@ class Yolo11nOnnxDetector:
                 )
         return detections
 
+    def infer_raw(self, image_bgr: np.ndarray) -> list[YoloRawDetection]:
+        """Run full-frame YOLO11n ONNX inference, decode + NMS, un-letterbox, and filter SELF + HUD/chat."""
+        if self._session is None or image_bgr.size == 0:
+            return []
+        fh, fw = image_bgr.shape[:2]
+        boxes, confs, cids = self._infer_crop_candidates(image_bgr, offset_x=0, offset_y=0, frame_w=fw, frame_h=fh)
+        return self._finalize_nms_and_spatial_filter(boxes, confs, cids, fw, fh)
+
+    def detect_loot_tiled(
+        self,
+        image_bgr: np.ndarray,
+        *,
+        external_combat_zones: Sequence[tuple[float, float]] = (),
+        loot_radius_limit_px: float | None = None,
+    ) -> YoloDetectionResult:
+        """Tiled 3-crop high-res (512x512 overlapping) YOLO11n inference exclusively for BotState.LOOT.
+
+        Crops playable ground y=140..652 (at 1024x768, scaled) into 3 overlapping 512x512 tiles:
+          1. Left:   x=0..512,   y=140..652
+          2. Center: x=256..768, y=140..652
+          3. Right:  x=512..1024,y=140..652
+        Runs ONNX on all 3 tiles with gold_bag_conf_threshold=0.22, maps back to full frame,
+        merges with class-wise NMS (iou=0.45), and applies SELF, HUD/chat, and Anti-KS player<=240px filters.
+        """
+        if self._session is None or image_bgr.size == 0:
+            return YoloDetectionResult()
+
+        fh, fw = image_bgr.shape[:2]
+        sx = float(fw) / 1024.0
+        sy = float(fh) / 768.0
+        ty1 = max(0, int(round(140.0 * sy)))
+        ty2 = min(fh, int(round(652.0 * sy)))
+        tiles = (
+            (0, ty1, min(fw, int(round(512.0 * sx))), ty2),
+            (max(0, int(round(256.0 * sx))), ty1, min(fw, int(round(768.0 * sx))), ty2),
+            (max(0, int(round(512.0 * sx))), ty1, fw, ty2),
+        )
+
+        all_boxes: list[np.ndarray] = []
+        all_confs: list[np.ndarray] = []
+        all_cids: list[np.ndarray] = []
+        for x1, y1, x2, y2 in tiles:
+            if (x2 - x1) < 16 or (y2 - y1) < 16:
+                continue
+            crop = image_bgr[y1:y2, x1:x2]
+            b, s, c = self._infer_crop_candidates(
+                crop,
+                offset_x=x1,
+                offset_y=y1,
+                frame_w=fw,
+                frame_h=fh,
+                gold_bag_conf_override=self.loot_tiled_gold_bag_conf_threshold,
+            )
+            if b.shape[0] > 0:
+                all_boxes.append(b)
+                all_confs.append(s)
+                all_cids.append(c)
+
+        if all_boxes:
+            merged_boxes = np.concatenate(all_boxes, axis=0)
+            merged_confs = np.concatenate(all_confs, axis=0)
+            merged_cids = np.concatenate(all_cids, axis=0)
+            raw_dets = self._finalize_nms_and_spatial_filter(merged_boxes, merged_confs, merged_cids, fw, fh)
+        else:
+            raw_dets = []
+
+        return self._build_detection_result(
+            raw_dets,
+            fw,
+            fh,
+            include_mobs=False,
+            include_loot=True,
+            external_combat_zones=external_combat_zones,
+            loot_radius_limit_px=loot_radius_limit_px,
+        )
+
     def detect(
         self,
         image_bgr: np.ndarray,
@@ -386,12 +489,32 @@ class Yolo11nOnnxDetector:
         external_combat_zones: Sequence[tuple[float, float]] = (),
         loot_radius_limit_px: float | None = None,
     ) -> YoloDetectionResult:
-        """Run YOLO11n inference and map detections to MobTarget, LootDrop, Players, and Dead Corpses."""
+        """Run full-frame YOLO11n inference and map detections to MobTarget, LootDrop, Players, and Dead Corpses."""
         if self._session is None or image_bgr.size == 0:
             return YoloDetectionResult()
-
         fh, fw = image_bgr.shape[:2]
         raw_dets = self.infer_raw(image_bgr)
+        return self._build_detection_result(
+            raw_dets,
+            fw,
+            fh,
+            include_mobs=include_mobs,
+            include_loot=include_loot,
+            external_combat_zones=external_combat_zones,
+            loot_radius_limit_px=loot_radius_limit_px,
+        )
+
+    def _build_detection_result(
+        self,
+        raw_dets: list[YoloRawDetection],
+        fw: int,
+        fh: int,
+        *,
+        include_mobs: bool = True,
+        include_loot: bool = True,
+        external_combat_zones: Sequence[tuple[float, float]] = (),
+        loot_radius_limit_px: float | None = None,
+    ) -> YoloDetectionResult:
 
         scale_1024 = float(fw) / 1024.0
         center_x = float(fw) * 0.5

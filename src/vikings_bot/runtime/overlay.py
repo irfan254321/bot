@@ -103,7 +103,7 @@ class DebugOverlay:
                 lx, ly, lw, lh = bag.bbox
                 cv2.rectangle(canvas, (lx, ly), (lx + lw, ly + lh), (0, 215, 255), 2)
                 cv2.circle(canvas, (bag.click_x, bag.click_y), 4, (0, 255, 255), -1)
-                if idx < 8:
+                if idx < 16:
                     b_lbl = f"{bag.class_name} {bag.score:.2f}" if bag.class_name else f"G{idx + 1}"
                     cv2.putText(canvas, b_lbl, (lx, max(14, ly - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1)
 
