@@ -237,6 +237,44 @@ class MouseModeNavigator:
             )
         ]
 
+    def step_toward_point(
+        self,
+        state: WorldState,
+        now: float,
+        target: Point2D,
+        *,
+        label: str = "spot_center",
+        arrival_radius: float = 8.0,
+    ) -> list[ActionIntent]:
+        """Walk directly toward an arbitrary world coordinate (e.g. RETURN_TO_CENTER (594, 1832))."""
+        pos = state.coords_smoothed
+        if pos is None:
+            return []
+        dist = pos.distance_to(target)
+        if dist <= arrival_radius:
+            return []
+        bearing = world_bearing_deg(pos, target)
+        rel_angle = (bearing - state.camera_heading_deg + 180.0) % 360.0 - 180.0
+        if not self.tracker.is_ready("move_click", now):
+            return []
+        step_scale = 0.65 if dist < (arrival_radius * 2.2) else 1.0
+        click_x, click_y = self.project_ground_click(
+            rel_angle,
+            state.snapshot.frame_width,
+            state.snapshot.frame_height,
+            scale=step_scale,
+        )
+        self.tracker.set_cooldown("move_click", now, max(self.move_interval, 0.55))
+        return [
+            ClickScreenIntent(
+                x=click_x,
+                y=click_y,
+                button="left",
+                reason=f"return->{label} d={dist:.1f}",
+                ground_rel_angle_deg=rel_angle,
+            )
+        ]
+
     def build_recovery_step(self, state: WorldState, now: float, attempt: int) -> list[ActionIntent]:
         """Unstick maneuver: sidestep + camera turn adapted for Keyboard or Mouse Mode."""
         if not self.tracker.is_ready("recovery_action", now):

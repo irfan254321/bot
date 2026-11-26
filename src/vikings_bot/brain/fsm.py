@@ -53,8 +53,12 @@ class FarmingFSM:
         )
         self.combat_confirmed_max_sec: float = float(f.get("combat_confirmed_max_sec", 35.0))
         self.combat_post_last_hit_idle_sec: float = float(
-            f.get("combat_post_last_hit_idle_sec", self.combat_no_hit_abort_sec)
+            f.get("combat_post_last_hit_idle_sec", 2.5)
         )
+        self.spot_center_x: float = float(f.get("spot_x", 594.0))
+        self.spot_center_y: float = float(f.get("spot_y", 1832.0))
+        self.spot_center_arrival_radius: float = max(2.0, float(f.get("spot_center_arrival_radius", 8.0)))
+        self.return_center_timeout_sec: float = max(1.0, float(f.get("return_center_timeout_sec", 6.0)))
         self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
         self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
         self.combat_blind_timeout_sec: float = float(f.get("combat_blind_timeout_sec", 10.0))
@@ -639,6 +643,8 @@ class FarmingFSM:
             intents.extend(self._handle_combat_wait(world, now, elapsed))
         elif self.state == BotState.LOOT:
             intents.extend(self._handle_loot(world, now, elapsed))
+        elif self.state == BotState.RETURN_TO_CENTER:
+            intents.extend(self._handle_return_to_center(world, now, elapsed))
         elif self.state == BotState.RECOVER_STUCK:
             intents.extend(self._handle_recover(world, now, elapsed))
 
@@ -1016,15 +1022,13 @@ class FarmingFSM:
         Uses `visited_loot_grids` (22x22px grid, TTL 15.0s, max 2 attempts per grid) so adjacent gold piles
         are clicked sequentially one-by-one until exhausted, then exits after >=2.0s + 1.5s empty or 10.0s cap.
         """
-        if self.farm.background_e_spam:
-            # Continuous AHK v2 background E spam handles pickup: stay completely silent (zero mouse movement!)
-            # for post_kill_loot_window_sec (1.5s), then return directly to SEARCH_MOB!
+        if not self.farm.loot_mouse_click_enabled:
             if elapsed >= self.post_kill_loot_window_sec:
                 self.tracker.mark_loot_done()
                 if self.mode == BotMode.LOOT:
                     self._state_entered_at = now
                     return []
-                self.transition(BotState.SEARCH_MOB, now, "post_kill_e_spam_loot_done")
+                self.transition(BotState.RETURN_TO_CENTER, now, "post_kill_e_spam_loot_done")
             return []
 
         # Prune expired visited_loot_grids entries (TTL 15.0s)
@@ -1081,7 +1085,7 @@ class FarmingFSM:
                 self._loot_empty_since = None
                 return []
             self.transition(
-                BotState.SEARCH_MOB,
+                BotState.RETURN_TO_CENTER,
                 now,
                 "post_kill_loot_cleared" if empty_cleared else "post_kill_loot_window_timeout",
             )
@@ -1107,10 +1111,50 @@ class FarmingFSM:
                 self.last_blacklisted_loot = (bx, by)
                 if bag_count <= 1 and self.mode == BotMode.FULL:
                     self.tracker.mark_loot_done()
-                    self.transition(BotState.SEARCH_MOB, now, "loot_bag_blacklisted_max_attempts")
+                    next_post = (
+                        BotState.SEARCH_MOB
+                        if (
+                            self._force_repair_requested
+                            or (
+                                self.respawn_travel.repair_enabled
+                                and self._active_farming_sec >= self.respawn_travel.repair_interval_sec
+                            )
+                        )
+                        else BotState.RETURN_TO_CENTER
+                    )
+                    self.transition(next_post, now, "loot_bag_blacklisted_max_attempts")
                     return []
 
         return intents
+
+    def _handle_return_to_center(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
+        """Walk back to spot center (594, 1832) after LOOT while AHK background E spam stays active.
+
+        Exits to SEARCH_MOB once distance <= spot_center_arrival_radius (8u) or return_center_timeout_sec (6.0s).
+        """
+        rep_intents = self._check_periodic_repair_due(world, now)
+        if rep_intents is not None:
+            return rep_intents
+
+        center_pt = Point2D(self.spot_center_x, self.spot_center_y)
+        if (
+            world.coords_smoothed is not None
+            and world.coords_smoothed.distance_to(center_pt) <= self.spot_center_arrival_radius
+        ):
+            self.transition(BotState.SEARCH_MOB, now, "returned_to_spot_center")
+            return self.release_move_keys("return_center_arrived")
+
+        if elapsed >= self.return_center_timeout_sec:
+            self.transition(BotState.SEARCH_MOB, now, "return_center_timeout")
+            return self.release_move_keys("return_center_timeout_release")
+
+        return self.navigator.step_toward_point(
+            world,
+            now,
+            center_pt,
+            label="spot_center",
+            arrival_radius=self.spot_center_arrival_radius,
+        )
 
     def _handle_recover(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
         if elapsed >= self.recovery_duration_sec:

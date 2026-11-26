@@ -141,15 +141,17 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
     acts_l2 = fsm.step(tracker.update(_snap(4.5, mobs=(), loot=(close_bag,))))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_l2)
 
-    # 6. Bags cleared (min 2.0s + 1.5s consecutive empty in LOOT) -> returns to SEARCH_MOB -> MMB sweep!
+    # 6. Bags cleared (min 2.0s + 1.2s consecutive empty in LOOT) -> RETURN_TO_CENTER -> arrives (594,1832) -> SEARCH_MOB -> MMB sweep!
     fsm.step(tracker.update(_snap(5.0, mobs=(), loot=())))
     assert fsm.state == BotState.LOOT  # elapsed 1.3s < 2.0s
     fsm.step(tracker.update(_snap(6.0, mobs=(), loot=())))
-    assert fsm.state == BotState.LOOT  # empty 1.0s < 1.5s
+    assert fsm.state == BotState.LOOT  # empty 1.0s < 1.2s
     fsm.step(tracker.update(_snap(6.6, mobs=(), loot=())))
+    assert fsm.state == BotState.RETURN_TO_CENTER
+    fsm.step(tracker.update(_snap(6.8, x=594, y=1832, mobs=(), loot=())))
     assert fsm.state == BotState.SEARCH_MOB
 
-    acts_sweep = fsm.step(tracker.update(_snap(7.0, mobs=(), loot=())))
+    acts_sweep = fsm.step(tracker.update(_snap(7.0, x=594, y=1832, mobs=(), loot=())))
     assert any(isinstance(a, DragCameraIntent) and a.button == "middle" and a.dy == 0 for a in acts_sweep)
 
 
@@ -443,7 +445,7 @@ def test_loot_entry_gate_blocks_far_drops_without_kill_and_24px_grid_caps_jitter
         if fsm2.last_blacklisted_loot is not None:
             blacklisted = fsm2.last_blacklisted_loot
     assert blacklisted is not None
-    assert fsm2.state == BotState.SEARCH_MOB
+    assert fsm2.state == BotState.RETURN_TO_CENTER
 
 
 def test_auto_daylight_weather_sends_setweather_in_scan_spot_and_never_in_combat_wait():
@@ -800,19 +802,19 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     assert fsm.state == BotState.LOOT
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_l2)
 
-    # After >=2.0s elapsed AND >=1.2s consecutive empty (empty since 5.5 -> 7.1 is 1.6s empty) -> SEARCH_MOB!
+    # After >=2.0s elapsed AND >=1.2s consecutive empty (empty since 5.5 -> 7.1 is 1.6s empty) -> RETURN_TO_CENTER!
     fsm.step(tracker.update(_snap(7.1, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
-    assert fsm.state == BotState.SEARCH_MOB
+    assert fsm.state == BotState.RETURN_TO_CENTER
 
     # Verify 10.0s hard post_kill_loot_window_sec cap when close bags keep appearing continuously
     fsm.transition(BotState.LOOT, 20.0, "test_10s_cap")
     for idx, ts in enumerate((21.0, 23.0, 25.0, 27.0, 29.5)):
-        # Distinct close bag positions so 3-attempt blacklist never fires early
+        # Distinct close bag positions so 2-attempt blacklist never fires early
         b_i = _bag(cx=430 + idx * 35, cy=440, dist=120.0)
         fsm.step(tracker.update(_snap(ts, fw=1024, fh=768, loot=(b_i,))))
         assert fsm.state == BotState.LOOT
     fsm.step(tracker.update(_snap(30.1, fw=1024, fh=768, loot=(_bag(cx=520, cy=440, dist=110.0),))))
-    assert fsm.state == BotState.SEARCH_MOB
+    assert fsm.state == BotState.RETURN_TO_CENTER
 
 
 def test_combat_wait_hard_gate_post_kill_loot_e_tap_and_hybrid_green_hp_bar_detector():
@@ -945,7 +947,7 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
     assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 5.0
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
-    assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 5.0
+    assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
     assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
 
     pipe = PerceptionPipeline(cfg)
@@ -1015,17 +1017,19 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
         )
         assert fsm.step(w_h) == []
         assert fsm.state == BotState.COMBAT_WAIT and fsm._combat_confirmed is True
-    # Still within 5.0s of last hit (t=28.0 -> 4.0s idle) -> stays in COMBAT_WAIT
-    assert fsm.step(tracker.update(_snap(28.0, fw=1024, fh=768))) == []
+    # Still within 2.5s of last hit (t=26.0 -> 2.0s idle) -> stays in COMBAT_WAIT
+    assert fsm.step(tracker.update(_snap(26.0, fw=1024, fh=768))) == []
     assert fsm.state == BotState.COMBAT_WAIT
-    # At t=29.1 (5.1s >= 5.0s since last hit) -> MANDATORY transition to BotState.LOOT!
-    fsm.step(tracker.update(_snap(29.1, fw=1024, fh=768)))
+    # At t=26.6 (2.6s >= 2.5s since last hit) -> MANDATORY transition to BotState.LOOT!
+    fsm.step(tracker.update(_snap(26.6, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
-    # Post-kill LOOT: stays in LOOT during initial 2.0s window tapping E, exits after >=2.0s + 1.2s empty!
-    acts_loot_e = fsm.step(tracker.update(_snap(29.5, fw=1024, fh=768)))
+    # Post-kill LOOT: stays in LOOT during initial 2.0s window, exits after >=2.0s + 1.2s empty -> RETURN_TO_CENTER!
+    acts_loot_e = fsm.step(tracker.update(_snap(27.0, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_loot_e)
-    fsm.step(tracker.update(_snap(31.2, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(28.8, fw=1024, fh=768)))
+    assert fsm.state == BotState.RETURN_TO_CENTER
+    fsm.step(tracker.update(_snap(29.0, x=594, y=1832, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. NAVIGATE_TO_SPOT guard: when spot_dist <= 25u and len(mobs) >= 1, stays in SEARCH_MOB & engages mob!
@@ -1108,12 +1112,14 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
         assert fsm.step(w_fight) == []
         assert fsm.state == BotState.COMBAT_WAIT
 
-    # 4. 5.0s after last hit stops (t=25.6) -> MANDATORY BotState.LOOT BEFORE any spot-distance check!
-    fsm.step(tracker.update(_snap(25.6, x=645, y=1830, fw=1024, fh=768)))
+    # 4. 2.5s after last hit stops (t=23.1) -> MANDATORY BotState.LOOT -> RETURN_TO_CENTER -> SEARCH_MOB!
+    fsm.step(tracker.update(_snap(23.1, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(26.5, x=645, y=1830, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(24.0, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT  # inside initial 2.0s window
-    fsm.step(tracker.update(_snap(28.0, x=645, y=1830, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(25.5, x=645, y=1830, fw=1024, fh=768)))
+    assert fsm.state == BotState.RETURN_TO_CENTER
+    fsm.step(tracker.update(_snap(26.0, x=594, y=1832, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. At drift=72u (outside 55u farm_radius, <=85u) with 2 visible mobs -> attacks mob instead of drifting/patrolling!
@@ -1211,11 +1217,11 @@ def test_ref_loot_bags_6_piles_detected_and_clicked_sequentially_in_loot():
     assert len(set(clicked_pts)) == 6, f"All 6 piles must be clicked sequentially without repeats: {clicked_pts}"
     assert len(fsm.visited_loot_grids) == 6
 
-    # 4. Once piles are gone for 1.5s (past min 2.0s window) -> returns to SEARCH_MOB!
+    # 4. Once piles are gone for 1.2s (past min 2.0s window) -> RETURN_TO_CENTER!
     fsm.step(tracker.update(_snap(13.0, fw=1024, fh=768, loot=())))
     assert fsm.state == BotState.LOOT
     fsm.step(tracker.update(_snap(14.6, fw=1024, fh=768, loot=())))
-    assert fsm.state == BotState.SEARCH_MOB
+    assert fsm.state == BotState.RETURN_TO_CENTER
 
 
 def test_anti_ks_player_cyan_bar_external_damage_zone_wounded_hp_and_loot_avoidance():
@@ -1337,12 +1343,12 @@ def test_ref_gold_scatter_10_piles_and_ref_close_mobs_regression():
     img_768 = cv2.resize(raw_sc, (1024, 768), interpolation=cv2.INTER_AREA)
     pkt_sc = FramePacket(image_bgr=img_768, timestamp=1.0, source_name="ref_gold_scatter.jpg")
 
-    # Hard-gate: OFF in COMBAT_WAIT & SEARCH_MOB, passive ON in PAUSED, active ON in LOOT (<=310px)
+    # Hard-gate: OFF in COMBAT_WAIT, RETURN_TO_CENTER, SEARCH_MOB, PAUSED; active EXCLUSIVELY in LOOT (<=310px)!
     assert pipe.analyze(pkt_sc, current_state=BotState.COMBAT_WAIT, check_interface_mode=False).gold_bags == ()
+    assert pipe.analyze(pkt_sc, current_state=BotState.RETURN_TO_CENTER, check_interface_mode=False).gold_bags == ()
     assert pipe.analyze(pkt_sc, current_state=BotState.SEARCH_MOB, check_interface_mode=False).gold_bags == ()
-    snap_paused = pipe.analyze(pkt_sc, current_state=BotState.PAUSED, check_interface_mode=False)
+    assert pipe.analyze(pkt_sc, current_state=BotState.PAUSED, check_interface_mode=False).gold_bags == ()
     snap_loot = pipe.analyze(pkt_sc, current_state=BotState.LOOT, check_interface_mode=False)
-    assert len(snap_paused.gold_bags) >= 10
     assert len(snap_loot.gold_bags) >= 10, f"Expected >=10 gold piles on ref_gold_scatter.jpg, got {len(snap_loot.gold_bags)}: {snap_loot.gold_bags}"
     # Both left side (x < 450) and right side (x > 570) piles detected, zero inside SELF (468..556, 345..428) or chat!
     assert sum(1 for b in snap_loot.gold_bags if b.click_x < 450) >= 2
@@ -1429,17 +1435,17 @@ def test_local_hit_damage_5s_no_hit_abort_and_5s_post_hit_loot_transition():
         )
     )
     assert fsm.step(w_hit) == [] and fsm.state == BotState.COMBAT_WAIT
-    assert fsm.step(tracker.update(_snap(26.5, fw=1024, fh=768))) == [] and fsm.state == BotState.COMBAT_WAIT  # 4.5s < 5.0s
-    fsm.step(tracker.update(_snap(27.1, fw=1024, fh=768)))  # 5.1s >= 5.0s since last local hit
+    assert fsm.step(tracker.update(_snap(24.0, fw=1024, fh=768))) == [] and fsm.state == BotState.COMBAT_WAIT  # 2.0s < 2.5s
+    fsm.step(tracker.update(_snap(24.6, fw=1024, fh=768)))  # 2.6s >= 2.5s since last local hit
     assert fsm.state == BotState.LOOT
 
 
-def test_background_ahk_e_spam_chat_cmd_interlock_and_zero_mouse_click_loot():
-    """Verify default background AHK v2 E-spam mode:
-    1. AHK script defines SetTimer(SpamPickupLoop, 90), SET_E_SPAM, WinActive check, and chat_lock interlock.
-    2. AhkInputDriver.send_chat_command('/setweather 11' / '/kill') disables e_spam before CHAT_CMD and re-enables after.
-    3. GoldBagDetector is completely disabled (gold_bags == ()) across all FSM states, and BotState.LOOT
-       performs a silent 1.5s pause with ZERO mouse clicks before returning to SEARCH_MOB."""
+def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_1832():
+    """Verify full 5-stage cycle with default config:
+    1. AHK v2 background E spam (90ms + WinActive + chat_lock interlock around /setweather 11 & /kill).
+    2. SCAN_SPOT (GoldBagDetector OFF) -> 1x click -> COMBAT_WAIT (all detectors OFF, 2.5s post-hit -> LOOT).
+    3. LOOT (10.0s, GoldBagDetector EXCLUSIVELY ON, mouse aim + left-click gold + visited_loot_grids 20x20) -> RETURN_TO_CENTER.
+    4. RETURN_TO_CENTER (594, 1832, arrival <=8u or 6.0s timeout, all object detectors OFF) -> SCAN_SPOT."""
     from pathlib import Path
     import cv2
     from vikings_bot.capture.screen import FramePacket
@@ -1448,32 +1454,28 @@ def test_background_ahk_e_spam_chat_cmd_interlock_and_zero_mouse_click_loot():
     cfg = load_config("config/default.yaml")
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert cfg.farming["background_e_spam"] is True
-    assert cfg.farming["disable_gold_bag_detector"] is True
-    assert float(cfg.farming["post_kill_loot_window_sec"]) == 1.5
+    assert cfg.farming["disable_gold_bag_detector"] is False
+    assert cfg.farming["loot_mouse_click_enabled"] is True
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
     assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
+    assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
+    assert int(cfg.farming["spot_x"]) == 594 and int(cfg.farming["spot_y"]) == 1832
+    assert float(cfg.farming["spot_center_arrival_radius"]) == 8.0
+    assert float(cfg.farming["return_center_timeout_sec"]) == 6.0
 
-    # 1. AHK v2 bridge script checks
+    # 1. AHK v2 bridge script checks & CHAT_CMD interlock
     ahk_src = Path("ahk/vikings_input_bridge.ahk").read_text(encoding="utf-8")
     for token in (
-        "global e_spam_enabled := false",
-        "global chat_lock := false",
         "SetTimer(SpamPickupLoop, 90)",
         'WinActive("ahk_id "',
-        'Send "{e}"',
         'cmd = "SET_E_SPAM"',
         "chat_lock := true",
-        "Sleep 60",
-        "Sleep 75",
-        "SendText(text)",
-        "Sleep 50",
-        "Sleep 80",
         "chat_lock := false",
         "SetTimer(SpamPickupLoop, 0)",
     ):
         assert token in ahk_src, f"Missing expected AHK v2 token: {token}"
 
-    # 2. AhkInputDriver CHAT_CMD interlock disables e_spam before '/setweather 11' and '/kill' and restores after
     sent: list[str] = []
     drv = AhkInputDriver(
         ahk_mode="vm_foreground",
@@ -1493,26 +1495,61 @@ def test_background_ahk_e_spam_chat_cmd_interlock_and_zero_mouse_click_loot():
         "SET_E_SPAM|0|1",
         "SET_E_SPAM|0|0",
         "RELEASE_ALL|0",
-    ], sent
+    ]
 
-    # 3. Default pipeline disables GoldBagDetector across ALL live FSM states (even on ref_gold_scatter.jpg!)
+    # 2. Pipeline: GoldBagDetector ON EXCLUSIVELY in BotState.LOOT, OFF in COMBAT_WAIT / RETURN_TO_CENTER / SEARCH_MOB
     pipe = PerceptionPipeline(cfg)
     scatter_path = Path(__file__).parent / "fixtures" / "ref_gold_scatter.jpg"
     img = cv2.resize(cv2.imread(str(scatter_path), cv2.IMREAD_COLOR), (1024, 768))
     pkt = FramePacket(image_bgr=img, timestamp=1.0)
-    for st in (BotState.PAUSED, BotState.SEARCH_MOB, BotState.COMBAT_WAIT, BotState.LOOT):
-        snap = pipe.analyze(pkt, current_state=st, check_interface_mode=False)
-        assert snap.gold_bags == (), f"GoldBagDetector must be disabled in {st} when disable_gold_bag_detector=True!"
+    assert pipe.analyze(pkt, current_state=BotState.SEARCH_MOB, check_interface_mode=False).gold_bags == ()
+    assert pipe.analyze(pkt, current_state=BotState.COMBAT_WAIT, check_interface_mode=False).gold_bags == ()
+    snap_rtc = pipe.analyze(pkt, current_state=BotState.RETURN_TO_CENTER, check_interface_mode=False)
+    assert snap_rtc.mobs == () and snap_rtc.gold_bags == () and snap_rtc.dead_corpses == ()
+    snap_loot = pipe.analyze(pkt, current_state=BotState.LOOT, check_interface_mode=False)
+    assert len(snap_loot.gold_bags) >= 10 and snap_loot.mobs == ()
 
-    # 4. FSM in BotState.LOOT performs silent 1.5s wait with ZERO mouse clicks or camera drags, then returns to SEARCH_MOB!
+    # 3. Full FSM 5-stage cycle: SCAN_SPOT -> COMBAT_WAIT -> LOOT (click gold) -> RETURN_TO_CENTER (594,1832) -> SCAN_SPOT
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
-    fsm.transition(BotState.LOOT, 10.0, "post_kill")
-    bag = _bag(cx=640, cy=400, dist=130.0)
-    acts_1 = fsm.step(tracker.update(_snap(10.5, fw=1024, fh=768, loot=(bag,))))
-    assert acts_1 == [] and fsm.state == BotState.LOOT
-    acts_2 = fsm.step(tracker.update(_snap(11.2, fw=1024, fh=768, loot=(bag,))))
-    assert acts_2 == [] and fsm.state == BotState.LOOT
-    acts_3 = fsm.step(tracker.update(_snap(11.6, fw=1024, fh=768, loot=(bag,))))
-    assert acts_3 == [] and fsm.state == BotState.SEARCH_MOB
+    assert fsm.state == BotState.SEARCH_MOB
+
+    # Stage 1 -> 2: Engage mob
+    m1 = _mob(cx=720, cy=320, dist=200.0, has_hp=False)
+    acts_eng = fsm.step(tracker.update(_snap(2.0, x=620, y=1840, fw=1024, fh=768, mobs=(m1,))))
+    assert fsm.state == BotState.COMBAT_WAIT
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 720 and a.y == 320 for a in acts_eng)
+
+    # Stage 2: Hit confirmed -> 2.5s post-hit idle -> LOOT
+    w_hit = tracker.update(
+        PerceptionSnapshot(
+            timestamp=3.5, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+            coords=CoordReading(x=630, y=1845, confidence=0.98), minimap=MinimapReading(),
+            local_hit_damage_visible=True,
+        )
+    )
+    assert fsm.step(w_hit) == [] and fsm.state == BotState.COMBAT_WAIT
+    assert fsm.step(tracker.update(_snap(6.1, x=630, y=1845, fw=1024, fh=768))) == []
+    assert fsm.state == BotState.LOOT
+
+    # Stage 3: LOOT clicks gold bag directly, then exits to RETURN_TO_CENTER once empty >= 1.2s (past 2.0s min)
+    bag1 = _bag(cx=640, cy=400, dist=130.0)
+    acts_l1 = fsm.step(tracker.update(_snap(6.5, x=630, y=1845, fw=1024, fh=768, loot=(bag1,))))
+    assert any(isinstance(a, ClickScreenIntent) and a.x == 640 and a.y == 400 and a.button == "left" for a in acts_l1)
+    fsm.step(tracker.update(_snap(7.2, x=630, y=1845, fw=1024, fh=768, loot=())))
+    assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(8.5, x=630, y=1845, fw=1024, fh=768, loot=())))
+    assert fsm.state == BotState.RETURN_TO_CENTER
+
+    # Stage 4: RETURN_TO_CENTER walks toward (594, 1832) while far (dist=38u > 8u), then transitions to SEARCH_MOB on arrival!
+    acts_walk = fsm.step(tracker.update(_snap(9.2, x=630, y=1845, fw=1024, fh=768)))
+    assert fsm.state == BotState.RETURN_TO_CENTER
+    assert any(isinstance(a, ClickScreenIntent) and "return->spot_center" in a.reason for a in acts_walk)
+    fsm.step(tracker.update(_snap(10.5, x=596, y=1830, fw=1024, fh=768)))  # dist = 2.8 <= 8.0
+    assert fsm.state == BotState.SEARCH_MOB
+
+    # Verify RETURN_TO_CENTER 6.0s timeout also returns cleanly to SEARCH_MOB
+    fsm.transition(BotState.RETURN_TO_CENTER, 20.0, "test_rtc_timeout")
+    fsm.step(tracker.update(_snap(26.2, x=630, y=1845, fw=1024, fh=768)))
+    assert fsm.state == BotState.SEARCH_MOB

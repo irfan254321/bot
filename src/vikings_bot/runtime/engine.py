@@ -340,8 +340,13 @@ class BotEngine:
                     BotState.TELEPORT_TO_SPOT,
                     BotState.TRAVEL_TO_SPOT,
                 )
-                skip_all_objs = self.fsm.state == BotState.COMBAT_WAIT
-                skip_mob_det = self.fsm.state in (BotState.COMBAT_WAIT, BotState.LOOT, BotState.ENSURE_MOUSE_MODE)
+                skip_all_objs = self.fsm.state in (BotState.COMBAT_WAIT, BotState.RETURN_TO_CENTER)
+                skip_mob_det = self.fsm.state in (
+                    BotState.COMBAT_WAIT,
+                    BotState.LOOT,
+                    BotState.RETURN_TO_CENTER,
+                    BotState.ENSURE_MOUSE_MODE,
+                )
                 loot_rad_lim = (
                     float(
                         self.config.farming.get(
@@ -349,7 +354,7 @@ class BotEngine:
                             self.config.farming.get("loot_entry_close_dist_px", 310.0),
                         )
                     )
-                    if self.fsm.state in (BotState.LOOT, BotState.PAUSED)
+                    if self.fsm.state == BotState.LOOT
                     else None
                 )
                 cursor_rel_xy: tuple[int, int] | None = None
@@ -498,6 +503,7 @@ class BotEngine:
                         BotState.AT_SPOT_IDLE,
                         BotState.COMBAT_WAIT,
                         BotState.LOOT,
+                        BotState.RETURN_TO_CENTER,
                         BotState.NAVIGATE_TO_SPOT,
                     )
                     if getattr(self, "_last_e_spam_state", None) != want_e_spam:

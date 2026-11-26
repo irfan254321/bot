@@ -355,7 +355,7 @@ def build_overlay_frame_data(
     mobs_out: list[OverlayMob] = []
     locked_ov: OverlayMob | None = None
     st_val = getattr(fsm_state, "value", str(fsm_state))
-    in_combat_wait = st_val == "COMBAT_WAIT"
+    in_combat_wait = st_val in ("COMBAT_WAIT", "RETURN_TO_CENTER")
     in_loot = st_val == "LOOT"
     # Hide LOCK & MOB boxes during COMBAT_WAIT and LOOT!
     if not in_combat_wait and not in_loot:

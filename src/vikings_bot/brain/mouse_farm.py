@@ -36,6 +36,7 @@ class MouseFarmController:
         self.mob_max_engage_dist_px: float = float(f.get("mob_max_engage_dist_px", 560.0))
         self.mob_min_y_ratio: float = float(f.get("mob_min_y_ratio", 0.14))
         self.background_e_spam: bool = bool(f.get("background_e_spam", True))
+        self.loot_mouse_click_enabled: bool = bool(f.get("loot_mouse_click_enabled", True))
         self.anti_ks_min_untouched_hp_ratio: float = float(
             config.perception.get("anti_ks_min_untouched_hp_ratio", 0.94)
         )
@@ -309,8 +310,8 @@ class MouseFarmController:
 
         Returns `(intents, target_drop, action_kind)` where `action_kind` is `'tap_e' | 'click_bag' | 'wait'`.
         """
-        if self.background_e_spam:
-            # Continuous AHK v2 background E spam handles all pickup with zero mouse movement!
+        if not self.loot_mouse_click_enabled:
+            # Silent background E-spam only mode
             return ([], None, "wait")
 
         local_bags = candidate_bags if candidate_bags is not None else self.select_local_loot(world)

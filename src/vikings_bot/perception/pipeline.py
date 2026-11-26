@@ -41,7 +41,7 @@ class PerceptionPipeline:
         self.pitch_sky_ratio_min: float = float(config.farming.get("pitch_sky_ratio_min", 0.12))
         self.pitch_sky_ratio_max: float = float(config.farming.get("pitch_sky_ratio_max", 0.42))
         self.anti_ks_enabled: bool = bool(config.perception.get("anti_ks_enabled", True))
-        self.disable_gold_bag_detector: bool = bool(config.farming.get("disable_gold_bag_detector", True))
+        self.disable_gold_bag_detector: bool = bool(config.farming.get("disable_gold_bag_detector", False))
 
     def _estimate_sky_and_horizon(
         self,
@@ -246,19 +246,21 @@ class PerceptionPipeline:
         # - Non-LOOT states: NEVER run GoldBagDetector so living monster armor never triggers LOOT!
         # - LOOT: NEVER run GoldRustlerDetector; run ONLY GoldBagDetector within <=220px close radius!
         in_combat_wait = current_state == BotState.COMBAT_WAIT or skip_all_object_detectors
-        # When continuous AHK background E spam is active (`disable_gold_bag_detector=True`),
-        # disable GoldBagDetector across ALL live FSM states so gold_bags is always empty!
-        run_loot_detector = (not in_combat_wait) and (
+        in_return_center = current_state == BotState.RETURN_TO_CENTER
+        skip_all_objs = in_combat_wait or in_return_center
+        # GoldBagDetector is enabled EXCLUSIVELY in BotState.LOOT (and offline current_state=None).
+        # Completely OFF in COMBAT_WAIT, RETURN_TO_CENTER, SEARCH_MOB, and PAUSED!
+        run_loot_detector = (not skip_all_objs) and (
             current_state is None
-            or ((not self.disable_gold_bag_detector) and current_state in (BotState.LOOT, BotState.PAUSED))
+            or ((not self.disable_gold_bag_detector) and current_state == BotState.LOOT)
         )
-        run_mob_detector = (not in_combat_wait) and (not skip_mob_detection) and (
+        run_mob_detector = (not skip_all_objs) and (not skip_mob_detection) and (
             current_state != BotState.LOOT
         )
         effective_loot_radius = (
             loot_radius_limit_px
             if loot_radius_limit_px is not None
-            else (310.0 if current_state in (BotState.LOOT, BotState.PAUSED) else None)
+            else (310.0 if current_state == BotState.LOOT else None)
         )
         t_wall0 = time.perf_counter()
         timings: dict[str, float] = {}
@@ -313,8 +315,8 @@ class PerceptionPipeline:
             timings["hsv_conv"] = (time.perf_counter() - t_pf) * 1000.0
 
             t_m = time.perf_counter()
-            if in_combat_wait:
-                if shared_pf_hsv is not None:
+            if skip_all_objs:
+                if in_combat_wait and shared_pf_hsv is not None:
                     combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
                         shared_pf_hsv, ox, oy, frame.width, frame.height
                     )
