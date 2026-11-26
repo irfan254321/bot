@@ -49,11 +49,25 @@ class MouseFarmController:
         self.daylight_dark_luma_threshold: float = float(f.get("daylight_dark_luma_threshold", 68.0))
         self.daylight_dark_cooldown_sec: float = max(10.0, float(f.get("daylight_dark_cooldown_sec", 45.0)))
 
+        # Auto-level vertical camera pitch (with strict anti-oscillation lockout)
+        self.auto_camera_pitch: bool = bool(f.get("auto_camera_pitch", True))
+        self.pitch_horizon_min_y: float = float(f.get("pitch_horizon_min_y", 105.0))
+        self.pitch_horizon_max_y: float = float(f.get("pitch_horizon_max_y", 300.0))
+        self.pitch_sky_ratio_min: float = float(f.get("pitch_sky_ratio_min", 0.12))
+        self.pitch_sky_ratio_max: float = float(f.get("pitch_sky_ratio_max", 0.42))
+        self.pitch_step_dy: int = max(15, abs(int(f.get("pitch_step_dy", 60))))
+        self.pitch_adjust_cooldown_sec: float = max(1.0, float(f.get("pitch_adjust_cooldown_sec", 4.0)))
+        self.pitch_opposite_lockout_sec: float = max(4.0, float(f.get("pitch_opposite_lockout_sec", 12.0)))
+        self.pitch_settle_sec: float = max(0.10, float(f.get("pitch_settle_sec", 0.30)))
+
         self._sweep_dir: int = 1
         self._sweep_dir_chosen: bool = False
         self._weather_pending_first_entry: bool = True
         self._last_weather_sent_at: float | None = None
         self._last_dark_weather_sent_at: float | None = None
+        self._last_pitch_dir: int = 0  # -1 = lifted up (dy<0), +1 = lowered down (dy>0)
+        self._last_pitch_time: float = -999.0
+        self._pitch_settle_until: float = 0.0
 
     def request_daylight_weather_sync(self) -> None:
         """Schedule a daylight weather command on the next safe SEARCH_MOB / SCAN_SPOT entry."""
@@ -89,6 +103,69 @@ class MouseFarmController:
         self._last_weather_sent_at = now
         self._last_dark_weather_sent_at = now
         return [TypeChatCommandIntent(command=self.daylight_weather_cmd, reason=reason)]
+
+    def maybe_build_camera_pitch_adjust(self, world: WorldState, now: float) -> tuple[list[ActionIntent], bool]:
+        """Auto-level vertical camera pitch via pure vertical DRAG_MMB (dx=0) with anti-oscillation lockout.
+
+        Returns `(intents, is_settling)`.
+        - Runs ONLY in SEARCH_MOB / SCAN_SPOT when mobs==0 or pitch is extreme.
+        - Enforces >=4.0s cooldown between vertical drags, 0.30s settle wait, and 12.0s opposite-direction lockout.
+        """
+        if not self.auto_camera_pitch:
+            return ([], False)
+        if now < self._pitch_settle_until:
+            return ([], True)
+        hy = world.horizon_y
+        sr = world.sky_ratio
+        if hy is None and sr is None:
+            return ([], False)
+        if (now - self._last_pitch_time) < self.pitch_adjust_cooldown_sec:
+            return ([], False)
+
+        too_down = (hy is not None and hy < self.pitch_horizon_min_y) or (sr is not None and sr < self.pitch_sky_ratio_min)
+        too_up = (hy is not None and hy > self.pitch_horizon_max_y) or (sr is not None and sr > self.pitch_sky_ratio_max)
+        if too_down and not too_up:
+            want_dir = -1  # lift camera up toward horizon (dy = -pitch_step_dy)
+        elif too_up and not too_down:
+            want_dir = 1  # lower camera down toward ground (dy = +pitch_step_dy)
+        else:
+            return ([], False)
+
+        # Only adjust when no mobs are visible OR camera angle is extreme
+        extreme = (
+            (hy is not None and (hy < 60.0 or hy > 380.0))
+            or (sr is not None and (sr < 0.05 or sr > 0.55))
+        )
+        if world.mobs and not extreme:
+            return ([], False)
+
+        # Anti-oscillation lockout: block reversing vertical direction for 12.0s!
+        if (
+            self._last_pitch_dir != 0
+            and want_dir == -self._last_pitch_dir
+            and (now - self._last_pitch_time) < self.pitch_opposite_lockout_sec
+        ):
+            return ([], False)
+
+        dy = want_dir * self.pitch_step_dy
+        self._last_pitch_dir = want_dir
+        self._last_pitch_time = now
+        self._pitch_settle_until = now + self.pitch_settle_sec
+        dir_lbl = "lift_up" if want_dir < 0 else "lower_down"
+        return (
+            [
+                DragCameraIntent(
+                    dx=0,
+                    dy=dy,
+                    button=self.camera_btn,
+                    reason=f"camera_pitch_{dir_lbl}(hy={hy},sr={sr})",
+                    est_yaw_deg=0.0,
+                    start_x=world.snapshot.frame_width // 2,
+                    start_y=world.snapshot.frame_height // 2,
+                )
+            ],
+            False,
+        )
 
     def reset_sweep_direction(self) -> None:
         self._sweep_dir_chosen = False

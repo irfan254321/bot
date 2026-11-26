@@ -666,6 +666,14 @@ class FarmingFSM:
         if now < self._post_drag_settle_until:
             return []
 
+        # Priority 3c: Safe vertical camera pitch auto-level (dx=0, 4s cooldown, 12s opposite lockout)
+        pitch_intents, pitch_settling = self.farm.maybe_build_camera_pitch_adjust(world, now)
+        if pitch_intents:
+            self._post_drag_settle_until = now + self.farm.pitch_settle_sec
+            return pitch_intents
+        if pitch_settling:
+            return []
+
         # Priority 4: Pick nearest safe Gold Rustler and CLICK ONCE -> COMBAT_WAIT!
         mob = self.farm.pick_best_gold_rustler(
             world,

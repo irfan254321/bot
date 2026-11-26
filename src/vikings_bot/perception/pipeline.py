@@ -35,7 +35,50 @@ class PerceptionPipeline:
         self.control_mode_setting: str = str(config.controls.get("control_mode", "auto")).lower()
         self._control_mode: str = str(config.controls.get("mode", "mouse")).lower()
         self.auto_restore_mouse_mode: bool = bool(config.controls.get("auto_restore_mouse_mode", True))
-        self.auto_level_camera_pitch: bool = bool(config.controls.get("auto_level_camera_pitch", False))
+        self.auto_level_camera_pitch: bool = bool(config.farming.get("auto_camera_pitch", True))
+        self.pitch_horizon_min_y: float = float(config.farming.get("pitch_horizon_min_y", 105.0))
+        self.pitch_horizon_max_y: float = float(config.farming.get("pitch_horizon_max_y", 300.0))
+        self.pitch_sky_ratio_min: float = float(config.farming.get("pitch_sky_ratio_min", 0.12))
+        self.pitch_sky_ratio_max: float = float(config.farming.get("pitch_sky_ratio_max", 0.42))
+
+    def _estimate_sky_and_horizon(
+        self,
+        pf_hsv: np.ndarray,
+        ox: int,
+        oy: int,
+        frame_w: int,
+        frame_h: int,
+    ) -> tuple[float, float, str]:
+        """Estimate sky_ratio and 768p-normalized horizon_y from upper playfield (<0.08ms CPU)."""
+        if pf_hsv.size == 0 or frame_w < 64 or frame_h < 64:
+            return (0.25, 190.0, "ok")
+        x1 = max(0, int(round(frame_w * 0.16)) - ox)
+        x2 = min(pf_hsv.shape[1], int(round(frame_w * 0.88)) - ox)
+        y1 = 0
+        y2 = min(pf_hsv.shape[0], max(12, int(round(frame_h * 0.67)) - oy))
+        if (x2 - x1) < 16 or (y2 - y1) < 12:
+            return (0.25, 190.0, "ok")
+
+        sub = pf_hsv[y1:y2:4, x1:x2:4]
+        h_ch, s_ch, v_ch = sub[:, :, 0], sub[:, :, 1], sub[:, :, 2]
+        # Bright low-saturation sky/mist OR blue upper sky
+        sky = ((v_ch >= 135) & (s_ch <= 75)) | ((h_ch >= 92) & (h_ch <= 132) & (v_ch >= 90))
+        sky_ratio = float(sky.mean())
+        row_sky = sky.mean(axis=1)
+        sky_rows = np.where(row_sky >= 0.35)[0]
+        if sky_rows.size > 0:
+            full_y = float(oy + y1 + int(sky_rows[-1]) * 4)
+            horizon_y = max(0.0, min(768.0, (full_y / float(frame_h)) * 768.0))
+        else:
+            horizon_y = 0.0
+
+        if horizon_y < self.pitch_horizon_min_y or sky_ratio < self.pitch_sky_ratio_min:
+            pstate = "too_down"
+        elif horizon_y > self.pitch_horizon_max_y or sky_ratio > self.pitch_sky_ratio_max:
+            pstate = "too_up"
+        else:
+            pstate = "ok"
+        return (round(sky_ratio, 4), round(horizon_y, 1), pstate)
 
     def set_control_mode(self, mode: str) -> None:
         m = str(mode).strip().lower()
@@ -125,6 +168,9 @@ class PerceptionPipeline:
         dead_corpses: tuple[tuple[int, int, int, int], ...] = ()
         pickup_changed = False
         playfield_luma: float | None = None
+        sky_ratio: float | None = None
+        horizon_y: float | None = None
+        camera_pitch_state: str = "ok"
         combat_target_hp_visible = False
         combat_target_hp_ratio: float | None = None
 
@@ -143,6 +189,9 @@ class PerceptionPipeline:
                 v_sub = shared_pf_hsv[::4, ::4, 2]
                 m_sub = hud_mask[::4, ::4] > 0
                 playfield_luma = float(v_sub[m_sub].mean()) if bool(np.any(m_sub)) else float(v_sub.mean())
+                sky_ratio, horizon_y, camera_pitch_state = self._estimate_sky_and_horizon(
+                    shared_pf_hsv, ox, oy, frame.width, frame.height
+                )
             timings["hsv_conv"] = (time.perf_counter() - t_pf) * 1000.0
 
             t_m = time.perf_counter()
@@ -251,7 +300,9 @@ class PerceptionPipeline:
             detector_backend=self.active_backend_desc,
             interface_mode=interface_mode,
             detected_control_mode=detected_ctrl_mode,
-            camera_pitch_state="ok",
+            camera_pitch_state=camera_pitch_state,
+            sky_ratio=sky_ratio,
+            horizon_y=horizon_y,
             playfield_luma=playfield_luma,
             combat_target_hp_visible=combat_target_hp_visible,
             combat_target_hp_ratio=combat_target_hp_ratio,

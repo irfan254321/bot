@@ -63,6 +63,8 @@ def _snap(
     pickup_changed: bool = False,
     respawn_dialog_bbox: tuple[int, int, int, int] | None = None,
     playfield_luma: float | None = None,
+    sky_ratio: float | None = None,
+    horizon_y: float | None = None,
 ) -> PerceptionSnapshot:
     return PerceptionSnapshot(
         timestamp=ts,
@@ -79,6 +81,8 @@ def _snap(
         interface_mode=interface_mode,
         pickup_log_changed=pickup_changed,
         playfield_luma=playfield_luma,
+        sky_ratio=sky_ratio,
+        horizon_y=horizon_y,
     )
 
 
@@ -631,3 +635,41 @@ def test_combat_wait_disables_mob_detection_and_loot_respects_220px_radius():
     assert fsm3.state == BotState.SEARCH_MOB
     acts_skip = fsm3.step(tracker3.update(_snap(25.0, x=615, y=1830, fw=1024, fh=768, mobs=(ghost,))))
     assert fsm3.state == BotState.SEARCH_MOB and not any(isinstance(a, ClickScreenIntent) for a in acts_skip)
+
+
+def test_auto_camera_pitch_leveling_and_12s_anti_oscillation_lockout():
+    """Verify vertical pitch DRAG_MMB (dx=0, dy=+-60), safe zone no-op (horizon_y=190), and 12s opposite lockout."""
+    cfg = load_config("config/default.yaml")
+    assert cfg.farming["auto_camera_pitch"] is True
+    assert float(cfg.farming["pitch_horizon_min_y"]) == 105.0
+    assert float(cfg.farming["pitch_horizon_max_y"]) == 300.0
+    assert int(cfg.farming["pitch_step_dy"]) == 60
+    assert float(cfg.farming["pitch_adjust_cooldown_sec"]) == 4.0
+    assert float(cfg.farming["pitch_opposite_lockout_sec"]) == 12.0
+
+    # (a) Camera pitched too far down (horizon_y=60 < 105) -> sends DRAG_MMB(dx=0, dy=-60)
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    acts_up = fsm.step(tracker.update(_snap(10.0, fw=1024, fh=768, horizon_y=60.0, sky_ratio=0.06)))
+    assert len(acts_up) == 1
+    assert isinstance(acts_up[0], DragCameraIntent) and acts_up[0].dx == 0 and acts_up[0].dy == -60
+
+    # (d) Opposite direction (camera suddenly reads too high at t=15.0, only 5s after dy=-60 < 12.0s lockout) -> BLOCKED!
+    acts_locked = fsm.step(tracker.update(_snap(15.0, fw=1024, fh=768, horizon_y=360.0, sky_ratio=0.50)))
+    assert not any(isinstance(a, DragCameraIntent) and a.dx == 0 and a.dy == 60 for a in acts_locked)
+
+    # (b) After 12.0s lockout expires (t=22.5 >= 10.0 + 12.0), camera pitched too high -> sends DRAG_MMB(dx=0, dy=+60)!
+    acts_dn = fsm.step(tracker.update(_snap(22.5, fw=1024, fh=768, horizon_y=350.0, sky_ratio=0.48)))
+    assert len(acts_dn) == 1
+    assert isinstance(acts_dn[0], DragCameraIntent) and acts_dn[0].dx == 0 and acts_dn[0].dy == 60
+
+    # (c) Safe zone (horizon_y=190, sky_ratio=0.25) -> sends NO vertical pitch input!
+    tracker2 = WorldStateTracker()
+    fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
+    fsm2.resume(1.0, ensure_mouse_mode=False)
+    acts_ok, settling = fsm2.farm.maybe_build_camera_pitch_adjust(
+        tracker2.update(_snap(10.0, fw=1024, fh=768, horizon_y=190.0, sky_ratio=0.25)),
+        10.0,
+    )
+    assert acts_ok == [] and settling is False

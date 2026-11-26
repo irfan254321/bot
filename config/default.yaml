@@ -152,6 +152,16 @@ farming:
   daylight_weather_interval_sec: 600.0
   daylight_dark_luma_threshold: 68.0
   daylight_dark_cooldown_sec: 45.0
+  # Auto-level vertical camera pitch (with 4s cooldown + 12s opposite-direction anti-oscillation lockout)
+  auto_camera_pitch: true
+  pitch_horizon_min_y: 105
+  pitch_horizon_max_y: 300
+  pitch_sky_ratio_min: 0.12
+  pitch_sky_ratio_max: 0.42
+  pitch_step_dy: 60
+  pitch_adjust_cooldown_sec: 4.0
+  pitch_opposite_lockout_sec: 12.0
+  pitch_settle_sec: 0.30
 
 respawn_travel:
   enabled: true

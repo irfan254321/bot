@@ -127,6 +127,8 @@ class PerceptionSnapshot:
     interface_mode: str = "unknown"  # "keyboard_banner" | "mouse_banner" | "mouse_cursor" | "no_cursor" | "unknown"
     detected_control_mode: str | None = None  # "mouse" | "keyboard" | None
     camera_pitch_state: str = "ok"
+    sky_ratio: float | None = None
+    horizon_y: float | None = None
     playfield_luma: float | None = None
     combat_target_hp_visible: bool = False
     combat_target_hp_ratio: float | None = None
@@ -199,3 +201,11 @@ class WorldState:
     @property
     def playfield_luma(self) -> float | None:
         return self.snapshot.playfield_luma
+
+    @property
+    def sky_ratio(self) -> float | None:
+        return self.snapshot.sky_ratio
+
+    @property
+    def horizon_y(self) -> float | None:
+        return self.snapshot.horizon_y
