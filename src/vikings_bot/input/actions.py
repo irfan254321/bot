@@ -33,6 +33,7 @@ class ClickScreenIntent:
     reason: str = ""
     ground_rel_angle_deg: float | None = None
     no_jitter: bool = False
+    hold_sec: float = 0.04
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,7 @@ class ActionExecutor:
                 jy = random.randint(-self.click_jitter_px, self.click_jitter_px) if use_jitter else 0
                 tx = origin_x + intent.x + jx
                 ty = origin_y + intent.y + jy
-                self.driver.mouse_click(tx, ty, button=intent.button)
+                self.driver.mouse_click(tx, ty, button=intent.button, hold_sec=intent.hold_sec)
                 if intent.ground_rel_angle_deg is not None:
                     self.tracker.notify_ground_click(now, intent.ground_rel_angle_deg)
                 summaries.append(f"click:{intent.button}@({intent.x},{intent.y})({intent.reason})")

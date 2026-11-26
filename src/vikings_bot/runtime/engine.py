@@ -23,7 +23,7 @@ from vikings_bot.runtime.overlay import DebugOverlay
 from vikings_bot.runtime.recorder import SnapshotRecorder
 from vikings_bot.runtime.safety import SafetyMonitor
 from vikings_bot.runtime.tracer import SessionTracer
-from vikings_bot.state.models import BotMode, BotState
+from vikings_bot.state.models import BotMode, BotState, WorldState
 from vikings_bot.state.tracker import WorldStateTracker
 
 logger = logging.getLogger(__name__)
@@ -280,18 +280,41 @@ class BotEngine:
                         ov_active_p = (
                             self._transparent_overlay is not None and self._transparent_overlay.is_enabled
                         )
-                        if (self.on_status is not None or ov_active_p) and (now - last_ui_ts >= 0.25):
+                        preview_hz = max(0.5, float(self.config.perception.get("paused_yolo_preview_hz", 2.5)))
+                        paused_interval = (1.0 / preview_hz) if ov_active_p else 0.25
+                        if (self.on_status is not None or ov_active_p) and (now - last_ui_ts >= paused_interval):
                             last_ui_ts = now
                             frame_p = capture.latest_frame()
                             pos_tuple_p = None
                             hp_p, mp_p = 1.0, 1.0
+                            world_p: WorldState | None = None
+                            vis_ms_p = 0.0
+                            mobs_cnt_p = 0
                             if frame_p is not None:
                                 snap_p = self.pipeline.analyze(
-                                    frame_p, check_tele_ui=False, skip_field_detectors=True
+                                    frame_p,
+                                    check_tele_ui=False,
+                                    skip_field_detectors=(not ov_active_p),
+                                    check_interface_mode=False,
+                                    current_state=BotState.PAUSED,
                                 )
                                 hp_p, mp_p = snap_p.hp_ratio, snap_p.mp_ratio
+                                vis_ms_p = float(snap_p.timings_ms.get("total", 0.0))
+                                mobs_cnt_p = len(snap_p.mobs)
                                 if snap_p.coords is not None:
                                     pos_tuple_p = (int(round(snap_p.coords.point.x)), int(round(snap_p.coords.point.y)))
+                                if ov_active_p:
+                                    world_p = WorldState(
+                                        snapshot=snap_p,
+                                        coords_smoothed=snap_p.coords.point if snap_p.coords is not None else None,
+                                        camera_heading_deg=0.0,
+                                        heading_source="default",
+                                        is_stuck=False,
+                                        consecutive_stuck=0,
+                                        zero_hp_streak=0,
+                                        coords_age_sec=0.0,
+                                        waypoint_index=0,
+                                    )
                             win_p = self.window_tracker.find_window()
                             focused_p = self.window_tracker.is_focused(win_p)
                             if ov_active_p and self._transparent_overlay is not None:
@@ -299,11 +322,11 @@ class BotEngine:
                                     self._transparent_overlay.update(
                                         build_overlay_frame_data(
                                             game_rect=(win_p.left, win_p.top, win_p.width, win_p.height),
-                                            world=None,
+                                            world=world_p,
                                             fsm_state=self.fsm.state,
                                             config=self.config,
-                                            loop_hz=0.0,
-                                            vision_ms=0.0,
+                                            loop_hz=preview_hz if world_p is not None else 0.0,
+                                            vision_ms=vis_ms_p,
                                             action_summary=(
                                                 self._last_saved_notice
                                                 if now < self._last_saved_notice_until

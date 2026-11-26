@@ -48,7 +48,7 @@ class FarmingFSM:
         self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
-        self.combat_min_lock_hold_sec: float = max(0.0, float(f.get("combat_min_lock_hold_sec", 1.5)))
+        self.combat_min_lock_hold_sec: float = max(0.0, float(f.get("combat_min_lock_hold_sec", 2.0)))
         self.combat_no_hit_abort_sec: float = float(f.get("combat_no_hit_abort_sec", 5.0))
         self.combat_hit_confirm_timeout_sec: float = float(
             f.get("combat_hit_confirm_timeout_sec", self.combat_no_hit_abort_sec)
@@ -60,7 +60,11 @@ class FarmingFSM:
         self.spot_center_x: float = float(f.get("spot_x", 594.0))
         self.spot_center_y: float = float(f.get("spot_y", 1832.0))
         self.spot_center_arrival_radius: float = max(2.0, float(f.get("spot_center_arrival_radius", 12.0)))
+        self.return_center_min_drift_units: float = max(
+            self.spot_center_arrival_radius, float(f.get("return_center_min_drift_units", 35.0))
+        )
         self.return_center_timeout_sec: float = max(1.0, float(f.get("return_center_timeout_sec", 6.0)))
+        self.loot_dead_point_sweep: bool = bool(f.get("loot_dead_point_sweep", True))
         self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
         self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
         self.combat_blind_timeout_sec: float = float(f.get("combat_blind_timeout_sec", 10.0))
@@ -792,19 +796,33 @@ class FarmingFSM:
             return self._enter_combat_wait(world, mob, now, "found_gold_rustler")
 
         # Priority 5: Screen empty -> rotate camera horizontally with Middle Mouse drag
+        # If still no gold_rustler after 1x camera rotation and away from center -> RETURN_TO_CENTER!
         sweep = self.farm.build_mmb_camera_sweep(world, now)
         if sweep:
             if any(isinstance(a, DragCameraIntent) for a in sweep):
                 self._post_drag_settle_until = now + 0.18
             self._sweeps_in_search += 1
-            if (
-                self.mode == BotMode.FULL
-                and not world.mobs
-                and self._sweeps_in_search >= self.max_sweeps_before_patrol
-            ):
-                self.navigator.advance_waypoint()
-                self.transition(BotState.NAVIGATE_TO_SPOT, now, "patrol_next_spot_point")
-                return []
+            if self.mode == BotMode.FULL and not world.mobs:
+                center_pt = Point2D(self.spot_center_x, self.spot_center_y)
+                dist_c = (
+                    min(
+                        world.coords_smoothed.distance_to(center_pt),
+                        world.coords_smoothed.distance_to(self.navigator.spot_center),
+                    )
+                    if world.coords_smoothed is not None
+                    else 0.0
+                )
+                if (
+                    self._sweeps_in_search >= 2
+                    and world.hp_ratio > 0.01
+                    and dist_c > self.spot_center_arrival_radius
+                ):
+                    self.transition(BotState.RETURN_TO_CENTER, now, "no_mob_after_1x_camera_sweep")
+                    return []
+                if self._sweeps_in_search >= self.max_sweeps_before_patrol:
+                    self.navigator.advance_waypoint()
+                    self.transition(BotState.NAVIGATE_TO_SPOT, now, "patrol_next_spot_point")
+                    return []
         return sweep
 
     def _handle_combat_wait(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
@@ -1031,11 +1049,18 @@ class FarmingFSM:
         # Stay completely silent — ZERO extra clicks until monster dies!
         return []
 
-    def _handle_loot(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
-        """Dedicated post-kill LOOT window (up to 10.0s): direct mouse-aim left-click to each Gold Bag <=280px.
+    def _should_return_to_center_after_loot(self, world: WorldState) -> bool:
+        """Only walk back to (594, 1832) after LOOT if character drifted > 35 units from center."""
+        if world.coords_smoothed is None:
+            return False
+        center_pt = Point2D(self.spot_center_x, self.spot_center_y)
+        return world.coords_smoothed.distance_to(center_pt) > self.return_center_min_drift_units
 
-        Uses `visited_loot_grids` (22x22px grid, TTL 15.0s, max 2 attempts per grid) so adjacent gold piles
-        are clicked sequentially one-by-one until exhausted, then exits after >=2.0s + 1.5s empty or 10.0s cap.
+    def _handle_loot(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
+        """Post-kill LOOT (mandatory >=2.5s): sweep dead monster point + click any gold_bag <=310px while AHK E spams.
+
+        Never requires GOLD > 0 to vacuum drops; exits directly to SEARCH_MOB if within <=35u of (594, 1832),
+        or RETURN_TO_CENTER only if drifted >35u from center.
         """
         if not self.farm.loot_mouse_click_enabled:
             if elapsed >= self.post_kill_loot_window_sec:
@@ -1043,7 +1068,12 @@ class FarmingFSM:
                 if self.mode == BotMode.LOOT:
                     self._state_entered_at = now
                     return []
-                self.transition(BotState.RETURN_TO_CENTER, now, "post_kill_e_spam_loot_done")
+                next_st = (
+                    BotState.RETURN_TO_CENTER
+                    if self._should_return_to_center_after_loot(world)
+                    else BotState.SEARCH_MOB
+                )
+                self.transition(next_st, now, "post_kill_e_spam_loot_done")
             return []
 
         # Prune expired visited_loot_grids entries (TTL 15.0s)
@@ -1099,17 +1129,23 @@ class FarmingFSM:
                 self._loot_clear_streak = 0
                 self._loot_empty_since = None
                 return []
+            need_rtc = self._should_return_to_center_after_loot(world)
+            next_st = BotState.RETURN_TO_CENTER if need_rtc else BotState.SEARCH_MOB
             self.transition(
-                BotState.RETURN_TO_CENTER,
+                next_st,
                 now,
-                "post_kill_loot_cleared" if empty_cleared else "post_kill_loot_window_timeout",
+                (
+                    "post_kill_loot_cleared_return_center"
+                    if (empty_cleared and need_rtc)
+                    else ("post_kill_loot_cleared" if empty_cleared else "post_kill_loot_window_timeout")
+                ),
             )
             return []
 
         intents, target_bag, act_kind = self.farm.build_loot_step(world, now, candidate_bags=ordered_bags)
-        if not ordered_bags and elapsed < self.loot_min_window_sec:
-            # Mandatory >=2.5s post-kill LOOT even when GOLD reads 0: click nearest dead_rustler or last_kill_pos
-            # (within 310px of screen center) so character walks onto the corpse while AHK background E spam runs!
+        if self.loot_dead_point_sweep and not ordered_bags and elapsed < self.loot_min_window_sec:
+            # Dead-point loot sweep: move to dead_rustler / last_kill_pos immediately, then micro-nudge (+-18px)
+            # during the 2.5s window while AHK background E spam vacuums all drops without needing GOLD > 0!
             fw = max(1, world.snapshot.frame_width)
             fh = max(1, world.snapshot.frame_height)
             sx_1024 = 1.0 if fw <= 1100 else (fw / 1024.0)
@@ -1127,6 +1163,9 @@ class FarmingFSM:
                 d = math.hypot(kpos[0] - cx_scr, kpos[1] - cy_scr)
                 if d <= max_r:
                     corpse_pts.append((d, int(kpos[0]), int(kpos[1]), "loot_click_kill_pos"))
+                    if elapsed >= 1.25:
+                        nudge = int(round(18.0 * sx_1024))
+                        corpse_pts.append((d, int(kpos[0]) + nudge, int(kpos[1]), "loot_micro_nudge_kill_pos"))
             for _d, mx, my, rsn in corpse_pts:
                 if self._is_in_anti_ks_zone(
                     float(mx),

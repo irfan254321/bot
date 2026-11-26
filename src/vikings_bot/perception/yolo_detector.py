@@ -204,8 +204,8 @@ class Yolo11nOnnxDetector:
         self.anti_ks_damage_zone_radius_px: float = float(
             p.get("anti_ks_damage_zone_radius_px", self.anti_ks_player_radius_px)
         )
-        # Click lower-chest / torso of gold_rustler bbox: y1 + 0.65 * (y2 - y1) so clicks never miss in top gap
-        self.click_y_top_ratio: float = float(p.get("yolo_click_y_ratio", 0.65))
+        # Click lower-chest / torso of gold_rustler bbox: y1 + 0.68 * (y2 - y1) so clicks never miss in top gap
+        self.click_y_top_ratio: float = float(p.get("yolo_click_y_ratio", 0.68))
 
         self._session: Any | None = None
         self._input_name: str = "images"
@@ -408,10 +408,10 @@ class Yolo11nOnnxDetector:
 
         for det in raw_dets:
             if det.class_id == CLS_PLAYER:
-                other_players.append((det.cx, det.cy))
                 other_player_boxes.append(det.bbox)
                 other_player_confs.append(det.confidence)
                 if det.confidence >= self.anti_ks_player_min_conf:
+                    other_players.append((det.cx, det.cy))
                     ks_players.append((det.cx, det.cy))
             elif det.class_id == CLS_DEAD_RUSTLER:
                 # Ignored as attack target; kept strictly for debug overlay visualization

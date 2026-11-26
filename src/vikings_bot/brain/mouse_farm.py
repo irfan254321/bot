@@ -35,6 +35,11 @@ class MouseFarmController:
 
         self.mob_max_engage_dist_px: float = float(f.get("mob_max_engage_dist_px", 560.0))
         self.mob_min_y_ratio: float = float(f.get("mob_min_y_ratio", 0.14))
+        self.engage_click_hold_sec: float = max(0.03, float(f.get("engage_click_hold_sec", 0.12)))
+        self.engage_double_click: bool = bool(f.get("engage_double_click", True))
+        self.engage_skill_key: str | None = (
+            str(f.get("engage_skill_key", c.get("engage_skill_key", "1")) or "").strip() or None
+        )
         self.background_e_spam: bool = bool(f.get("background_e_spam", True))
         self.loot_mouse_click_enabled: bool = bool(f.get("loot_mouse_click_enabled", True))
         self.anti_ks_min_untouched_hp_ratio: float = float(
@@ -251,16 +256,37 @@ class MouseFarmController:
         return rear_fallback
 
     def build_engage_click(self, mob: MobTarget) -> list[ActionIntent]:
-        """Mouse Mode 1-Click Engage: click left ONCE on upper-torso hitbox (zero follow-up clicks!)."""
-        return [
+        """Engage Gold Rustler: 120ms click-hold (+ optional 2nd click) on chest/lower hitbox + attack skill key '1'."""
+        intents: list[ActionIntent] = [
             ClickScreenIntent(
                 x=int(mob.click_x),
                 y=int(mob.click_y),
                 button=self.attack_btn,
-                reason=f"mouse_engage_once({mob.click_x},{mob.click_y})",
+                hold_sec=self.engage_click_hold_sec,
+                reason=f"mouse_engage_hold({mob.click_x},{mob.click_y})",
                 no_jitter=True,
             )
         ]
+        if self.engage_double_click:
+            intents.append(
+                ClickScreenIntent(
+                    x=int(mob.click_x),
+                    y=int(mob.click_y),
+                    button=self.attack_btn,
+                    hold_sec=0.05,
+                    reason=f"mouse_engage_confirm({mob.click_x},{mob.click_y})",
+                    no_jitter=True,
+                )
+            )
+        if self.engage_skill_key:
+            intents.append(
+                TapKeyIntent(
+                    key=self.engage_skill_key,
+                    hold_sec=0.04,
+                    reason=f"engage_attack_skill({self.engage_skill_key})",
+                )
+            )
+        return intents
 
     def has_recent_kill(self, world: WorldState, now: float) -> bool:
         """Return True if a monster kill was recorded within the recent loot entry window (default 4.0s)."""

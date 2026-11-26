@@ -92,6 +92,9 @@ def _load_legacy_mouse_loot_cfg():
     c.perception["yolo_enabled"] = False
     c.farming["background_e_spam"] = False
     c.farming["disable_gold_bag_detector"] = False
+    c.farming["engage_double_click"] = False
+    c.farming["engage_skill_key"] = ""
+    c.farming["return_center_min_drift_units"] = 0.0
     c.farming["post_kill_loot_window_sec"] = 10.0
     c.farming["loot_min_window_sec"] = 2.0
     return c
@@ -642,8 +645,8 @@ def test_combat_wait_disables_mob_detection_and_loot_respects_220px_radius():
     )
     assert ov_cw.locked_mob is None and ov_cw.mobs == (), "Overlay must hide LOCK box during COMBAT_WAIT!"
 
-    # After 1.5s with no movement & no THP -> Anti-Ghost-Lock cancels COMBAT_WAIT and blacklists (380, 310) for 15s!
-    fsm3.step(tracker3.update(_snap(21.7, x=615, y=1830, fw=1024, fh=768, mobs=())))
+    # After >=2.0s min lock hold with no movement & no THP -> Anti-Ghost-Lock cancels COMBAT_WAIT and blacklists (380, 310) for 15s!
+    fsm3.step(tracker3.update(_snap(22.2, x=615, y=1830, fw=1024, fh=768, mobs=())))
     assert fsm3.state == BotState.SEARCH_MOB
     acts_skip = fsm3.step(tracker3.update(_snap(25.0, x=615, y=1830, fw=1024, fh=768, mobs=(ghost,))))
     assert fsm3.state == BotState.SEARCH_MOB and not any(isinstance(a, ClickScreenIntent) for a in acts_skip)
@@ -1592,12 +1595,16 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert float(cfg.perception["yolo_conf_threshold"]) == 0.45
     assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.25
     assert float(cfg.perception["dead_rustler_conf_threshold"]) == 0.35
-    assert float(cfg.perception["yolo_click_y_ratio"]) == 0.65
+    assert float(cfg.perception["yolo_click_y_ratio"]) == 0.68
     assert float(cfg.perception["yolo_iou_threshold"]) == 0.45
     assert int(cfg.perception["yolo_intra_op_threads"]) == 2
+    assert float(cfg.perception["paused_yolo_preview_hz"]) == 2.5
     assert cfg.perception["anti_ks_use_hsv_damage"] is False
     assert float(cfg.perception["anti_ks_player_min_conf"]) == 0.50
-    assert float(cfg.farming["combat_min_lock_hold_sec"]) == 1.5
+    assert float(cfg.farming["combat_min_lock_hold_sec"]) == 2.0
+    assert float(cfg.farming["engage_click_hold_sec"]) == 0.12
+    assert cfg.farming["engage_skill_key"] == "1"
+    assert float(cfg.farming["return_center_min_drift_units"]) == 35.0
     assert float(cfg.farming["loot_min_window_sec"]) == 2.5
 
     # Helper: map original 1024x768 xywh -> 640x640 letterbox xywh
@@ -1631,8 +1638,8 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
         (CLS_GOLD_RUSTLER, 0.84, 280, 310, 68, 86),
         # 6: High-conf player at (200, 300) (conf=0.82 >= 0.50 -> active Anti-KS!)
         (CLS_PLAYER, 0.82, 200, 300, 56, 88),
-        # 7: Low-conf player at (780, 300) (conf=0.47 < 0.50 -> MUST NOT trigger Anti-KS on safe gold_rustler at 760,290!)
-        (CLS_PLAYER, 0.47, 780, 300, 50, 80),
+        # 7: Low-conf player at (860, 300) (conf=0.47 < 0.50, dist=100<=240 -> MUST NOT trigger Anti-KS on safe gold_rustler at 760,290!)
+        (CLS_PLAYER, 0.47, 860, 300, 50, 80),
         # 8: dead_rustler at (620, 340) with conf=0.38 (>= 0.35 dead_rustler_conf_threshold) -> overlay dead_corpses only!
         (CLS_DEAD_RUSTLER, 0.38, 620, 340, 82, 48),
         # 9: Safe gold_bag at (630, 380) (conf=0.90)
@@ -1693,16 +1700,32 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert snap_scan.detector_backend == "YOLO11n-ONNX"
     assert len(snap_scan.mobs) == 1
     assert abs(snap_scan.mobs[0].click_x - 760) <= 3
-    # Verify hitbox click_y = y1 + 0.65 * (y2 - y1) -> y1=244, y2=336 => 244 + 0.65*92 = 304
+    # Verify hitbox click_y = y1 + 0.68 * (y2 - y1)
     mb = snap_scan.mobs[0].body_bbox
-    expected_cy = int(round(mb[1] + 0.65 * (mb[3] - mb[1])))
+    expected_cy = int(round(mb[1] + 0.68 * (mb[3] - mb[1])))
     assert abs(snap_scan.mobs[0].click_y - expected_cy) <= 1
     assert snap_scan.mobs[0].class_name == "gold_rustler"
+
+    # 1b. PAUSED preview runs YOLO for gold_rustler/player/dead_rustler (loot stays OFF)
+    snap_paused = pipe.analyze(pkt, current_state=BotState.PAUSED, check_interface_mode=False)
+    assert len(snap_paused.mobs) == 1 and snap_paused.loot == ()
+
+    # 1c. ENGAGE_MOB sends 120ms click-hold + confirm click + skill '1'
+    tracker_e = WorldStateTracker()
+    fsm_e = FarmingFSM(cfg, tracker_e, mode=BotMode.FULL)
+    fsm_e.farm.auto_daylight_weather = False
+    fsm_e.farm.auto_camera_pitch = False
+    fsm_e.resume(1.0, ensure_mouse_mode=False)
+    acts_eng_e = fsm_e.step(tracker_e.update(snap_scan))
+    assert fsm_e.state == BotState.COMBAT_WAIT
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.12) < 1e-4 for a in acts_eng_e)
+    assert any(isinstance(a, TapKeyIntent) and a.key == "1" for a in acts_eng_e)
     assert abs(snap_scan.mobs[0].confidence - 0.88) < 1e-4
     assert len(snap_scan.contested_mobs) == 1 and "KS:PLAYER" in snap_scan.contested_mobs[0].contest_reason
     assert all("KS:DMG" not in m.contest_reason for m in snap_scan.contested_mobs)
     assert snap_scan.external_damage_points == ()
-    assert len(snap_scan.other_players) == 2
+    assert len(snap_scan.other_players) == 1
+    assert len(snap_scan.other_player_boxes) == 2
     assert len(snap_scan.dead_corpses) == 1
     assert snap_scan.loot == ()
 
@@ -1737,7 +1760,7 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     det_416.detect(blank)
     assert mock_416.calls == 1
 
-    # 3c. Mandatory >=2.5s LOOT clicks dead_rustler even when GOLD=0
+    # 3c. Mandatory >=2.5s LOOT clicks dead_rustler even when GOLD=0; when within <=35u of (594,1832) exits directly to SEARCH_MOB!
     tracker_l = WorldStateTracker()
     fsm_l = FarmingFSM(cfg, tracker_l, mode=BotMode.FULL)
     fsm_l.resume(1.0, ensure_mouse_mode=False)
@@ -1752,6 +1775,9 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     acts_dead = fsm_l.step(w_dead)
     assert fsm_l.state == BotState.LOOT
     assert any(isinstance(a, ClickScreenIntent) and a.x == 620 and a.y == 340 and "dead_rustler" in a.reason for a in acts_dead)
+    # After >=2.5s empty & dist=5u <= 35u -> skips unnecessary RETURN_TO_CENTER and goes straight to SEARCH_MOB!
+    fsm_l.step(tracker_l.update(_snap(12.7, x=598, y=1835, fw=1024, fh=768, loot=())))
+    assert fsm_l.state == BotState.SEARCH_MOB
 
     # 4. Overlay displays YOLO class names + confidence scores
     tracker = WorldStateTracker()
