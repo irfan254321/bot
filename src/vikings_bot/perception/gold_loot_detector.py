@@ -24,17 +24,17 @@ class GoldBagDetector:
 
         p = config.perception
         self.hud_fixed_pixel_ui = bool(p.get("hud_fixed_pixel_ui", False))
-        self.glow_lo = np.array(p.get("loot_glow_hsv_lower", [10, 105, 155]), dtype=np.uint8)
-        self.glow_hi = np.array(p.get("loot_glow_hsv_upper", [25, 255, 255]), dtype=np.uint8)
-        self.dark_body_v_max = int(p.get("loot_dark_body_v_max", 78))
-        self.min_dark_ratio = float(p.get("loot_min_dark_ratio", 0.25))
+        self.glow_lo = np.array(p.get("loot_glow_hsv_lower", [8, 105, 95]), dtype=np.uint8)
+        self.glow_hi = np.array(p.get("loot_glow_hsv_upper", [32, 255, 255]), dtype=np.uint8)
+        self.dark_body_v_max = int(p.get("loot_dark_body_v_max", 85))
+        self.min_dark_ratio = float(p.get("loot_min_dark_ratio", 0.22))
         self.min_blob_px = int(p.get("loot_min_blob_pixels", 3))
-        self.max_blob_px = int(p.get("loot_max_blob_pixels", 120))
+        self.max_blob_px = int(p.get("loot_max_blob_pixels", 140))
         self.pouch_v_max = int(p.get("loot_pouch_v_max", 48))
-        self.pouch_min_area = int(p.get("loot_pouch_min_area", 45))
+        self.pouch_min_area = int(p.get("loot_pouch_min_area", 36))
         self.pouch_max_area = int(p.get("loot_pouch_max_area", 480))
-        self.pouch_warm_min_px = int(p.get("loot_pouch_warm_min_px", 8))
-        self.cluster_radius_px = float(p.get("loot_cluster_radius_px", 20.0))
+        self.pouch_warm_min_px = int(p.get("loot_pouch_warm_min_px", 6))
+        self.cluster_radius_px = float(p.get("loot_cluster_radius_px", 18.0))
         self.max_dist_px = float(p.get("loot_max_dist_px", 580.0))
 
         tmpl_rel = str(p.get("picked_up_template", "assets/ui_templates/picked_up_prefix.png"))
@@ -254,13 +254,13 @@ class GoldBagDetector:
         if hz_local > 0:
             valid[:hz_local, :] = 0
 
-        # Mask self character torso/armor (keeps ground directly below feet open for close drops!)
-        self_px = int(round(fw * self.player_center_norm[0]))
-        self_py = int(round(fh * self.player_center_norm[1]))
-        sbx1 = max(0, int(round(self_px - 44.0 * scale_x)) - ox)
-        sby1 = max(0, int(round(self_py - 95.0 * scale_y)) - oy)
-        sbx2 = min(valid.shape[1], int(round(self_px + 46.0 * scale_x)) - ox)
-        sby2 = min(valid.shape[0], int(round(self_py + 24.0 * scale_y)) - oy)
+        # Mask SELF character zone (x=435..590, y=305..465 at 1024x768, scaled) so own armor/feet never trigger GOLD
+        sx_1024 = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
+        sy_1024 = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
+        sbx1 = max(0, int(round(435.0 * sx_1024)) - ox)
+        sby1 = max(0, int(round(305.0 * sy_1024)) - oy)
+        sbx2 = min(valid.shape[1], int(round(590.0 * sx_1024)) - ox)
+        sby2 = min(valid.shape[0], int(round(465.0 * sy_1024)) - oy)
         if sbx2 > sbx1 and sby2 > sby1:
             valid[sby1:sby2, sbx1:sbx2] = 0
 
@@ -326,10 +326,14 @@ class GoldBagDetector:
             sur_patch = hsv[sy1:sy2, sx1:sx2]
             return cv2.countNonZero(cv2.inRange(sur_patch, self._sur_warm_lo, self._sur_warm_hi)) <= max_sur_warm
 
-        # Cue A: Bright orange-gold sparkle sitting directly above/inside a compact dark pouch core
+        # Cue A: Gold-orange gleam (H=8..32, S>=105, V>=95) on/above a compact dark-brown mound (bbox 6..32px on 1024x768)
         glow = cv2.bitwise_and(cv2.inRange(hsv, self.glow_lo, self.glow_hi), valid)
         min_b = max(2, int(round(self.min_blob_px * scale_x * scale_y)))
         max_b = max(35, int(round(self.max_blob_px * scale_x * scale_y)))
+        max_box_w = int(round(32.0 * sx_1024))
+        max_box_h = int(round(32.0 * sy_1024))
+        min_box_w = max(6, int(round(6.0 * sx_1024)))
+        min_box_h = max(6, int(round(6.0 * sy_1024)))
         if cv2.countNonZero(glow) >= min_b:
             n_g, _lg, st_g, _ = cv2.connectedComponentsWithStats(glow, connectivity=8)
             for idx in range(1, n_g):
@@ -340,22 +344,22 @@ class GoldBagDetector:
                 y = int(st_g[idx, cv2.CC_STAT_TOP])
                 w = int(st_g[idx, cv2.CC_STAT_WIDTH])
                 h = int(st_g[idx, cv2.CC_STAT_HEIGHT])
-                if w > int(round(28 * scale_x)) or h > int(round(24 * scale_y)):
+                if w > max_box_w or h > max_box_h:
                     continue
                 # Reject thin vertical golden armor gleams on living monster arms (require width >= height * 0.85)
                 if h > w * 1.25 or w < h * 0.85:
                     continue
-                ry1 = min(hsv.shape[0] - 1, y + h)
-                ry2 = min(hsv.shape[0], ry1 + max(6, int(round(12.0 * scale_y))))
-                rx1 = max(0, x - max(4, int(round(6.0 * scale_x))))
-                rx2 = min(hsv.shape[1], x + w + max(4, int(round(6.0 * scale_x))))
+                ry1 = max(0, y - max(2, int(round(3.0 * sy_1024))))
+                ry2 = min(hsv.shape[0], y + h + max(6, int(round(10.0 * sy_1024))))
+                rx1 = max(0, x - max(3, int(round(5.0 * sx_1024))))
+                rx2 = min(hsv.shape[1], x + w + max(3, int(round(5.0 * sx_1024))))
                 if ry2 <= ry1 or rx2 <= rx1:
                     continue
                 patch_v = v_ch[ry1:ry2, rx1:rx2]
                 dark_r = float((patch_v <= self.dark_body_v_max).mean())
                 if dark_r >= self.min_dark_ratio:
-                    bw = max(10, rx2 - rx1)
-                    bh = max(10, ry2 - y)
+                    bw = max(min_box_w, min(max_box_w, rx2 - rx1))
+                    bh = max(min_box_h, min(max_box_h, ry2 - y))
                     if bh > bw * 1.25 or bw < bh * 0.85:
                         continue
                     if _is_isolated_bag(rx1, y, bw, bh):
@@ -411,13 +415,15 @@ class GoldBagDetector:
             max_d = float(max_dist_override_px) * (1.0 if self.hud_fixed_pixel_ui else max(0.55, scale_x))
         else:
             max_d = self.max_dist_px * max(0.55, scale_x)
+        center_x = fw * 0.5
+        center_y = fh * 0.5
         drops: list[LootDrop] = []
         for bx, by, bw, bh, sc in clusters:
             cx = bx + bw // 2
             cy = by + bh // 2
             if self.is_blacklisted(cx, cy, frame.timestamp, scale_x):
                 continue
-            dist = math.hypot(cx - feet_x, cy - feet_y)
+            dist = min(math.hypot(cx - center_x, cy - center_y), math.hypot(cx - feet_x, cy - feet_y))
             if dist > max_d:
                 continue
             drops.append(

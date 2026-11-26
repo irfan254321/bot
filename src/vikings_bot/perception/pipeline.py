@@ -200,7 +200,7 @@ class PerceptionPipeline:
         effective_loot_radius = (
             loot_radius_limit_px
             if loot_radius_limit_px is not None
-            else (220.0 if current_state == BotState.LOOT else None)
+            else (280.0 if current_state == BotState.LOOT else None)
         )
         t_wall0 = time.perf_counter()
         timings: dict[str, float] = {}

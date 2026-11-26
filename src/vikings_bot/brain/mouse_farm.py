@@ -36,11 +36,11 @@ class MouseFarmController:
         self.mob_max_engage_dist_px: float = float(f.get("mob_max_engage_dist_px", 560.0))
         self.mob_min_y_ratio: float = float(f.get("mob_min_y_ratio", 0.14))
         self.loot_e_close_dist_px: float = float(f.get("loot_e_close_dist_px", 85.0))
-        self.loot_e_interval_sec: float = float(f.get("loot_e_interval_sec", 0.45))
-        self.loot_click_interval_sec: float = float(f.get("loot_click_interval_sec", 0.42))
+        self.loot_e_interval_sec: float = float(f.get("loot_e_interval_sec", 0.35))
+        self.loot_click_interval_sec: float = float(f.get("loot_click_interval_sec", 0.35))
         self.loot_max_local_dist_px: float = float(f.get("loot_max_local_dist_px", 360.0))
         self.loot_close_radius_px: float = float(
-            f.get("loot_close_radius_px", f.get("loot_entry_close_dist_px", 220.0))
+            f.get("loot_close_radius_px", f.get("loot_entry_close_dist_px", 280.0))
         )
         self.loot_entry_close_dist_px: float = float(f.get("loot_entry_close_dist_px", self.loot_close_radius_px))
         self.loot_entry_kill_window_sec: float = float(f.get("loot_entry_kill_window_sec", 4.0))
@@ -297,12 +297,13 @@ class MouseFarmController:
         self,
         world: WorldState,
         now: float,
+        candidate_bags: list[LootDrop] | None = None,
     ) -> tuple[list[ActionIntent], LootDrop | None, str]:
-        """Execute one Mouse Mode post-kill loot step: prioritize tap E every 0.45s + click close Gold Bag (<=220px).
+        """Direct mouse-aim + 1x left-click to each close Gold Bag (<=280px) followed by E tap (0.35s).
 
         Returns `(intents, target_drop, action_kind)` where `action_kind` is `'tap_e' | 'click_bag' | 'wait'`.
         """
-        local_bags = self.select_local_loot(world)
+        local_bags = candidate_bags if candidate_bags is not None else self.select_local_loot(world)
         if not local_bags:
             if self.tracker.is_ready("loot_tap_e", now):
                 self.tracker.set_cooldown("loot_tap_e", now, self.loot_e_interval_sec)
@@ -326,13 +327,8 @@ class MouseFarmController:
 
         intents: list[ActionIntent] = []
         act_kind = "wait"
-        if self.tracker.is_ready("loot_tap_e", now):
-            self.tracker.set_cooldown("loot_tap_e", now, self.loot_e_interval_sec)
-            intents.append(TapKeyIntent(key=self.pickup_key, reason="loot_primary_e"))
-            act_kind = "tap_e"
-
         if self.tracker.is_ready("loot_click_bag", now):
-            cd = self.humanizer.jitter(self.loot_click_interval_sec, pct=0.15, lo=0.25)
+            cd = self.humanizer.jitter(self.loot_click_interval_sec, pct=0.10, lo=0.22)
             self.tracker.set_cooldown("loot_click_bag", now, cd)
             intents.append(
                 ClickScreenIntent(
@@ -344,6 +340,12 @@ class MouseFarmController:
                 )
             )
             act_kind = "click_bag"
+
+        if self.tracker.is_ready("loot_tap_e", now):
+            self.tracker.set_cooldown("loot_tap_e", now, self.loot_e_interval_sec)
+            intents.append(TapKeyIntent(key=self.pickup_key, reason="loot_followup_e"))
+            if act_kind == "wait":
+                act_kind = "tap_e"
 
         return (intents, bag, act_kind)
 

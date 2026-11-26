@@ -48,7 +48,7 @@ class FarmingFSM:
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
         self.combat_hit_confirm_timeout_sec: float = float(f.get("combat_hit_confirm_timeout_sec", 6.5))
-        self.combat_confirmed_max_sec: float = float(f.get("combat_confirmed_max_sec", 30.0))
+        self.combat_confirmed_max_sec: float = float(f.get("combat_confirmed_max_sec", 35.0))
         self.combat_post_last_hit_idle_sec: float = float(f.get("combat_post_last_hit_idle_sec", 2.5))
         self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
         self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
@@ -57,9 +57,10 @@ class FarmingFSM:
         self.combat_hard_timeout_sec: float = float(f.get("combat_hard_timeout_sec", 28.0))
         self.combat_zero_drop_kill_sec: float = float(f.get("combat_zero_drop_kill_sec", 1.6))
         self.loot_clear_confirm_frames: int = max(2, int(f.get("loot_clear_confirm_frames", 4)))
-        self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 3)))
-        self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 24)))
-        self.mandatory_loot_duration_sec: float = max(2.0, float(f.get("mandatory_loot_duration_sec", 8.0)))
+        self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 2)))
+        self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 22)))
+        self.loot_visited_grid_ttl_sec: float = max(2.0, float(f.get("loot_visited_grid_ttl_sec", 15.0)))
+        self.mandatory_loot_duration_sec: float = max(1.0, float(f.get("mandatory_loot_duration_sec", 2.0)))
         self.post_kill_loot_window_sec: float = max(
             self.mandatory_loot_duration_sec, float(f.get("post_kill_loot_window_sec", 10.0))
         )
@@ -132,7 +133,8 @@ class FarmingFSM:
         self._combat_loot_streak: int = 0
         self._aborted_mobs: list[tuple[float, float, float]] = []  # (expire_ts, cx, cy)
 
-        # LOOT_PICKUP per-bag retry cap on 24x24px grid (max 3 attempts -> blacklist 120s)
+        # LOOT_PICKUP sequential visited_loot_grids on 22x22px grid (TTL 15.0s, max 2 attempts per grid)
+        self.visited_loot_grids: dict[tuple[int, int], tuple[int, float]] = {}
         self._loot_grid_attempts: dict[tuple[int, int], int] = {}
         self._loot_prev_count: int = 0
         self._loot_clear_streak: int = 0
@@ -225,6 +227,7 @@ class FarmingFSM:
             self._combat_first_hp_checked = False
             self.tracker.notify_movement_stopped()
         elif new_state == BotState.LOOT:
+            self.visited_loot_grids.clear()
             self._loot_grid_attempts.clear()
             self._loot_prev_count = 0
             self._loot_clear_streak = 0
@@ -956,20 +959,34 @@ class FarmingFSM:
         return []
 
     def _handle_loot(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
-        """Dedicated post-kill LOOT window (up to 10.0s) strictly for Gold Bags within <=220px.
+        """Dedicated post-kill LOOT window (up to 10.0s): direct mouse-aim left-click to each Gold Bag <=280px.
 
-        Exits back to SEARCH_MOB ONLY when:
-        - `post_kill_loot_window_sec` (10.0s) expires, OR
-        - after at least `loot_min_window_sec` (2.0s), no close Gold Bag is detected for
-          `loot_empty_exit_sec` (1.5s) consecutively, OR
-        - the sole remaining close bag hits the 3-attempt 24x24px grid blacklist cap.
+        Uses `visited_loot_grids` (22x22px grid, TTL 15.0s, max 2 attempts per grid) so adjacent gold piles
+        are clicked sequentially one-by-one until exhausted, then exits after >=2.0s + 1.5s empty or 10.0s cap.
         """
-        local_bags = self.farm.select_local_loot(world)
-        bag_count = len(local_bags)
+        # Prune expired visited_loot_grids entries (TTL 15.0s)
+        self.visited_loot_grids = {
+            cell: (att, exp) for cell, (att, exp) in self.visited_loot_grids.items() if now < exp
+        }
 
-        # Reset attempt counters on real pickup progress
-        if world.snapshot.pickup_log_changed or (self._loot_prev_count > 0 and bag_count < self._loot_prev_count):
-            self._loot_grid_attempts.clear()
+        local_bags = self.farm.select_local_loot(world)
+        grid = float(self.loot_attempt_grid_px)
+
+        def _cell_of(b_x: float, b_y: float) -> tuple[int, int]:
+            return (int(b_x // grid), int(b_y // grid))
+
+        unvisited: list = []
+        retryable: list = []
+        for bag in local_bags:
+            cell = _cell_of(float(bag.click_x), float(bag.click_y))
+            att = self.visited_loot_grids.get(cell, (0, 0.0))[0]
+            if att == 0:
+                unvisited.append(bag)
+            elif att < self.loot_max_attempts_per_bag:
+                retryable.append(bag)
+
+        ordered_bags = unvisited + retryable
+        bag_count = len(ordered_bags)
         self._loot_prev_count = bag_count
 
         if bag_count == 0 and not world.snapshot.pickup_log_changed:
@@ -982,10 +999,9 @@ class FarmingFSM:
 
         empty_dur = (now - self._loot_empty_since) if self._loot_empty_since is not None else 0.0
         window_expired = elapsed >= self.post_kill_loot_window_sec
-        # Mandatory 7.0s post-kill LOOT window: never exit early before mandatory_loot_duration_sec (7.0s)!
-        mandatory_done = elapsed >= self.mandatory_loot_duration_sec and (bag_count == 0 or empty_dur >= self.loot_empty_exit_sec)
+        empty_cleared = elapsed >= self.loot_min_window_sec and empty_dur >= self.loot_empty_exit_sec
 
-        if window_expired or mandatory_done:
+        if window_expired or empty_cleared:
             self.tracker.mark_loot_done()
             if self.mode == BotMode.LOOT:
                 self._state_entered_at = now
@@ -995,39 +1011,31 @@ class FarmingFSM:
             self.transition(
                 BotState.SEARCH_MOB,
                 now,
-                "mandatory_loot_7s_cleared" if mandatory_done else "post_kill_loot_window_timeout",
+                "post_kill_loot_cleared" if empty_cleared else "post_kill_loot_window_timeout",
             )
             return []
 
-        intents, target_bag, act_kind = self.farm.build_loot_step(world, now)
+        intents, target_bag, act_kind = self.farm.build_loot_step(world, now, candidate_bags=ordered_bags)
         if target_bag is not None and act_kind in ("tap_e", "click_bag"):
             bx, by = float(target_bag.click_x), float(target_bag.click_y)
-            grid = float(self.loot_attempt_grid_px)
-            cell = (int(round(bx / grid)), int(round(by / grid)))
-            # Merge into an existing adjacent 24x24px cell if jitter straddles a grid boundary
-            matched_cell = cell
-            if cell not in self._loot_grid_attempts:
-                for prev_cell in self._loot_grid_attempts:
-                    if abs(prev_cell[0] - cell[0]) <= 1 and abs(prev_cell[1] - cell[1]) <= 1:
-                        matched_cell = prev_cell
-                        break
-            attempts = self._loot_grid_attempts.get(matched_cell, 0) + 1
-            self._loot_grid_attempts[matched_cell] = attempts
+            cell = _cell_of(bx, by)
+            prev_att = self.visited_loot_grids.get(cell, (0, 0.0))[0]
+            attempts = prev_att + 1
+            self.visited_loot_grids[cell] = (attempts, now + self.loot_visited_grid_ttl_sec)
+            self._loot_grid_attempts[cell] = attempts
 
-            # Refinement #2 + 24x24px grid rounding: max 3 attempts per quantized grid cell -> blacklist_point(120s)!
             if attempts >= self.loot_max_attempts_per_bag:
                 logger.info(
-                    "Loot retry cap (%dx) at (%.0f, %.0f) grid=%s -> blacklisting 120s so repair/farming never stalls",
+                    "Loot grid cap (%dx) at (%.0f, %.0f) grid=%s -> blacklisted 15s/120s",
                     attempts,
                     bx,
                     by,
-                    matched_cell,
+                    cell,
                 )
                 self.last_blacklisted_loot = (bx, by)
-                self._loot_grid_attempts.pop(matched_cell, None)
                 if bag_count <= 1 and self.mode == BotMode.FULL:
                     self.tracker.mark_loot_done()
-                    self.transition(BotState.SEARCH_MOB, now, "loot_bag_blacklisted_max_3")
+                    self.transition(BotState.SEARCH_MOB, now, "loot_bag_blacklisted_max_attempts")
                     return []
 
         return intents

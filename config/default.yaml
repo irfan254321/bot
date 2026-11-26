@@ -58,18 +58,18 @@ perception:
   player_nameplate_hsv_lower: [48, 90, 155]
   player_nameplate_hsv_upper: [84, 255, 255]
 
-  # Dual-Cue Gold Bag detector
-  loot_glow_hsv_lower: [10, 105, 155]
-  loot_glow_hsv_upper: [25, 255, 255]
-  loot_dark_body_v_max: 78
-  loot_min_dark_ratio: 0.25
+  # Dual-Cue Gold Bag detector (calibrated on ref_loot_bags.jpg 1024x768)
+  loot_glow_hsv_lower: [8, 105, 95]
+  loot_glow_hsv_upper: [32, 255, 255]
+  loot_dark_body_v_max: 85
+  loot_min_dark_ratio: 0.22
   loot_min_blob_pixels: 3
-  loot_max_blob_pixels: 120
+  loot_max_blob_pixels: 140
   loot_pouch_v_max: 48
-  loot_pouch_min_area: 45
+  loot_pouch_min_area: 36
   loot_pouch_max_area: 480
-  loot_pouch_warm_min_px: 8
-  loot_cluster_radius_px: 20
+  loot_pouch_warm_min_px: 6
+  loot_cluster_radius_px: 18
   loot_max_dist_px: 580
   loot_hp_bar_guard_below_px: 140
 
@@ -123,26 +123,27 @@ farming:
   mob_min_y_ratio: 0.14
   combat_miss_timeout_sec: 2.4
   combat_hit_confirm_timeout_sec: 6.5
-  combat_confirmed_max_sec: 30.0
+  combat_confirmed_max_sec: 35.0
   combat_post_last_hit_idle_sec: 2.5
   combat_blind_timeout_sec: 10.0
   combat_stagnant_hp_sec: 12.0
   combat_hard_timeout_sec: 28.0
   combat_zero_drop_kill_sec: 1.6
   loot_e_close_dist_px: 85.0
-  loot_e_interval_sec: 0.45
-  loot_click_interval_sec: 0.42
+  loot_e_interval_sec: 0.35
+  loot_click_interval_sec: 0.35
   loot_max_local_dist_px: 360.0
-  loot_close_radius_px: 220
-  loot_entry_close_dist_px: 220.0
+  loot_close_radius_px: 280
+  loot_entry_close_dist_px: 280.0
   loot_entry_kill_window_sec: 4.0
-  mandatory_loot_duration_sec: 8.0
+  mandatory_loot_duration_sec: 2.0
   post_kill_loot_window_sec: 10.0
   loot_min_window_sec: 2.0
   loot_empty_exit_sec: 1.5
   loot_clear_confirm_frames: 4
-  loot_max_attempts_per_bag: 3
-  loot_attempt_grid_px: 24
+  loot_max_attempts_per_bag: 2
+  loot_attempt_grid_px: 22
+  loot_visited_grid_ttl_sec: 15.0
   loot_max_total_sec: 10.0
   move_click_interval_sec: 0.55
   move_click_radius_x_ratio: 0.145

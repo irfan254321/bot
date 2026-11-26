@@ -131,15 +131,15 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
     acts_l2 = fsm.step(tracker.update(_snap(4.5, mobs=(), loot=(close_bag,))))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_l2)
 
-    # 6. Bags cleared (mandatory 8.0s post-kill LOOT window) -> returns to SEARCH_MOB -> MMB sweep!
+    # 6. Bags cleared (min 2.0s + 1.5s consecutive empty in LOOT) -> returns to SEARCH_MOB -> MMB sweep!
     fsm.step(tracker.update(_snap(5.0, mobs=(), loot=())))
-    assert fsm.state == BotState.LOOT  # still inside mandatory 8.0s LOOT window
-    fsm.step(tracker.update(_snap(11.0, mobs=(), loot=())))
-    assert fsm.state == BotState.LOOT  # elapsed 7.3s < 8.0s
-    fsm.step(tracker.update(_snap(11.8, mobs=(), loot=())))
+    assert fsm.state == BotState.LOOT  # elapsed 1.3s < 2.0s
+    fsm.step(tracker.update(_snap(6.0, mobs=(), loot=())))
+    assert fsm.state == BotState.LOOT  # empty 1.0s < 1.5s
+    fsm.step(tracker.update(_snap(6.6, mobs=(), loot=())))
     assert fsm.state == BotState.SEARCH_MOB
 
-    acts_sweep = fsm.step(tracker.update(_snap(12.2, mobs=(), loot=())))
+    acts_sweep = fsm.step(tracker.update(_snap(7.0, mobs=(), loot=())))
     assert any(isinstance(a, DragCameraIntent) and a.button == "middle" and a.dy == 0 for a in acts_sweep)
 
 
@@ -256,9 +256,9 @@ def test_loot_max_3_attempts_blacklists_obstructed_bag_and_never_blocks_80m_repa
     fsm.transition(BotState.LOOT, 1.5, "test_post_kill_loot")
     assert fsm.state == BotState.LOOT
 
-    # Attempt 1, 2, 3 (spaced past click cooldown 0.42s) -> on attempt #3 blacklists coord & exits LOOT!
+    # Attempt 1, 2 (spaced past click cooldown 0.35s) -> on attempt #2 blacklists coord & exits LOOT!
     blacklisted = None
-    for ts in (2.0, 2.6, 3.2):
+    for ts in (2.0, 2.6):
         fsm.step(tracker.update(_snap(ts, loot=(blocked_bag,))))
         if fsm.last_blacklisted_loot is not None:
             blacklisted = fsm.last_blacklisted_loot
@@ -685,7 +685,7 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     cfg = load_config("config/default.yaml")
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
-    assert int(cfg.farming["loot_close_radius_px"]) == 220
+    assert int(cfg.farming["loot_close_radius_px"]) == 280
 
     # (a) Pipeline with skip_all_object_detectors=True (COMBAT_WAIT):
     #     disables GoldRustlerDetector, GoldBagDetector, and CorpseDetector, while reading Target HP!
@@ -784,13 +784,13 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     assert any(isinstance(a, ClickScreenIntent) and a.x == 440 and a.y == 450 for a in acts_l1)
     assert not any(isinstance(a, DragCameraIntent) for a in acts_l1)
 
-    # Only far bag (>220px) remains -> ignored, stays in LOOT during mandatory 8.0s window (t=11.0 -> elapsed 7.2s)
-    acts_l2 = fsm.step(tracker.update(_snap(11.0, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
+    # Only far bag (>280px) remains -> ignored, stays in LOOT during initial 2.0s window (t=5.5 -> elapsed 1.7s)
+    acts_l2 = fsm.step(tracker.update(_snap(5.5, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
     assert fsm.state == BotState.LOOT
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_l2)
 
-    # After mandatory 8.0s elapsed (t=11.9 -> elapsed 8.1s >= 8.0s) with no close bags -> SEARCH_MOB!
-    fsm.step(tracker.update(_snap(11.9, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
+    # After >=2.0s elapsed AND >=1.5s consecutive empty (empty since 5.5 -> 7.1 is 1.6s empty) -> SEARCH_MOB!
+    fsm.step(tracker.update(_snap(7.1, fw=1024, fh=768, mobs=(other_mob,), loot=(far_bag,))))
     assert fsm.state == BotState.SEARCH_MOB
 
     # Verify 10.0s hard post_kill_loot_window_sec cap when close bags keep appearing continuously
@@ -899,13 +899,13 @@ def test_combat_wait_hard_gate_post_kill_loot_e_tap_and_hybrid_green_hp_bar_dete
     assert len(acts_cw) == 0
     assert fsm.active_lock is None
 
-    # 4. Post-kill LOOT taps E every 0.45s without DRAG_MMB
+    # 4. Post-kill LOOT taps E every 0.35s without DRAG_MMB
     fsm.transition(BotState.LOOT, 5.0, "test_e_tap")
     acts_e1 = fsm.step(tracker.update(_snap(5.0, fw=1024, fh=768, loot=())))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_e1)
     assert not any(isinstance(a, DragCameraIntent) for a in acts_e1)
-    assert fsm.step(tracker.update(_snap(5.2, fw=1024, fh=768, loot=()))) == []  # < 0.45s cooldown
-    acts_e2 = fsm.step(tracker.update(_snap(5.5, fw=1024, fh=768, loot=())))
+    assert fsm.step(tracker.update(_snap(5.2, fw=1024, fh=768, loot=()))) == []  # < 0.35s cooldown
+    acts_e2 = fsm.step(tracker.update(_snap(5.4, fw=1024, fh=768, loot=())))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_e2)
 
     # 5. GoldBagDetector rejects thin vertical monster-arm gleam (h > w * 1.25) AND gleam +130px below HP bar!
@@ -932,9 +932,9 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     cfg = load_config("config/default.yaml")
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 6.5
-    assert float(cfg.farming["combat_confirmed_max_sec"]) == 30.0
+    assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
     assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
-    assert float(cfg.farming["mandatory_loot_duration_sec"]) == 8.0
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
 
     pipe = PerceptionPipeline(cfg)
 
@@ -1011,11 +1011,11 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     # At t=26.6 (2.6s >= 2.5s since last hit) -> MANDATORY transition to BotState.LOOT!
     fsm.step(tracker.update(_snap(26.6, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
-    # Mandatory 8.0s LOOT: still in LOOT at t=34.0 (7.4s < 8.0s) tapping E, exits at t=34.7 (8.1s >= 8.0s)!
-    acts_loot_e = fsm.step(tracker.update(_snap(34.0, fw=1024, fh=768)))
+    # Post-kill LOOT: stays in LOOT during initial 2.0s window tapping E, exits after >=2.0s + 1.5s empty!
+    acts_loot_e = fsm.step(tracker.update(_snap(27.0, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_loot_e)
-    fsm.step(tracker.update(_snap(34.7, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(28.8, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. NAVIGATE_TO_SPOT guard: when spot_dist <= 25u and len(mobs) >= 1, stays in SEARCH_MOB & engages mob!
@@ -1098,12 +1098,12 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
         assert fsm.step(w_fight) == []
         assert fsm.state == BotState.COMBAT_WAIT
 
-    # 4. 2.5s after last hit stops (t=23.1) -> MANDATORY BotState.LOOT for 8.0s BEFORE any spot-distance check!
+    # 4. 2.5s after last hit stops (t=23.1) -> MANDATORY BotState.LOOT BEFORE any spot-distance check!
     fsm.step(tracker.update(_snap(23.1, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(30.5, x=645, y=1830, fw=1024, fh=768)))
-    assert fsm.state == BotState.LOOT  # 7.4s < 8.0s
-    fsm.step(tracker.update(_snap(31.2, x=645, y=1830, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(24.0, x=645, y=1830, fw=1024, fh=768)))
+    assert fsm.state == BotState.LOOT  # inside initial 2.0s window
+    fsm.step(tracker.update(_snap(25.6, x=645, y=1830, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. At drift=72u (outside 55u farm_radius, <=85u) with 2 visible mobs -> attacks mob instead of drifting/patrolling!
@@ -1115,3 +1115,94 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
     )
     assert fsm.state == BotState.COMBAT_WAIT
     assert any(isinstance(a, ClickScreenIntent) and a.x == 710 and a.y == 320 for a in acts_atk)
+
+
+def test_ref_loot_bags_6_piles_detected_and_clicked_sequentially_in_loot():
+    """Regression test for ref_loot_bags.jpg (1024x768, 6 gold piles at x=625..735, y=340..430):
+    verifies all 6 piles are detected ONLY in BotState.LOOT and left-clicked sequentially via 22x22 visited_loot_grids."""
+    from pathlib import Path
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    pipe = PerceptionPipeline(cfg)
+
+    ref_path = Path(__file__).parent / "fixtures" / "ref_loot_bags.jpg"
+    if ref_path.exists():
+        img = cv2.imread(str(ref_path), cv2.IMREAD_COLOR)
+        assert img is not None
+    else:
+        # Calibrated 1024x768 synthetic ref_loot_bags frame: 6 gold piles lined up in x=625..735, y=340..430
+        hsv_bg = np.zeros((768, 1024, 3), dtype=np.uint8)
+        hsv_bg[:, :] = (28, 120, 62)
+        img = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+        piles = [(632, 348), (658, 362), (684, 376), (710, 390), (656, 408), (696, 420)]
+        for px, py in piles:
+            # Dark-brown mound (12x12) + gold-orange gleam (HSV H=18, S=180, V=170) in center
+            img[py : py + 12, px : px + 12] = cv2.cvtColor(
+                np.full((12, 12, 3), (18, 120, 32), dtype=np.uint8), cv2.COLOR_HSV2BGR
+            )
+            img[py + 2 : py + 6, px + 3 : px + 8] = cv2.cvtColor(
+                np.full((4, 5, 3), (18, 180, 170), dtype=np.uint8), cv2.COLOR_HSV2BGR
+            )
+        # Distractor inside SELF zone (x=500, y=380) & far outside 280px radius (x=140, y=420) -> MUST be rejected!
+        for px, py in ((500, 380), (140, 420)):
+            img[py : py + 12, px : px + 12] = cv2.cvtColor(
+                np.full((12, 12, 3), (18, 120, 32), dtype=np.uint8), cv2.COLOR_HSV2BGR
+            )
+            img[py + 2 : py + 6, px + 3 : px + 8] = cv2.cvtColor(
+                np.full((4, 5, 3), (18, 180, 170), dtype=np.uint8), cv2.COLOR_HSV2BGR
+            )
+
+    pkt = FramePacket(image_bgr=img, timestamp=1.0, source_name="ref_loot_bags.jpg")
+
+    # 1. Hard-gate: GoldBagDetector MUST stay OFF in COMBAT_WAIT and SEARCH_MOB!
+    snap_cw = pipe.analyze(pkt, current_state=BotState.COMBAT_WAIT, check_interface_mode=False)
+    snap_scan = pipe.analyze(pkt, current_state=BotState.SEARCH_MOB, check_interface_mode=False)
+    assert len(snap_cw.gold_bags) == 0 and len(snap_cw.mobs) == 0
+    assert len(snap_scan.gold_bags) == 0
+
+    # 2. In BotState.LOOT: detects all 6 gold piles inside <=280px (rejects SELF & far >280px distractors)!
+    snap_loot = pipe.analyze(pkt, current_state=BotState.LOOT, check_interface_mode=False)
+    assert len(snap_loot.gold_bags) == 6, f"Expected 6 gold piles in ref_loot_bags, got {len(snap_loot.gold_bags)}: {snap_loot.gold_bags}"
+    assert len(snap_loot.mobs) == 0
+
+    # 3. FSM clicks all 6 piles sequentially one-by-one using 22x22 visited_loot_grids (TTL 15s), zero DRAG_MMB!
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    fsm.transition(BotState.LOOT, 10.0, "post_kill_6_piles")
+
+    clicked_pts: list[tuple[int, int]] = []
+    for i in range(6):
+        ts = 10.1 + i * 0.45
+        w_l = tracker.update(
+            PerceptionSnapshot(
+                timestamp=ts,
+                frame_width=1024,
+                frame_height=768,
+                hp_ratio=1.0,
+                mp_ratio=1.0,
+                coords=CoordReading(x=615, y=1830, confidence=0.98),
+                minimap=MinimapReading(),
+                loot=snap_loot.gold_bags,
+            )
+        )
+        acts = fsm.step(w_l)
+        assert fsm.state == BotState.LOOT
+        assert not any(isinstance(a, DragCameraIntent) for a in acts)
+        clicks = [a for a in acts if isinstance(a, ClickScreenIntent) and a.button == "left"]
+        assert len(clicks) == 1, f"Expected 1 left-click on pile #{i + 1}, got {acts}"
+        clicked_pts.append((clicks[0].x, clicks[0].y))
+
+    assert len(set(clicked_pts)) == 6, f"All 6 piles must be clicked sequentially without repeats: {clicked_pts}"
+    assert len(fsm.visited_loot_grids) == 6
+
+    # 4. Once piles are gone for 1.5s (past min 2.0s window) -> returns to SEARCH_MOB!
+    fsm.step(tracker.update(_snap(13.0, fw=1024, fh=768, loot=())))
+    assert fsm.state == BotState.LOOT
+    fsm.step(tracker.update(_snap(14.6, fw=1024, fh=768, loot=())))
+    assert fsm.state == BotState.SEARCH_MOB

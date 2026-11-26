@@ -346,7 +346,7 @@ class BotEngine:
                     float(
                         self.config.farming.get(
                             "loot_close_radius_px",
-                            self.config.farming.get("loot_entry_close_dist_px", 220.0),
+                            self.config.farming.get("loot_entry_close_dist_px", 280.0),
                         )
                     )
                     if self.fsm.state == BotState.LOOT
