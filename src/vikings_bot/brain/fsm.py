@@ -1016,6 +1016,17 @@ class FarmingFSM:
         Uses `visited_loot_grids` (22x22px grid, TTL 15.0s, max 2 attempts per grid) so adjacent gold piles
         are clicked sequentially one-by-one until exhausted, then exits after >=2.0s + 1.5s empty or 10.0s cap.
         """
+        if self.farm.background_e_spam:
+            # Continuous AHK v2 background E spam handles pickup: stay completely silent (zero mouse movement!)
+            # for post_kill_loot_window_sec (1.5s), then return directly to SEARCH_MOB!
+            if elapsed >= self.post_kill_loot_window_sec:
+                self.tracker.mark_loot_done()
+                if self.mode == BotMode.LOOT:
+                    self._state_entered_at = now
+                    return []
+                self.transition(BotState.SEARCH_MOB, now, "post_kill_e_spam_loot_done")
+            return []
+
         # Prune expired visited_loot_grids entries (TTL 15.0s)
         self.visited_loot_grids = {
             cell: (att, exp) for cell, (att, exp) in self.visited_loot_grids.items() if now < exp

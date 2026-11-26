@@ -254,6 +254,10 @@ class InputDriver(ABC):
     @abstractmethod
     def release_all(self) -> None: ...
 
+    def set_e_spam(self, enabled: bool) -> None:
+        """Enable or disable continuous background 'E' pickup spam."""
+        return None
+
     def send_chat_command(self, command: str) -> None:
         """Open RYL chat (Enter), type command characters (e.g. '/kill'), and submit (Enter)."""
         self.tap_key("enter", hold_sec=0.045)
@@ -278,12 +282,44 @@ class Win32InputDriver(InputDriver):
         self._mouse_queue: deque[tuple[int, int, float]] = deque()
         self._mouse_wake = threading.Event()
         self._mouse_stop = threading.Event()
+        self._e_spam_enabled = threading.Event()
+        self._e_spam_chat_lock = threading.Event()
         self._mouse_worker = threading.Thread(
             target=self._smooth_mouse_loop,
             name="vikings-smooth-mouse",
             daemon=True,
         )
         self._mouse_worker.start()
+        self._e_spam_worker = threading.Thread(
+            target=self._e_spam_loop,
+            name="vikings-win32-e-spam",
+            daemon=True,
+        )
+        self._e_spam_worker.start()
+
+    def _e_spam_loop(self) -> None:
+        """Win32 fallback continuous background 'E' pickup spam (90ms interval) when AHK bridge is unavailable."""
+        while not self._mouse_stop.is_set():
+            if self._e_spam_enabled.is_set() and not self._e_spam_chat_lock.is_set():
+                self.tap_key("e", hold_sec=0.025)
+                time.sleep(0.065)
+            else:
+                time.sleep(0.04)
+
+    def set_e_spam(self, enabled: bool) -> None:
+        if enabled:
+            self._e_spam_enabled.set()
+        else:
+            self._e_spam_enabled.clear()
+
+    def send_chat_command(self, command: str) -> None:
+        self._e_spam_chat_lock.set()
+        try:
+            time.sleep(0.06)
+            super().send_chat_command(command)
+            time.sleep(0.08)
+        finally:
+            self._e_spam_chat_lock.clear()
 
     def _smooth_mouse_loop(self) -> None:
         """Executes S-curve relative camera deltas asynchronously so perception stays locked at 30 FPS."""
@@ -316,6 +352,7 @@ class Win32InputDriver(InputDriver):
             self._mouse_wake.clear()
 
     def close(self) -> None:
+        self._e_spam_enabled.clear()
         self.cancel_async_mouse()
         self._mouse_stop.set()
         self._mouse_wake.set()
@@ -669,6 +706,11 @@ class DryRunInputDriver(InputDriver):
     def release_all(self) -> None:
         self.history.append("release_all()")
         logger.debug("[DRY-RUN] release_all()")
+
+    def set_e_spam(self, enabled: bool) -> None:
+        flag = 1 if enabled else 0
+        self.history.append(f"set_e_spam({flag})")
+        logger.debug("[DRY-RUN] set_e_spam(%d)", flag)
 
     def send_chat_command(self, command: str) -> None:
         msg = f"send_chat_command({command})"

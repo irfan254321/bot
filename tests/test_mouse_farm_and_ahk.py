@@ -86,8 +86,18 @@ def _snap(
     )
 
 
+def _load_legacy_mouse_loot_cfg():
+    """Helper for legacy tests that specifically exercise optional GoldBag mouse-click loot mode."""
+    c = load_config("config/default.yaml")
+    c.farming["background_e_spam"] = False
+    c.farming["disable_gold_bag_detector"] = False
+    c.farming["post_kill_loot_window_sec"] = 10.0
+    c.farming["loot_min_window_sec"] = 2.0
+    return c
+
+
 def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_sweep():
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     assert cfg.controls["mode"] == "mouse"
     assert cfg.controls["input_backend"] == "ahk"
     tracker = WorldStateTracker()
@@ -243,7 +253,7 @@ def test_watchdog_anti_miss_never_cancels_while_distance_is_actively_shrinking()
 
 def test_loot_max_3_attempts_blacklists_obstructed_bag_and_never_blocks_80m_repair():
     """Refinement #2: Obstructed Gold Bag fails max 3 tries -> blacklist_point(120s) -> transitions to REPAIR_RECALL!"""
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
@@ -404,7 +414,7 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
 
 def test_loot_entry_gate_blocks_far_drops_without_kill_and_24px_grid_caps_jittery_bag():
     """Verify SEARCH_MOB never enters LOOT directly (post-kill only), and 24x24px grid blacklists jittery bags on try #3."""
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
@@ -682,7 +692,7 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     from vikings_bot.debug_overlay import build_overlay_frame_data
     from vikings_bot.perception.pipeline import PerceptionPipeline
 
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
     assert int(cfg.farming["loot_close_radius_px"]) == 310
@@ -813,7 +823,7 @@ def test_combat_wait_hard_gate_post_kill_loot_e_tap_and_hybrid_green_hp_bar_dete
     from vikings_bot.capture.screen import FramePacket
     from vikings_bot.perception.pipeline import PerceptionPipeline
 
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     cfg.perception["hud_fixed_pixel_ui"] = True
     pipe = PerceptionPipeline(cfg)
 
@@ -930,7 +940,7 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     from vikings_bot.capture.screen import FramePacket
     from vikings_bot.perception.pipeline import PerceptionPipeline
 
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
     assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 5.0
@@ -1126,7 +1136,7 @@ def test_ref_loot_bags_6_piles_detected_and_clicked_sequentially_in_loot():
     from vikings_bot.capture.screen import FramePacket
     from vikings_bot.perception.pipeline import PerceptionPipeline
 
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     cfg.perception["hud_fixed_pixel_ui"] = True
     pipe = PerceptionPipeline(cfg)
 
@@ -1216,7 +1226,7 @@ def test_anti_ks_player_cyan_bar_external_damage_zone_wounded_hp_and_loot_avoida
     from vikings_bot.capture.screen import FramePacket
     from vikings_bot.perception.pipeline import PerceptionPipeline
 
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert cfg.perception["anti_ks_enabled"] is True
     assert int(cfg.perception["anti_ks_player_radius_px"]) == 240
@@ -1315,7 +1325,7 @@ def test_ref_gold_scatter_10_piles_and_ref_close_mobs_regression():
     from vikings_bot.capture.screen import FramePacket
     from vikings_bot.perception.pipeline import PerceptionPipeline
 
-    cfg = load_config("config/default.yaml")
+    cfg = _load_legacy_mouse_loot_cfg()
     cfg.perception["hud_fixed_pixel_ui"] = True
     pipe = PerceptionPipeline(cfg)
 
@@ -1422,3 +1432,87 @@ def test_local_hit_damage_5s_no_hit_abort_and_5s_post_hit_loot_transition():
     assert fsm.step(tracker.update(_snap(26.5, fw=1024, fh=768))) == [] and fsm.state == BotState.COMBAT_WAIT  # 4.5s < 5.0s
     fsm.step(tracker.update(_snap(27.1, fw=1024, fh=768)))  # 5.1s >= 5.0s since last local hit
     assert fsm.state == BotState.LOOT
+
+
+def test_background_ahk_e_spam_chat_cmd_interlock_and_zero_mouse_click_loot():
+    """Verify default background AHK v2 E-spam mode:
+    1. AHK script defines SetTimer(SpamPickupLoop, 90), SET_E_SPAM, WinActive check, and chat_lock interlock.
+    2. AhkInputDriver.send_chat_command('/setweather 11' / '/kill') disables e_spam before CHAT_CMD and re-enables after.
+    3. GoldBagDetector is completely disabled (gold_bags == ()) across all FSM states, and BotState.LOOT
+       performs a silent 1.5s pause with ZERO mouse clicks before returning to SEARCH_MOB."""
+    from pathlib import Path
+    import cv2
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    assert cfg.farming["background_e_spam"] is True
+    assert cfg.farming["disable_gold_bag_detector"] is True
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 1.5
+    assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
+    assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
+
+    # 1. AHK v2 bridge script checks
+    ahk_src = Path("ahk/vikings_input_bridge.ahk").read_text(encoding="utf-8")
+    for token in (
+        "global e_spam_enabled := false",
+        "global chat_lock := false",
+        "SetTimer(SpamPickupLoop, 90)",
+        'WinActive("ahk_id "',
+        'Send "{e}"',
+        'cmd = "SET_E_SPAM"',
+        "chat_lock := true",
+        "Sleep 60",
+        "Sleep 75",
+        "SendText(text)",
+        "Sleep 50",
+        "Sleep 80",
+        "chat_lock := false",
+        "SetTimer(SpamPickupLoop, 0)",
+    ):
+        assert token in ahk_src, f"Missing expected AHK v2 token: {token}"
+
+    # 2. AhkInputDriver CHAT_CMD interlock disables e_spam before '/setweather 11' and '/kill' and restores after
+    sent: list[str] = []
+    drv = AhkInputDriver(
+        ahk_mode="vm_foreground",
+        command_transport=lambda cmd: (sent.append(cmd) or "OK"),
+    )
+    drv.set_e_spam(True)
+    drv.send_chat_command("/setweather 11")
+    drv.send_chat_command("/kill")
+    drv.release_all()
+    assert sent == [
+        "SET_E_SPAM|0|1",
+        "SET_E_SPAM|0|0",
+        "CHAT_CMD|vm_foreground|0|/setweather 11",
+        "SET_E_SPAM|0|1",
+        "SET_E_SPAM|0|0",
+        "CHAT_CMD|vm_foreground|0|/kill",
+        "SET_E_SPAM|0|1",
+        "SET_E_SPAM|0|0",
+        "RELEASE_ALL|0",
+    ], sent
+
+    # 3. Default pipeline disables GoldBagDetector across ALL live FSM states (even on ref_gold_scatter.jpg!)
+    pipe = PerceptionPipeline(cfg)
+    scatter_path = Path(__file__).parent / "fixtures" / "ref_gold_scatter.jpg"
+    img = cv2.resize(cv2.imread(str(scatter_path), cv2.IMREAD_COLOR), (1024, 768))
+    pkt = FramePacket(image_bgr=img, timestamp=1.0)
+    for st in (BotState.PAUSED, BotState.SEARCH_MOB, BotState.COMBAT_WAIT, BotState.LOOT):
+        snap = pipe.analyze(pkt, current_state=st, check_interface_mode=False)
+        assert snap.gold_bags == (), f"GoldBagDetector must be disabled in {st} when disable_gold_bag_detector=True!"
+
+    # 4. FSM in BotState.LOOT performs silent 1.5s wait with ZERO mouse clicks or camera drags, then returns to SEARCH_MOB!
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    fsm.transition(BotState.LOOT, 10.0, "post_kill")
+    bag = _bag(cx=640, cy=400, dist=130.0)
+    acts_1 = fsm.step(tracker.update(_snap(10.5, fw=1024, fh=768, loot=(bag,))))
+    assert acts_1 == [] and fsm.state == BotState.LOOT
+    acts_2 = fsm.step(tracker.update(_snap(11.2, fw=1024, fh=768, loot=(bag,))))
+    assert acts_2 == [] and fsm.state == BotState.LOOT
+    acts_3 = fsm.step(tracker.update(_snap(11.6, fw=1024, fh=768, loot=(bag,))))
+    assert acts_3 == [] and fsm.state == BotState.SEARCH_MOB

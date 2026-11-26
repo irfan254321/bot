@@ -31,10 +31,14 @@ SetWinDelay -1
 
 global gHeldKeys := Map()
 global gHeldButtons := Map()
+global e_spam_enabled := false
+global chat_lock := false
+global target_hwnd := 0
 global gStdIn := FileOpen("*", "r", "UTF-8")
 global gStdOut := FileOpen("*", "w", "UTF-8")
 
 OnExit(CleanupAllInputs)
+SetTimer(SpamPickupLoop, 90)
 
 WriteReply("READY|AHK_V2")
 
@@ -78,6 +82,17 @@ WriteReply(msg) {
     try DllCall("FlushFileBuffers", "Ptr", gStdOut.Handle)
 }
 
+SpamPickupLoop() {
+    global e_spam_enabled, chat_lock, target_hwnd
+    if (!e_spam_enabled || chat_lock) {
+        return
+    }
+    if (target_hwnd > 0 && !WinActive("ahk_id " . target_hwnd)) {
+        return
+    }
+    Send "{e}"
+}
+
 MapKeyName(k) {
     lk := StrLower(Trim(k))
     switch lk {
@@ -108,6 +123,16 @@ HandleCommand(line) {
 
     if (cmd = "PING") {
         return "PONG"
+    }
+
+    if (cmd = "SET_E_SPAM" && parts.Length >= 3) {
+        global e_spam_enabled, target_hwnd
+        hwnd := Integer(parts[2])
+        if (hwnd > 0) {
+            target_hwnd := hwnd
+        }
+        e_spam_enabled := (Integer(parts[3]) != 0)
+        return "OK|SET_E_SPAM|" . (e_spam_enabled ? "1" : "0")
     }
 
     if (cmd = "RELEASE_ALL") {
@@ -265,21 +290,29 @@ HandleCommand(line) {
     }
 
     if (cmd = "CHAT_CMD" && parts.Length >= 4) {
+        global chat_lock
         mode := StrLower(parts[2])
         hwnd := Integer(parts[3])
         text := parts[4]
-        if (mode = "host_background" && hwnd > 0) {
-            ControlSend("{Enter}", , "ahk_id " . hwnd)
-            Sleep 70
-            ControlSendText(text, , "ahk_id " . hwnd)
-            Sleep 70
-            ControlSend("{Enter}", , "ahk_id " . hwnd)
-        } else {
-            SendEvent("{Enter}")
-            Sleep 70
-            SendText(text)
-            Sleep 70
-            SendEvent("{Enter}")
+        chat_lock := true
+        try {
+            Sleep 60
+            if (mode = "host_background" && hwnd > 0) {
+                ControlSend("{Enter}", , "ahk_id " . hwnd)
+                Sleep 75
+                ControlSendText(text, , "ahk_id " . hwnd)
+                Sleep 50
+                ControlSend("{Enter}", , "ahk_id " . hwnd)
+            } else {
+                Send "{Enter}"
+                Sleep 75
+                SendText(text)
+                Sleep 50
+                Send "{Enter}"
+            }
+            Sleep 80
+        } finally {
+            chat_lock := false
         }
         return "OK|CHAT_CMD"
     }
@@ -288,7 +321,10 @@ HandleCommand(line) {
 }
 
 CleanupAllInputs(reason := "", code := 0) {
-    global gHeldKeys, gHeldButtons
+    global gHeldKeys, gHeldButtons, e_spam_enabled, chat_lock
+    e_spam_enabled := false
+    chat_lock := false
+    try SetTimer(SpamPickupLoop, 0)
     for key, meta in gHeldKeys {
         try {
             m := StrSplit(meta, "|")

@@ -41,6 +41,7 @@ class PerceptionPipeline:
         self.pitch_sky_ratio_min: float = float(config.farming.get("pitch_sky_ratio_min", 0.12))
         self.pitch_sky_ratio_max: float = float(config.farming.get("pitch_sky_ratio_max", 0.42))
         self.anti_ks_enabled: bool = bool(config.perception.get("anti_ks_enabled", True))
+        self.disable_gold_bag_detector: bool = bool(config.farming.get("disable_gold_bag_detector", True))
 
     def _estimate_sky_and_horizon(
         self,
@@ -245,8 +246,11 @@ class PerceptionPipeline:
         # - Non-LOOT states: NEVER run GoldBagDetector so living monster armor never triggers LOOT!
         # - LOOT: NEVER run GoldRustlerDetector; run ONLY GoldBagDetector within <=220px close radius!
         in_combat_wait = current_state == BotState.COMBAT_WAIT or skip_all_object_detectors
+        # When continuous AHK background E spam is active (`disable_gold_bag_detector=True`),
+        # disable GoldBagDetector across ALL live FSM states so gold_bags is always empty!
         run_loot_detector = (not in_combat_wait) and (
-            current_state is None or current_state in (BotState.LOOT, BotState.PAUSED)
+            current_state is None
+            or ((not self.disable_gold_bag_detector) and current_state in (BotState.LOOT, BotState.PAUSED))
         )
         run_mob_detector = (not in_combat_wait) and (not skip_mob_detection) and (
             current_state != BotState.LOOT

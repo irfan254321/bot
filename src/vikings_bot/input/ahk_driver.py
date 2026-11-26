@@ -100,6 +100,7 @@ class AhkInputDriver(InputDriver):
         self._next_respawn_at: float = 0.0
         self._respawn_base_cooldown_sec: float = 5.0
         self._respawn_max_cooldown_sec: float = 30.0
+        self._e_spam_enabled: bool = False
         self.last_stderr: str = ""
         self.history: list[str] = []
 
@@ -344,15 +345,34 @@ class AhkInputDriver(InputDriver):
             else None,
         )
 
+    def set_e_spam(self, enabled: bool) -> None:
+        """Toggle persistent background 'E' pickup spam in AHK v2 (or Win32 fallback)."""
+        flag = 1 if enabled else 0
+        self._e_spam_enabled = bool(enabled)
+        hwnd = self._target_hwnd()
+        self._run_or_fallback(
+            f"SET_E_SPAM|{hwnd}|{flag}",
+            (lambda: self._fallback.set_e_spam(bool(enabled))) if self._fallback is not None else None,
+        )
+
     def send_chat_command(self, command: str) -> None:
         hwnd = self._target_hwnd()
         clean = str(command).replace("|", "").replace("\n", "").strip()
-        self._run_or_fallback(
-            f"CHAT_CMD|{self.ahk_mode}|{hwnd}|{clean}",
-            (lambda: self._fallback.send_chat_command(clean)) if self._fallback is not None else None,
-        )
+        was_spamming = self._e_spam_enabled
+        if was_spamming:
+            self.set_e_spam(False)
+        try:
+            self._run_or_fallback(
+                f"CHAT_CMD|{self.ahk_mode}|{hwnd}|{clean}",
+                (lambda: self._fallback.send_chat_command(clean)) if self._fallback is not None else None,
+            )
+        finally:
+            if was_spamming:
+                self.set_e_spam(True)
 
     def release_all(self) -> None:
+        if self._e_spam_enabled:
+            self.set_e_spam(False)
         hwnd = self._target_hwnd()
         self._run_or_fallback(
             f"RELEASE_ALL|{hwnd}",

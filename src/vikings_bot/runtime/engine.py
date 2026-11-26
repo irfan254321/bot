@@ -491,6 +491,19 @@ class BotEngine:
                     bx, by = self.fsm.last_blacklisted_loot
                     self.pipeline.loot.blacklist_point(bx, by, now, ttl_sec=120.0)
 
+                # Sync continuous background E-spam in AHK v2: ON during active farming, OFF on PAUSED / ENSURE_MOUSE_MODE / non-farming
+                if bool(self.config.farming.get("background_e_spam", True)):
+                    want_e_spam = self.fsm.state in (
+                        BotState.SEARCH_MOB,
+                        BotState.AT_SPOT_IDLE,
+                        BotState.COMBAT_WAIT,
+                        BotState.LOOT,
+                        BotState.NAVIGATE_TO_SPOT,
+                    )
+                    if getattr(self, "_last_e_spam_state", None) != want_e_spam:
+                        self._last_e_spam_state = want_e_spam
+                        self.executor.driver.set_e_spam(want_e_spam)
+
                 exec_t0 = time.perf_counter()
                 act_summary = ""
                 if intents:
