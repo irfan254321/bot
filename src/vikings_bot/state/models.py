@@ -162,6 +162,7 @@ class WorldState:
     locked_mob_contested_ks: bool = False
     target_hp_visible: bool = False
     last_kill_pos: tuple[int, int] | None = None
+    last_kill_ts: float | None = None
     last_kill_until: float = 0.0
     pending_loot: bool = False
     is_dead: bool = False

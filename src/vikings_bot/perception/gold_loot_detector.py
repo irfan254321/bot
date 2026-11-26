@@ -54,6 +54,64 @@ class GoldBagDetector:
         self._silver_hi = np.array([179, 55, 255], dtype=np.uint8)
         self._tunic_lo = np.array([68, 65, 45], dtype=np.uint8)
         self._tunic_hi = np.array([135, 255, 255], dtype=np.uint8)
+        self._hp_green_lo = np.array([46, 105, 100], dtype=np.uint8)
+        self._hp_green_hi = np.array([78, 255, 255], dtype=np.uint8)
+        self._hp_red_lo_1 = np.array([0, 140, 120], dtype=np.uint8)
+        self._hp_red_hi_1 = np.array([7, 255, 255], dtype=np.uint8)
+        self._hp_red_lo_2 = np.array([172, 140, 120], dtype=np.uint8)
+        self._hp_red_hi_2 = np.array([179, 255, 255], dtype=np.uint8)
+        self.hp_bar_guard_below_px = int(p.get("loot_hp_bar_guard_below_px", 110))
+        self.horizon_min_y_px = int(p.get("loot_horizon_min_y_px", 230))
+
+    def _mask_below_hp_bar_strips(
+        self,
+        hsv_crop: np.ndarray,
+        valid: np.ndarray,
+        scale_x: float,
+        scale_y: float,
+    ) -> None:
+        """Mask monster body columns (up to +110px below) under any horizontal green/red HP bar strip.
+
+        Prevents golden chest/armor gleam on a monster from being mistaken for a Gold Bag even when
+        dusk/night lighting hides the monster's magenta nameplate.
+        """
+        sx = 1.0 if self.hud_fixed_pixel_ui else scale_x
+        sy = 1.0 if self.hud_fixed_pixel_ui else scale_y
+        min_w = max(14, int(round(18.0 * sx)))
+        max_w = int(round(115.0 * sx))
+        min_h = max(2, int(round(2.0 * sy)))
+        max_h = max(7, int(round(8.0 * sy)))
+        pad_x = int(round(22.0 * sx))
+        pad_below = int(round(float(self.hp_bar_guard_below_px) * sy))
+
+        g_mask = cv2.bitwise_and(cv2.inRange(hsv_crop, self._hp_green_lo, self._hp_green_hi), valid)
+        r_mask_1 = cv2.inRange(hsv_crop, self._hp_red_lo_1, self._hp_red_hi_1)
+        r_mask_2 = cv2.inRange(hsv_crop, self._hp_red_lo_2, self._hp_red_hi_2)
+        r_mask = cv2.bitwise_and(cv2.bitwise_or(r_mask_1, r_mask_2), valid)
+
+        vh, vw = valid.shape[:2]
+        for bar_mask in (g_mask, r_mask):
+            if cv2.countNonZero(bar_mask) < (min_w * min_h):
+                continue
+            n_lbl, _lbl, stats, _ = cv2.connectedComponentsWithStats(bar_mask, connectivity=8)
+            for idx in range(1, n_lbl):
+                w = int(stats[idx, cv2.CC_STAT_WIDTH])
+                h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+                if not (min_w <= w <= max_w and min_h <= h <= max_h):
+                    continue
+                if (w / max(1.0, float(h))) < 3.0:
+                    continue
+                area = int(stats[idx, cv2.CC_STAT_AREA])
+                if (area / max(1.0, float(w * h))) < 0.55:
+                    continue
+                x = int(stats[idx, cv2.CC_STAT_LEFT])
+                y = int(stats[idx, cv2.CC_STAT_TOP])
+                ax1 = max(0, x - pad_x)
+                ax2 = min(vw, x + w + pad_x)
+                ay1 = max(0, y - 2)
+                ay2 = min(vh, y + h + pad_below)
+                if ax2 > ax1 and ay2 > ay1:
+                    valid[ay1:ay2, ax1:ax2] = 0
 
     def blacklist_point(self, x: float, y: float, now: float, ttl_sec: float = 120.0) -> None:
         """Ignore an unreachable/blocked Gold Bag coordinate for ttl_sec (default 120s)."""
@@ -180,10 +238,20 @@ class GoldBagDetector:
             fw, fh, player_center_norm=self.player_center_norm, hud_fixed_pixel_ui=self.hud_fixed_pixel_ui
         )
 
-        # Build exclusion mask (HUD + self torso/armor + mobs + other players + prone dead corpses)
+        # Build exclusion mask (HUD + above horizon + self torso/armor + mobs + other players + prone dead corpses)
         hud_pf = build_playfield_hud_mask(fw, fh, pf_rect, hud_fixed_pixel_ui=self.hud_fixed_pixel_ui)
         sx0, sy0 = ox - pf_rect[0], oy - pf_rect[1]
         valid = hud_pf[sy0 : sy0 + (ey - oy), sx0 : sx0 + (ex - ox)].copy()
+
+        # Horizon guard: reject sky/mountain/hill false positives above the ground horizon (y < 230 at 1024x768)
+        horizon_y = (
+            self.horizon_min_y_px
+            if self.hud_fixed_pixel_ui
+            else int(round(self.horizon_min_y_px * (fh / 768.0)))
+        )
+        hz_local = max(0, min(valid.shape[0], horizon_y - oy))
+        if hz_local > 0:
+            valid[:hz_local, :] = 0
 
         # Mask self character torso/armor (keeps ground directly below feet open for close drops!)
         self_px = int(round(fw * self.player_center_norm[0]))
@@ -223,6 +291,9 @@ class GoldBagDetector:
             ax2, ay2 = min(valid.shape[1], cx2 + 8 - ox), min(valid.shape[0], cy2 + 8 - oy)
             if ax2 > ax1 and ay2 > ay1:
                 valid[ay1:ay2, ax1:ax2] = 0
+
+        # Guard: ignore yellow/gold armor gleam directly underneath any green or red HP bar strip (up to +110px)
+        self._mask_below_hp_bar_strips(hsv, valid, scale_x, scale_y)
 
         v_ch = hsv[:, :, 2]
         raw_hits: list[tuple[int, int, int, int, float]] = []

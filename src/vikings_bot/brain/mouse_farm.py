@@ -38,6 +38,8 @@ class MouseFarmController:
         self.loot_e_interval_sec: float = float(f.get("loot_e_interval_sec", 0.14))
         self.loot_click_interval_sec: float = float(f.get("loot_click_interval_sec", 0.42))
         self.loot_max_local_dist_px: float = float(f.get("loot_max_local_dist_px", 360.0))
+        self.loot_entry_close_dist_px: float = float(f.get("loot_entry_close_dist_px", 220.0))
+        self.loot_entry_kill_window_sec: float = float(f.get("loot_entry_kill_window_sec", 4.0))
         self.camera_sweep_drag_px: int = int(f.get("camera_sweep_drag_px", 185))
         self.camera_sweep_interval_sec: float = float(f.get("camera_sweep_interval_sec", 0.85))
 
@@ -123,11 +125,35 @@ class MouseFarmController:
             )
         ]
 
+    def has_recent_kill(self, world: WorldState, now: float) -> bool:
+        """Return True if a monster kill was recorded within the recent loot entry window (default 4.0s)."""
+        return (
+            world.last_kill_ts is not None
+            and 0.0 <= (now - world.last_kill_ts) <= self.loot_entry_kill_window_sec
+        )
+
+    def should_enter_loot(self, world: WorldState, now: float) -> bool:
+        """Gate PHASE: LOOT entry to prevent detouring to distant yellow artifacts without a recent kill.
+
+        Allows entering LOOT ONLY if:
+        - `last_kill_pos` was recorded within the last 4.0s (`has_recent_kill`), OR
+        - at least one safe Gold Bag candidate is close to player feet (`<= 220 px`).
+        """
+        recent_kill = self.has_recent_kill(world, now)
+        if world.pending_loot and recent_kill:
+            return True
+        local_loot = self.select_local_loot(world)
+        if not local_loot:
+            return False
+        if recent_kill:
+            return True
+        return any(bag.dist_to_player_px <= self.loot_entry_close_dist_px for bag in local_loot)
+
     def select_local_loot(self, world: WorldState) -> list[LootDrop]:
         """Return safe Gold Bag drops within local pickup radius, keeping last_kill_pos priority first."""
         fw = max(1, world.snapshot.frame_width)
         scale_x = fw / 1920.0
-        lim = self.loot_max_local_dist_px * max(0.60, scale_x)
+        lim = self.loot_max_local_dist_px * max(0.85, scale_x)
         out: list[LootDrop] = []
         for bag in world.loot:
             if bag.dist_to_player_px > lim and not bag.near_last_kill:

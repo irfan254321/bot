@@ -342,3 +342,42 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
         fsm3.step(tracker3.update(_snap(20.2 + i * 0.05, x=1075, y=2628, fw=1024, fh=768, hp=0.0)))
     assert fsm3.state == BotState.DEAD_RESPAWN
     assert fsm3.deaths_count == 1
+
+
+def test_loot_entry_gate_blocks_far_drops_without_kill_and_24px_grid_caps_jittery_bag():
+    """Verify LOOT only triggers within 4.0s of kill or <=220px from feet, and 24x24px grid blacklists jittery bags on try #3."""
+    cfg = load_config("config/default.yaml")
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0)
+
+    # 1. No kill yet + faraway yellow drop (dist=290px > 220px) -> MUST stay in SEARCH_MOB (never detour to LOOT!)
+    far_drop = _bag(cx=820, cy=480, dist=290.0)
+    fsm.step(tracker.update(_snap(1.5, fw=1024, fh=768, loot=(far_drop,))))
+    assert fsm.state == BotState.SEARCH_MOB
+
+    # 2. Record a kill -> within 4.0s window, even a 290px drop IS allowed to enter LOOT!
+    tracker.record_kill_pos((820, 480), now=2.0)
+    fsm.step(tracker.update(_snap(4.5, fw=1024, fh=768, loot=(far_drop,))))
+    assert fsm.state == BotState.LOOT
+
+    # 3. After > 4.0s with no kill, close bag (<=220px) enters LOOT and jitters by +-4px across 3 attempts ->
+    #    quantized to 24x24px grid so 3rd attempt ALWAYS triggers blacklist_point!
+    tracker2 = WorldStateTracker()
+    fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
+    fsm2.resume(10.0)
+    jitter_bags = [
+        _bag(cx=510, cy=500, dist=180.0),
+        _bag(cx=516, cy=505, dist=182.0),
+        _bag(cx=513, cy=503, dist=181.0),
+    ]
+    fsm2.step(tracker2.update(_snap(10.5, fw=1024, fh=768, loot=(jitter_bags[0],))))
+    assert fsm2.state == BotState.LOOT
+
+    blacklisted = None
+    for idx, ts in enumerate((11.0, 11.6, 12.2)):
+        fsm2.step(tracker2.update(_snap(ts, fw=1024, fh=768, loot=(jitter_bags[idx],))))
+        if fsm2.last_blacklisted_loot is not None:
+            blacklisted = fsm2.last_blacklisted_loot
+    assert blacklisted is not None
+    assert fsm2.state == BotState.SEARCH_MOB

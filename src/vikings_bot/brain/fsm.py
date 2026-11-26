@@ -52,6 +52,7 @@ class FarmingFSM:
         self.combat_zero_drop_kill_sec: float = float(f.get("combat_zero_drop_kill_sec", 1.6))
         self.loot_clear_confirm_frames: int = max(2, int(f.get("loot_clear_confirm_frames", 4)))
         self.loot_max_attempts_per_bag: int = max(1, int(f.get("loot_max_attempts_per_bag", 3)))
+        self.loot_attempt_grid_px: int = max(8, int(f.get("loot_attempt_grid_px", 24)))
         self.loot_max_total_sec: float = float(f.get("loot_max_total_sec", 18.0))
         self.last_kill_loot_radius_px: float = float(p.get("last_kill_loot_radius_px", 140.0))
         self.last_kill_loot_window_sec: float = float(p.get("last_kill_loot_window_sec", 0.80))
@@ -112,9 +113,8 @@ class FarmingFSM:
         self._combat_loot_streak: int = 0
         self._aborted_mobs: list[tuple[float, float, float]] = []  # (expire_ts, cx, cy)
 
-        # LOOT_PICKUP per-bag retry cap (max 3 attempts -> blacklist 120s)
-        self._loot_bag_xy: tuple[float, float] | None = None
-        self._loot_bag_attempts: int = 0
+        # LOOT_PICKUP per-bag retry cap on 24x24px grid (max 3 attempts -> blacklist 120s)
+        self._loot_grid_attempts: dict[tuple[int, int], int] = {}
         self._loot_prev_count: int = 0
         self._loot_clear_streak: int = 0
         self.last_blacklisted_loot: tuple[float, float] | None = None
@@ -197,8 +197,7 @@ class FarmingFSM:
             self._combat_first_hp_checked = False
             self.tracker.notify_movement_stopped()
         elif new_state == BotState.LOOT:
-            self._loot_bag_xy = None
-            self._loot_bag_attempts = 0
+            self._loot_grid_attempts.clear()
             self._loot_prev_count = 0
             self._loot_clear_streak = 0
             self.tracker.clear_target_lock()
@@ -575,9 +574,11 @@ class FarmingFSM:
         fw = max(1, world.snapshot.frame_width)
         scale_x = fw / 1920.0
 
-        # Priority 1: Pick up pending kill loot or nearby Gold Bags first
-        local_loot = self.farm.select_local_loot(world)
-        if self.mode in (BotMode.FULL, BotMode.LOOT) and (world.pending_loot or local_loot):
+        # Priority 1: Enter PHASE: LOOT ONLY after a recent kill (<= 4.0s) or for a bag close to feet (<= 220px)
+        if self.mode == BotMode.LOOT and (world.pending_loot or self.farm.select_local_loot(world)):
+            self.transition(BotState.LOOT, now, "gold_bags_waiting")
+            return []
+        if self.mode == BotMode.FULL and self.farm.should_enter_loot(world, now):
             self.transition(BotState.LOOT, now, "gold_bags_waiting")
             return []
 
@@ -745,15 +746,13 @@ class FarmingFSM:
         return []
 
     def _handle_loot(self, world: WorldState, now: float, elapsed: float) -> list[ActionIntent]:
-        """Pick up Gold Bags via E / click with max 3 attempts per bag coord -> blacklist 120s (Refinement #2)."""
-        scale_x = max(0.55, world.snapshot.frame_width / 1920.0)
+        """Pick up Gold Bags via E / click with max 3 attempts per 24x24px grid cell -> blacklist 120s."""
         local_bags = self.farm.select_local_loot(world)
         bag_count = len(local_bags)
 
-        # Reset attempt counter on real pickup progress
+        # Reset attempt counters on real pickup progress
         if world.snapshot.pickup_log_changed or (self._loot_prev_count > 0 and bag_count < self._loot_prev_count):
-            self._loot_bag_attempts = 0
-            self._loot_bag_xy = None
+            self._loot_grid_attempts.clear()
         self._loot_prev_count = bag_count
 
         if bag_count == 0 and not world.snapshot.pickup_log_changed:
@@ -777,26 +776,29 @@ class FarmingFSM:
         intents, target_bag, act_kind = self.farm.build_loot_step(world, now)
         if target_bag is not None and act_kind in ("tap_e", "click_bag"):
             bx, by = float(target_bag.click_x), float(target_bag.click_y)
-            if (
-                self._loot_bag_xy is not None
-                and math.hypot(bx - self._loot_bag_xy[0], by - self._loot_bag_xy[1]) <= 42.0 * scale_x
-            ):
-                self._loot_bag_attempts += 1
-            else:
-                self._loot_bag_xy = (bx, by)
-                self._loot_bag_attempts = 1
+            grid = float(self.loot_attempt_grid_px)
+            cell = (int(round(bx / grid)), int(round(by / grid)))
+            # Merge into an existing adjacent 24x24px cell if jitter straddles a grid boundary
+            matched_cell = cell
+            if cell not in self._loot_grid_attempts:
+                for prev_cell in self._loot_grid_attempts:
+                    if abs(prev_cell[0] - cell[0]) <= 1 and abs(prev_cell[1] - cell[1]) <= 1:
+                        matched_cell = prev_cell
+                        break
+            attempts = self._loot_grid_attempts.get(matched_cell, 0) + 1
+            self._loot_grid_attempts[matched_cell] = attempts
 
-            # Refinement #2: max 3 pickup attempts per bag coord -> blacklist_point(x, y, ttl=120s)!
-            if self._loot_bag_attempts >= self.loot_max_attempts_per_bag:
+            # Refinement #2 + 24x24px grid rounding: max 3 attempts per quantized grid cell -> blacklist_point(120s)!
+            if attempts >= self.loot_max_attempts_per_bag:
                 logger.info(
-                    "Loot retry cap (%dx) at (%.0f, %.0f) -> blacklisting 120s so repair/farming never stalls",
-                    self._loot_bag_attempts,
+                    "Loot retry cap (%dx) at (%.0f, %.0f) grid=%s -> blacklisting 120s so repair/farming never stalls",
+                    attempts,
                     bx,
                     by,
+                    matched_cell,
                 )
                 self.last_blacklisted_loot = (bx, by)
-                self._loot_bag_attempts = 0
-                self._loot_bag_xy = None
+                self._loot_grid_attempts.pop(matched_cell, None)
                 if bag_count <= 1 and self.mode == BotMode.FULL:
                     self.tracker.mark_loot_done()
                     self.transition(BotState.SEARCH_MOB, now, "loot_bag_blacklisted_max_3")

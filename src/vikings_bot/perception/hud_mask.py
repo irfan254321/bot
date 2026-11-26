@@ -26,12 +26,14 @@ def get_static_hud_rects(
     fh = max(1, int(frame_h))
     if hud_fixed_pixel_ui:
         # RYL renders HUD elements at fixed 1:1 pixel sizes at 1024x768 VMware
+        # Calibrated directly from vm_1024_raw.jpg (1024x768):
         return [
-            (0, 0, min(fw, 132), min(fh, 152)),  # minimap + coords
-            (0, 140, min(fw, 200), min(fh, 255)),  # party panel
-            (0, max(0, fh - 415), min(fw, 52), fh),  # left vertical skill bar
-            (0, max(0, fh - 96), min(fw, 265), fh),  # bottom-left HP/MP/EA panel
-            (max(0, fw - 332), max(0, fh - 245), fw, fh),  # bottom-right chat window
+            (0, 0, min(fw, 120), min(fh, 148)),  # minimap + coords ('600, 1813')
+            (0, min(fh, 148), min(fw, 115), min(fh, 235)),  # upper-left party panel
+            (0, min(fh, 338), min(fw, 44), min(fh, 678)),  # left vertical skill bar
+            (0, min(fh, 676), min(fw, 238), fh),  # bottom-left HP/MP/EA panel
+            (min(fw, 442), min(fh, 518), fw, fh),  # bottom-right chat window + Public/Shout/Trade/Party/Guild tabs
+            (min(fw, 945), min(fh, 370), fw, min(fh, 410)),  # right Ak'Kan / Human faction counter
         ]
     return [
         (0, 0, int(round(fw * 0.070)), int(round(fh * 0.140))),  # minimap + coords

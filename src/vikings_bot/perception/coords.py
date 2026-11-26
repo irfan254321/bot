@@ -296,10 +296,8 @@ class CoordReader:
                 best_label = label
         return (best_label, best_score)
 
-    def read_crop(self, crop_bgr: np.ndarray) -> CoordReading | None:
-        if not self.templates:
-            return None
-        glyphs = segment_glyphs(crop_bgr)
+    def _read_crop_with_threshold(self, crop_bgr: np.ndarray, min_val: int) -> CoordReading | None:
+        glyphs = segment_glyphs(crop_bgr, _min_val=min_val)
         if len(glyphs) < 3:
             return None
 
@@ -334,6 +332,16 @@ class CoordReader:
             return None
         return CoordReading(x=int(left_str), y=int(right_str), confidence=conf, raw_text=raw)
 
+    def read_crop(self, crop_bgr: np.ndarray) -> CoordReading | None:
+        if not self.templates:
+            return None
+        # Try crisp 1080p threshold first, then gracefully step down for dimmer VMware 1024x768 HUD text
+        for min_val in (130, 110, 88):
+            res = self._read_crop_with_threshold(crop_bgr, min_val=min_val)
+            if res is not None:
+                return res
+        return None
+
     @staticmethod
     def _is_plausible_world_coord(reading: CoordReading | None) -> bool:
         """Reject bogus 1-2 digit minimap noise (e.g. '11,14'); RYL world coords are 3-4 digits."""
@@ -350,16 +358,21 @@ class CoordReader:
             return self.read_crop(crop)
 
         # VMware 1024x768 fixed-pixel UI: RYL renders the minimap & coord strip at native 1:1 pixels
-        # anchored to top-left (x=4..116, y=118..142), NOT scaled by 1024/1920!
+        # anchored to top-left (exact vm_1024_raw.jpg box: x=5..96, y=122..143; widened fallback x=4..116, y=118..142).
         # Checking crop_norm first on 1024x768 lands inside the minimap (y=85..100) and causes bogus '(11,14)'.
-        fx1 = max(0, int(round(self.roi[0] * 1920.0)) - 2)
-        fy1 = max(0, int(round(self.roi[1] * 1080.0)) - 2)
-        fx2 = min(fw, max(fx1 + 40, int(round(self.roi[2] * 1920.0)) + 4))
-        fy2 = min(fh, max(fy1 + 14, int(round(self.roi[3] * 1080.0)) + 2))
-        if (fy2 - fy1) >= 12 and (fx2 - fx1) >= 40:
-            res_fixed = self.read_crop(frame.image_bgr[fy1:fy2, fx1:fx2])
-            if self._is_plausible_world_coord(res_fixed):
-                return res_fixed
+        for fx1, fy1, fx2, fy2 in (
+            (5, 122, min(fw, 96), min(fh, 143)),
+            (
+                max(0, int(round(self.roi[0] * 1920.0)) - 2),
+                max(0, int(round(self.roi[1] * 1080.0)) - 2),
+                min(fw, max(44, int(round(self.roi[2] * 1920.0)) + 4)),
+                min(fh, max(136, int(round(self.roi[3] * 1080.0)) + 2)),
+            ),
+        ):
+            if (fy2 - fy1) >= 12 and (fx2 - fx1) >= 40:
+                res_fixed = self.read_crop(frame.image_bgr[fy1:fy2, fx1:fx2])
+                if self._is_plausible_world_coord(res_fixed):
+                    return res_fixed
 
         # Adaptive dark coordinate-strip locator (handles slight VMware window border / titlebar shifts
         # while covering full 3-4 digit X,Y like '610,1841' or '1075,2631')

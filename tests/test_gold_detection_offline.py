@@ -42,11 +42,19 @@ def test_hud_masking_and_foot_point_vs_torso_click_projection():
     # Static HUD masks cover minimap, party, skill bar, HP/MP, chat for both 1080p and 1024x768 VM
     for fw, fh, fixed in ((1920, 1080, False), (1024, 768, True)):
         rects = get_static_hud_rects(fw, fh, hud_fixed_pixel_ui=fixed)
-        assert len(rects) == 5
+        assert len(rects) >= 5
         mask = build_playfield_hud_mask(fw, fh, (0, 0, fw, fh), hud_fixed_pixel_ui=fixed)
         assert mask[10, 10] == 0  # minimap masked
         assert mask[fh - 20, fw - 20] == 0  # chat masked
         assert mask[fh // 2, fw // 2] == 255  # playfield center open
+        if fixed and fw == 1024 and fh == 768:
+            # Chat tabs ('Public | Shout | Trade | Party | Guild') at x>=442, y>=518 must be 100% masked!
+            assert mask[558, 530] == 0
+            assert mask[518, 442] == 0
+            # Left skill bar, bottom-left HP/MP panel, and right Ak'Kan/Human faction indicator
+            assert mask[500, 20] == 0
+            assert mask[700, 120] == 0
+            assert mask[390, 980] == 0
 
     # Upper-torso click point is at y1 + 0.35*(y2-y1), foot point is at (cx, y2)
     body, (cx, cy), (fx, fy) = GoldRustlerDetector.project_body_from_nameplate(
@@ -177,3 +185,64 @@ def test_pure_opencv_vm_cpu_latency_budget(cfg):
         pipe_vm.analyze(FramePacket(image_bgr=img, timestamp=2.0 + i * 0.05))
     avg_ms = ((time.perf_counter() - t0) * 1000.0) / runs
     assert avg_ms < 25.0, f"Pure OpenCV VM 1024x768 average latency too slow: {avg_ms:.1f}ms"
+
+
+def test_dusk_gold_rustler_nameplate_and_hp_bar_below_loot_guard():
+    """Verify dusk/night Gold Rustler nameplate detection & HP-bar below-strip (+110px) loot guard on 1024x768."""
+    cfg_vm = load_config("config/default.yaml")
+    cfg_vm.perception["hud_fixed_pixel_ui"] = True
+    pipe_vm = PerceptionPipeline(cfg_vm)
+
+    # Brownish dusk playfield background (1024x768)
+    hsv_bg = np.zeros((768, 1024, 3), dtype=np.uint8)
+    hsv_bg[:, :] = (18, 85, 58)
+    bgr = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+
+    # 1. Dimmed dusk/night magenta Gold Rustler nameplate at (340, 260, 58, 9) with low S=26, V=94
+    np_patch = np.full((9, 58, 3), (144, 26, 94), dtype=np.uint8)
+    np_patch[:, ::2] = (18, 85, 45)
+    bgr[260:269, 340:398] = cv2.cvtColor(np_patch, cv2.COLOR_HSV2BGR)
+    mobs = pipe_vm.mobs.detect(FramePacket(image_bgr=bgr, timestamp=1.0))
+    assert any(320 <= m.nameplate_bbox[0] <= 360 and 250 <= m.nameplate_bbox[1] <= 275 for m in mobs), (
+        f"Dusk/night Gold Rustler nameplate missed: {mobs}"
+    )
+
+    # 2. HP-bar below-strip loot guard: green HP bar & red HP bar with golden gleam +55px underneath (no mob bbox passed!)
+    bgr2 = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    # Green HP bar at (260, 240, 52, 4) + golden chest gleam at (280, 295)
+    bgr2[240:244, 260:312] = cv2.cvtColor(np.full((4, 52, 3), (62, 220, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr2[295:309, 276:288] = cv2.cvtColor(np.full((14, 12, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr2[291:296, 279:285] = cv2.cvtColor(np.full((5, 6, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+
+    # Red HP bar at (620, 240, 52, 4) + golden chest gleam at (640, 300)
+    bgr2[240:244, 620:672] = cv2.cvtColor(np.full((4, 52, 3), (2, 220, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr2[300:314, 636:648] = cv2.cvtColor(np.full((14, 12, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr2[296:301, 639:645] = cv2.cvtColor(np.full((5, 6, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+
+    # Genuine isolated Gold Bag far from any HP bar at (420, 360) (1024x768 scale: 4x5 sparkle + dark pouch)
+    bgr2[364:376, 416:426] = cv2.cvtColor(np.full((12, 10, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr2[360:364, 419:424] = cv2.cvtColor(np.full((4, 5, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+
+    drops, _ = pipe_vm.loot.detect(FramePacket(image_bgr=bgr2, timestamp=2.0), mobs=())
+    assert len(drops) == 1, f"Expected only the 1 isolated Gold Bag (both HP-bar gleams masked), got {drops}"
+    assert abs(drops[0].click_x - 421) <= 12 and abs(drops[0].click_y - 369) <= 14
+
+
+def test_vm_1024_raw_night_screenshot_regression():
+    """Regression test on real VMware 1024x768 night screenshot (vm_1024_raw.jpg): POS, HP/MP, 3 mobs, 0 FP loot."""
+    fixture = Path(__file__).parent / "fixtures" / "vm_1024_raw.jpg"
+    assert fixture.exists(), f"Missing regression fixture: {fixture}"
+    img = cv2.imread(str(fixture), cv2.IMREAD_COLOR)
+    assert img is not None and img.shape == (768, 1024, 3)
+
+    cfg_vm = load_config("config/default.yaml")
+    cfg_vm.perception["hud_fixed_pixel_ui"] = True
+    pipe_vm = PerceptionPipeline(cfg_vm)
+
+    snap = pipe_vm.analyze(FramePacket(image_bgr=img, timestamp=1.0, source_name="vm_1024_raw.jpg"))
+    assert snap.coords is not None, "Failed to read minimap coordinates on vm_1024_raw.jpg"
+    assert (snap.coords.x, snap.coords.y) == (600, 1813), f"Expected POS (600, 1813), got {snap.coords}"
+    assert snap.hp_ratio > 0.90, f"Expected HP > 90% on 5700/5700 bar, got {snap.hp_ratio:.2%}"
+    assert snap.mp_ratio > 0.90, f"Expected MP > 90% on 6200/6200 bar, got {snap.mp_ratio:.2%}"
+    assert len(snap.mobs) >= 3, f"Expected >= 3 night Gold Rustlers on vm_1024_raw.jpg, got {len(snap.mobs)}: {snap.mobs}"
+    assert len(snap.loot) == 0, f"Expected 0 false-positive Gold Bags on vm_1024_raw.jpg, got {snap.loot}"

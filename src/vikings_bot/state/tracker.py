@@ -75,6 +75,7 @@ class WorldStateTracker:
             lock_dist_threshold_px=lock_dist_threshold_px,
         )
         self.last_kill_pos: tuple[int, int] | None = None
+        self.last_kill_ts: float | None = None
         self.last_kill_until: float = 0.0
         self.last_kill_radius_px: float = 140.0
         self._pending_loot: bool = False
@@ -97,6 +98,7 @@ class WorldStateTracker:
         if pos is None:
             return
         self.last_kill_pos = (int(pos[0]), int(pos[1]))
+        self.last_kill_ts = float(now)
         self.last_kill_until = float(now) + max(0.05, float(window_sec))
         self.last_kill_radius_px = float(radius_px)
 
@@ -105,6 +107,9 @@ class WorldStateTracker:
 
     def mark_loot_done(self) -> None:
         self._pending_loot = False
+        self.last_kill_pos = None
+        self.last_kill_ts = None
+        self.last_kill_until = 0.0
         self._consecutive_stuck = 0
 
     def notify_kill(self) -> None:
@@ -163,6 +168,9 @@ class WorldStateTracker:
         self.clear_target_lock()
         self.notify_movement_stopped()
         self._pending_loot = False
+        self.last_kill_pos = None
+        self.last_kill_ts = None
+        self.last_kill_until = 0.0
         self._consecutive_stuck = 0
         self._zero_hp_streak = 0
         self._last_nonzero_hp_ratio = 1.0
@@ -333,6 +341,7 @@ class WorldStateTracker:
                 (matched_lock is not None and matched_lock.has_hp_bar) or final_snap.target_hp_visible
             ),
             last_kill_pos=kill_pos_active,
+            last_kill_ts=self.last_kill_ts,
             last_kill_until=self.last_kill_until,
             pending_loot=self._pending_loot,
             is_dead=confirmed_dead,

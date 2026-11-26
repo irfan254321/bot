@@ -46,8 +46,9 @@ class HudBarReader:
         """Convert a 1920x1080-calibrated bottom-left ROI into 1:1 fixed pixels anchored at (0, frame_h)."""
         ref_x1 = int(round(roi_norm[0] * 1920.0))
         ref_x2 = int(round(roi_norm[2] * 1920.0))
-        top_from_bot = int(round((1.0 - roi_norm[1]) * 1080.0))
-        bot_from_bot = int(round((1.0 - roi_norm[3]) * 1080.0))
+        # Calibrated from vm_1024_raw.jpg (HP red: x=18..98, y=693..708; MP blue: x=120..199, y=695..707)
+        top_from_bot = int(round((1.0 - roi_norm[1]) * 1080.0)) + 3
+        bot_from_bot = max(40, int(round((1.0 - roi_norm[3]) * 1080.0)) + 1)
         x1 = max(0, min(frame_w - 1, ref_x1))
         x2 = max(x1 + 1, min(frame_w, ref_x2))
         y1 = max(0, min(frame_h - 1, frame_h - top_from_bot))

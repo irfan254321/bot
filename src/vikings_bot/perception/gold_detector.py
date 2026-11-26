@@ -34,13 +34,15 @@ class GoldRustlerDetector:
         self.ks_melee_radius_px = float(p.get("ks_melee_radius_px", 75.0))
         self.ks_hp_damaged_threshold = float(p.get("ks_hp_damaged_threshold", 0.98))
 
-        self.np_lo = np.array(p.get("gold_nameplate_hsv_lower", [146, 30, 112]), dtype=np.uint8)
-        self.np_hi = np.array(p.get("gold_nameplate_hsv_upper", [179, 170, 255]), dtype=np.uint8)
-        self.np_min_w = int(p.get("gold_nameplate_min_width", 22))
+        self.np_lo = np.array(p.get("gold_nameplate_hsv_lower", [140, 20, 58]), dtype=np.uint8)
+        self.np_hi = np.array(p.get("gold_nameplate_hsv_upper", [179, 215, 255]), dtype=np.uint8)
+        self.np_wrap_lo = np.array(p.get("gold_nameplate_wrap_hsv_lower", [0, 26, 58]), dtype=np.uint8)
+        self.np_wrap_hi = np.array(p.get("gold_nameplate_wrap_hsv_upper", [6, 95, 110]), dtype=np.uint8)
+        self.np_min_w = int(p.get("gold_nameplate_min_width", 18))
         self.np_max_w = int(p.get("gold_nameplate_max_width", 160))
         self.np_min_h = int(p.get("gold_nameplate_min_height", 5))
         self.np_max_h = int(p.get("gold_nameplate_max_height", 28))
-        self.np_min_px = int(p.get("gold_nameplate_min_pixels", 12))
+        self.np_min_px = int(p.get("gold_nameplate_min_pixels", 10))
 
         self.hp_lo = np.array(p.get("mob_hp_bar_hsv_lower", [48, 110, 105]), dtype=np.uint8)
         self.hp_hi = np.array(p.get("mob_hp_bar_hsv_upper", [76, 255, 255]), dtype=np.uint8)
@@ -305,9 +307,10 @@ class GoldRustlerDetector:
         sx = 1.0 if self.hud_fixed_pixel_ui else (fw / 1920.0)
         sy = 1.0 if self.hud_fixed_pixel_ui else (fh / 1080.0)
 
-        # 1. Segment pink/magenta Gold Rustler nameplates
-        pink = cv2.inRange(pf_hsv, self.np_lo, self.np_hi)
-        pink = cv2.bitwise_and(pink, hud_mask)
+        # 1. Segment pink/magenta Gold Rustler nameplates (including dark night rose-magenta H=0..6 wraparound)
+        pink_main = cv2.inRange(pf_hsv, self.np_lo, self.np_hi)
+        pink_wrap = cv2.inRange(pf_hsv, self.np_wrap_lo, self.np_wrap_hi)
+        pink = cv2.bitwise_and(cv2.bitwise_or(pink_main, pink_wrap), hud_mask)
         min_w = max(14, int(round(self.np_min_w * sx)))
         max_w = int(round(self.np_max_w * sx))
         min_h = max(4, int(round(self.np_min_h * sy)))
@@ -331,6 +334,10 @@ class GoldRustlerDetector:
                     continue
                 raw_px = cv2.countNonZero(pink[y : y + h, x : x + w])
                 if raw_px < min_px:
+                    continue
+                # Require >=30% true magenta pixels (H>=140) so pure brown/red dirt or hills never match
+                main_px = cv2.countNonZero(pink_main[y : y + h, x : x + w])
+                if main_px < max(3, int(raw_px * 0.30)):
                     continue
                 raw_nps.append((ox + x, oy + y, w, h, raw_px))
 
