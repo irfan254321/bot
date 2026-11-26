@@ -237,11 +237,13 @@ repair:
 safety:
   kill_switch: "F10"
   pause_toggle: "F9"
+  dataset_capture_key: "F8"
   snapshot_key: "F7"
   overlay_toggle: "F6"
   audio_cues: true
   death_zero_hp_frames: 12
   max_consecutive_stuck: 6
+  dataset_raw_dir: "dataset/raw_images"
   snapshots_dir: "logs/snapshots"
   max_snapshots: 40
   overlay_scale: 0.5

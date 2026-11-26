@@ -115,6 +115,45 @@ class BotEngine:
             trace_path=config.resolve_path("logs/latest_trace.jsonl"),
             frames_dir=config.resolve_path("logs/trace_frames"),
         )
+        self._last_saved_notice: str = ""
+        self._last_saved_notice_until: float = 0.0
+
+    def save_clean_dataset_frame(
+        self,
+        frame: FramePacket | None,
+        *,
+        out_dir_override: Path | None = None,
+    ) -> tuple[Path | None, int]:
+        """Save raw un-annotated 1024x768 frame to dataset/raw_images/ryl_1024_<timestamp_ms>.jpg (JPEG 98)."""
+        if frame is None or frame.image_bgr is None or frame.image_bgr.size == 0:
+            logger.warning("F8 dataset capture skipped: no raw frame available yet.")
+            return (None, 0)
+        import cv2
+
+        out_dir = (
+            out_dir_override
+            if out_dir_override is not None
+            else self.config.resolve_path(str(self.config.safety.get("dataset_raw_dir", "dataset/raw_images")))
+        )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts_ms = int(time.time() * 1000)
+        out_path = out_dir / f"ryl_1024_{ts_ms}.jpg"
+        while out_path.exists():
+            ts_ms += 1
+            out_path = out_dir / f"ryl_1024_{ts_ms}.jpg"
+
+        img = frame.image_bgr
+        ok = cv2.imwrite(str(out_path), img, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+        if not ok:
+            logger.warning("F8 dataset capture failed to write %s", out_path)
+            return (None, 0)
+        total_count = sum(1 for _ in out_dir.glob("ryl_1024_*.jpg"))
+        notice = f"SAVED_FRAME ({total_count})"
+        self._last_saved_notice = notice
+        self._last_saved_notice_until = time.monotonic() + 2.5
+        logger.info("%s -> %s (%dx%d)", notice, out_path, frame.width, frame.height)
+        print(f"[F8] {notice} -> {out_path}", flush=True)
+        return (out_path, total_count)
 
     def request_stop(self) -> None:
         self._stop_event.set()
@@ -176,7 +215,7 @@ class BotEngine:
 
         logger.info(
             "Starting Vikings Bot v2 (%s | input=%s | cap=%s | admin=%s | route=%s). "
-            "Hotkeys: %s=Pause/Resume, %s=Kill Switch, %s=Overlay.",
+            "Hotkeys: %s=Pause/Resume, %s=Kill Switch, %s=Dataset Frame, %s=Overlay.",
             "LIVE INPUT" if self.live_input else "DRY-RUN",
             in_label,
             cap_backend,
@@ -184,6 +223,7 @@ class BotEngine:
             self.config.active_route.name,
             self.config.safety.get("pause_toggle", "F9"),
             self.config.safety.get("kill_switch", "F10"),
+            self.config.safety.get("dataset_capture_key", "F8"),
             self.config.safety.get("overlay_toggle", "F6"),
         )
 
@@ -228,6 +268,8 @@ class BotEngine:
                         self._toggle_overlay_event.clear()
                     if chk_p.toggle_overlay or gui_ov_p:
                         self._handle_overlay_toggle(safety)
+                    if chk_p.dataset_capture_requested:
+                        self.save_clean_dataset_frame(capture.latest_frame())
                     gui_toggle_p = self._toggle_pause_event.is_set()
                     if gui_toggle_p:
                         self._toggle_pause_event.clear()
@@ -262,7 +304,11 @@ class BotEngine:
                                             config=self.config,
                                             loop_hz=0.0,
                                             vision_ms=0.0,
-                                            action_summary="PAUSED (press F9)",
+                                            action_summary=(
+                                                self._last_saved_notice
+                                                if now < self._last_saved_notice_until
+                                                else "PAUSED (press F9)"
+                                            ),
                                             backend=self.pipeline.active_backend_desc,
                                             input_mode=in_label,
                                             game_focused=focused_p,
@@ -400,6 +446,8 @@ class BotEngine:
                     self._toggle_overlay_event.clear()
                 if chk.toggle_overlay or gui_ov:
                     self._handle_overlay_toggle(safety)
+                if chk.dataset_capture_requested:
+                    self.save_clean_dataset_frame(frame)
 
                 if chk.force_pause_reason is not None and active:
                     self.executor.release_all()
@@ -562,7 +610,11 @@ class BotEngine:
                             config=self.config,
                             loop_hz=fps_val,
                             vision_ms=float(snapshot.timings_ms.get("total", 0.0)),
-                            action_summary=act_summary or world.last_action_summary,
+                            action_summary=(
+                                self._last_saved_notice
+                                if now < self._last_saved_notice_until
+                                else (act_summary or world.last_action_summary)
+                            ),
                             backend=self.pipeline.active_backend_desc,
                             input_mode=in_label,
                             game_focused=True,

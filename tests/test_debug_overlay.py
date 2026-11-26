@@ -248,6 +248,8 @@ def test_self_exclusion_boxes_scale_for_1080p_and_1024x768() -> None:
 def test_safety_monitor_f6_overlay_hotkey_and_engine_toggle_and_cli_flag() -> None:
     cfg = load_config("config/default.yaml")
     assert str(cfg.safety.get("overlay_toggle", "")).upper() == "F6"
+    assert str(cfg.safety.get("dataset_capture_key", "")).upper() == "F8"
+    assert str(cfg.safety.get("dataset_raw_dir", "")) == "dataset/raw_images"
 
     parser = build_parser()
     ns_default = parser.parse_args(["run", "--dry-run"])
@@ -349,3 +351,35 @@ def test_transparent_overlay_real_tk_attached_lifecycle_and_clickthrough() -> No
         except Exception:
             pass
         root.destroy()
+
+
+def test_f8_clean_dataset_capture_hotkey_and_saved_frame_notice(tmp_path) -> None:
+    """Verify F8 hotkey sets dataset_capture_requested and saves clean raw 1024x768 JPEG 98 with SAVED_FRAME(N)."""
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+
+    cfg = load_config("config/default.yaml")
+    safety = SafetyMonitor(cfg, enable_hotkeys=False)
+
+    class _FakeF8Poller:
+        def poll(self) -> set[str]:
+            return {"dataset_capture"}
+
+    safety.hotkeys = _FakeF8Poller()  # type: ignore[assignment]
+    chk = safety.check(None, is_running_active=False)
+    assert chk.dataset_capture_requested is True
+
+    engine = BotEngine(cfg, mode=BotMode.FULL, live_input=False)
+    raw_img = np.full((768, 1024, 3), (40, 95, 55), dtype=np.uint8)
+    pkt = FramePacket(image_bgr=raw_img, timestamp=1.0, source_name="vm_1024_clean")
+
+    p1, cnt1 = engine.save_clean_dataset_frame(pkt, out_dir_override=tmp_path)
+    assert p1 is not None and p1.exists() and p1.name.startswith("ryl_1024_") and p1.suffix == ".jpg"
+    assert cnt1 == 1 and engine._last_saved_notice == "SAVED_FRAME (1)"
+    loaded = cv2.imread(str(p1), cv2.IMREAD_COLOR)
+    assert loaded is not None and loaded.shape == (768, 1024, 3)
+
+    p2, cnt2 = engine.save_clean_dataset_frame(pkt, out_dir_override=tmp_path)
+    assert p2 is not None and p2.exists() and p2 != p1
+    assert cnt2 == 2 and engine._last_saved_notice == "SAVED_FRAME (2)"
