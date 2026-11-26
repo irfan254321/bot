@@ -50,6 +50,7 @@ class PerceptionPipeline:
         self.pitch_sky_ratio_min: float = float(config.farming.get("pitch_sky_ratio_min", 0.12))
         self.pitch_sky_ratio_max: float = float(config.farming.get("pitch_sky_ratio_max", 0.42))
         self.anti_ks_enabled: bool = bool(config.perception.get("anti_ks_enabled", True))
+        self.anti_ks_use_hsv_damage: bool = bool(config.perception.get("anti_ks_use_hsv_damage", False))
         self.disable_gold_bag_detector: bool = bool(config.farming.get("disable_gold_bag_detector", False))
 
     def _estimate_sky_and_horizon(
@@ -344,7 +345,11 @@ class PerceptionPipeline:
                 timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
                 timings["gold_loot"] = 0.0
             elif use_yolo and self.yolo is not None:
-                if shared_pf_hsv is not None and current_state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE, None):
+                if (
+                    self.anti_ks_use_hsv_damage
+                    and shared_pf_hsv is not None
+                    and current_state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE, None)
+                ):
                     external_damage_points = self._detect_external_damage_points(
                         shared_pf_hsv, hud_mask, ox, oy, frame.width, frame.height
                     )
@@ -353,8 +358,11 @@ class PerceptionPipeline:
                         shared_pf_hsv, ox, oy, frame.width, frame.height
                     )
                 if run_mob_detector or run_loot_detector:
-                    ext_zones = tuple((float(zx), float(zy)) for zx, zy in external_combat_zones) + tuple(
-                        (float(dx), float(dy)) for dx, dy in external_damage_points
+                    ext_zones = (
+                        tuple((float(zx), float(zy)) for zx, zy in external_combat_zones)
+                        + tuple((float(dx), float(dy)) for dx, dy in external_damage_points)
+                        if self.anti_ks_use_hsv_damage
+                        else ()
                     )
                     yres = self.yolo.detect(
                         frame.image_bgr,

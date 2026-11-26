@@ -1586,11 +1586,18 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert cfg.perception["yolo_model_path"] == "models/yolo11n_ryl.onnx"
     assert int(cfg.perception["yolo_imgsz"]) == 640
     assert float(cfg.perception["yolo_conf_threshold"]) == 0.45
+    assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.32
     assert float(cfg.perception["yolo_iou_threshold"]) == 0.45
     assert int(cfg.perception["yolo_intra_op_threads"]) == 2
+    assert cfg.perception["anti_ks_use_hsv_damage"] is False
+    assert float(cfg.perception["anti_ks_player_min_conf"]) == 0.50
 
     # Helper: map original 1024x768 xywh -> 640x640 letterbox xywh
+    # Draw bright orange HSV-damage-like patch at (755, 285) right next to safe gold_rustler -> MUST NOT cause KS:DMG!
+    import cv2
+
     blank = np.full((768, 1024, 3), 40, dtype=np.uint8)
+    blank[275:295, 750:764] = cv2.cvtColor(np.full((20, 14, 3), (20, 220, 230), dtype=np.uint8), cv2.COLOR_HSV2BGR)
     blob_chk, r_lb, pad_x, pad_y = letterbox_bgr(blank, new_shape=640)
     assert blob_chk.shape == (1, 3, 640, 640)
     assert blob_chk.dtype == np.float32
@@ -1602,30 +1609,34 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     # Build (1, 8, 8400) mock output tensor
     tensor = np.zeros((1, 8, 8400), dtype=np.float32)
     entries = [
-        # 0: Safe gold_rustler at (760, 290) (far from player at 200, 300 -> dist=560 > 240)
+        # 0: Safe gold_rustler at (760, 290) (far from player at 200, 300 -> dist=560 > 240; orange HSV patch ignored!)
         (CLS_GOLD_RUSTLER, 0.88, 760, 290, 72, 92),
         # 1: Duplicate overlapping gold_rustler at (764, 292) lower conf -> suppressed by NMS!
         (CLS_GOLD_RUSTLER, 0.62, 764, 292, 70, 90),
-        # 2: Low-conf gold_rustler (0.31 < 0.45) -> filtered out!
-        (CLS_GOLD_RUSTLER, 0.31, 680, 260, 60, 80),
+        # 2: Low-conf gold_rustler (0.35 < 0.45) -> filtered out!
+        (CLS_GOLD_RUSTLER, 0.35, 680, 260, 60, 80),
         # 3: gold_rustler inside SELF box (510, 390) -> filtered out!
         (CLS_GOLD_RUSTLER, 0.91, 510, 390, 60, 70),
         # 4: gold_rustler inside chat HUD (600, 620) -> filtered out!
         (CLS_GOLD_RUSTLER, 0.93, 600, 620, 64, 80),
-        # 5: gold_rustler near player (280, 310, dist=80.6 <= 240) -> Anti-KS contested!
+        # 5: gold_rustler near high-conf player (280, 310, dist=80.6 <= 240) -> Anti-KS contested!
         (CLS_GOLD_RUSTLER, 0.84, 280, 310, 68, 86),
-        # 6: player at (200, 300)
+        # 6: High-conf player at (200, 300) (conf=0.82 >= 0.50 -> active Anti-KS!)
         (CLS_PLAYER, 0.82, 200, 300, 56, 88),
-        # 7: dead_rustler at (620, 340) -> NEVER attack target, overlay dead_corpses only!
+        # 7: Low-conf player at (780, 300) (conf=0.47 < 0.50 -> MUST NOT trigger Anti-KS on safe gold_rustler at 760,290!)
+        (CLS_PLAYER, 0.47, 780, 300, 50, 80),
+        # 8: dead_rustler at (620, 340) -> NEVER attack target, overlay dead_corpses only!
         (CLS_DEAD_RUSTLER, 0.77, 620, 340, 82, 48),
-        # 8: Safe gold_bag at (630, 380) (dist from 512,384 = 118 <= 310; far from player)
+        # 9: Safe gold_bag at (630, 380) (conf=0.90)
         (CLS_GOLD_BAG, 0.90, 630, 380, 22, 20),
-        # 9: Far gold_bag at (900, 200) (dist from 512,384 = 429 > 310) -> rejected in LOOT!
+        # 10: Small gold_bag at (660, 390) with conf=0.35 (>= 0.32 gold_bag_conf_threshold, < 0.45!) -> MUST BE DETECTED!
+        (CLS_GOLD_BAG, 0.35, 660, 390, 14, 14),
+        # 11: Far gold_bag at (900, 200) (dist from 512,384 = 429 > 310) -> rejected in LOOT!
         (CLS_GOLD_BAG, 0.87, 900, 200, 20, 18),
-        # 10: Anti-KS gold_bag near player at (250, 350, dist to player=70.7 <= 240) -> rejected!
+        # 12: Anti-KS gold_bag near high-conf player at (250, 350, dist to player=70.7 <= 240) -> rejected!
         (CLS_GOLD_BAG, 0.85, 250, 350, 20, 18),
-        # 11: gold_bag near external_combat_zone at (420, 260) -> rejected when ext zone passed!
-        (CLS_GOLD_BAG, 0.86, 420, 260, 20, 18),
+        # 13: gold_bag near external_combat_zone at (600, 250) (far from player, dist=403>240) -> NOT rejected because anti_ks_use_hsv_damage=False!
+        (CLS_GOLD_BAG, 0.86, 600, 250, 20, 18),
     ]
     for idx, (cid, conf, ox, oy, ow, oh) in enumerate(entries):
         lx, ly, lw, lh = _to_lb(ox, oy, ow, oh)
@@ -1675,7 +1686,9 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert snap_scan.mobs[0].class_name == "gold_rustler"
     assert abs(snap_scan.mobs[0].confidence - 0.88) < 1e-4
     assert len(snap_scan.contested_mobs) == 1 and "KS:PLAYER" in snap_scan.contested_mobs[0].contest_reason
-    assert len(snap_scan.other_players) == 1 and abs(snap_scan.other_players[0][0] - 200) <= 3
+    assert all("KS:DMG" not in m.contest_reason for m in snap_scan.contested_mobs)
+    assert snap_scan.external_damage_points == ()
+    assert len(snap_scan.other_players) == 2
     assert len(snap_scan.dead_corpses) == 1
     assert snap_scan.loot == ()
 
@@ -1687,18 +1700,20 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert snap_cw.mobs == () and snap_cw.loot == () and snap_cw.dead_corpses == ()
     assert snap_rtc.mobs == () and snap_rtc.loot == () and snap_rtc.dead_corpses == ()
 
-    # 3. LOOT (<= 310px): 1 safe gold_bag at (630, 380); far (>310px), player-KS, & ext-zone-KS bags rejected; 0 mobs
+    # 3. LOOT (<= 310px): 3 safe gold_bags (0.90 at 630,380; small 0.35 at 660,390; 0.86 at 600,250);
+    #    far (>310px) & player-KS (<=240px from conf>=0.50 player) bags rejected; 0 mobs
     snap_loot = pipe.analyze(
         pkt,
         current_state=BotState.LOOT,
         check_interface_mode=False,
-        external_combat_zones=((415.0, 255.0),),
+        external_combat_zones=((600.0, 250.0),),
     )
     assert mock_sess.calls == calls_before_gate + 1
     assert snap_loot.mobs == ()
-    assert len(snap_loot.loot) == 1
-    assert abs(snap_loot.loot[0].click_x - 630) <= 3 and snap_loot.loot[0].class_name == "gold_bag"
-    assert abs(snap_loot.loot[0].score - 0.90) < 1e-4
+    assert len(snap_loot.loot) == 3
+    assert any(abs(b.click_x - 630) <= 3 and b.class_name == "gold_bag" and abs(b.score - 0.90) < 1e-4 for b in snap_loot.loot)
+    assert any(abs(b.click_x - 660) <= 3 and b.class_name == "gold_bag" and abs(b.score - 0.35) < 1e-4 for b in snap_loot.loot)
+    assert any(abs(b.click_x - 600) <= 3 and b.class_name == "gold_bag" for b in snap_loot.loot)
 
     # 4. Overlay displays YOLO class names + confidence scores
     tracker = WorldStateTracker()

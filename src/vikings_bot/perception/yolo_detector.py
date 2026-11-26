@@ -186,9 +186,12 @@ class Yolo11nOnnxDetector:
         self.model_path: str = str(p.get("yolo_model_path", "models/yolo11n_ryl.onnx"))
         self.imgsz: int = max(160, int(p.get("yolo_imgsz", 640)))
         self.conf_threshold: float = float(p.get("yolo_conf_threshold", 0.45))
+        self.gold_bag_conf_threshold: float = float(p.get("gold_bag_conf_threshold", 0.32))
         self.iou_threshold: float = float(p.get("yolo_iou_threshold", 0.45))
         self.intra_op_threads: int = max(1, int(p.get("yolo_intra_op_threads", 2)))
         self.anti_ks_enabled: bool = bool(p.get("anti_ks_enabled", True))
+        self.anti_ks_use_hsv_damage: bool = bool(p.get("anti_ks_use_hsv_damage", False))
+        self.anti_ks_player_min_conf: float = float(p.get("anti_ks_player_min_conf", 0.50))
         self.anti_ks_player_radius_px: float = float(p.get("anti_ks_player_radius_px", 240.0))
         self.anti_ks_damage_zone_radius_px: float = float(
             p.get("anti_ks_damage_zone_radius_px", self.anti_ks_player_radius_px)
@@ -298,7 +301,16 @@ class Yolo11nOnnxDetector:
         class_ids = np.argmax(cls_scores, axis=1)
         confs = cls_scores[np.arange(preds.shape[0]), class_ids]
 
-        valid = confs >= self.conf_threshold
+        cls_thresholds = np.array(
+            [
+                self.conf_threshold,  # 0: gold_rustler
+                self.gold_bag_conf_threshold,  # 1: gold_bag (lower threshold for small ground drops)
+                self.conf_threshold,  # 2: player
+                self.conf_threshold,  # 3: dead_rustler
+            ],
+            dtype=np.float32,
+        )
+        valid = confs >= cls_thresholds[class_ids]
         if not np.any(valid):
             return []
 
@@ -374,6 +386,7 @@ class Yolo11nOnnxDetector:
         other_players: list[tuple[int, int]] = []
         other_player_boxes: list[tuple[int, int, int, int]] = []
         other_player_confs: list[float] = []
+        ks_players: list[tuple[int, int]] = []
         dead_corpses: list[tuple[int, int, int, int]] = []
         dead_corpse_confs: list[float] = []
 
@@ -382,6 +395,8 @@ class Yolo11nOnnxDetector:
                 other_players.append((det.cx, det.cy))
                 other_player_boxes.append(det.bbox)
                 other_player_confs.append(det.confidence)
+                if det.confidence >= self.anti_ks_player_min_conf:
+                    ks_players.append((det.cx, det.cy))
             elif det.class_id == CLS_DEAD_RUSTLER:
                 # Ignored as attack target; kept strictly for debug overlay visualization
                 dead_corpses.append(det.bbox)
@@ -390,9 +405,11 @@ class Yolo11nOnnxDetector:
         def _ks_reason(px: float, py: float) -> str:
             if not self.anti_ks_enabled:
                 return ""
-            if any(math.hypot(px - ox, py - oy) <= player_ks_r for ox, oy in other_players):
+            if any(math.hypot(px - ox, py - oy) <= player_ks_r for ox, oy in ks_players):
                 return "SKIP [KS:PLAYER]"
-            if any(math.hypot(px - zx, py - zy) <= ks_radius for zx, zy in external_combat_zones):
+            if self.anti_ks_use_hsv_damage and any(
+                math.hypot(px - zx, py - zy) <= ks_radius for zx, zy in external_combat_zones
+            ):
                 return "SKIP [KS:DMG]"
             return ""
 

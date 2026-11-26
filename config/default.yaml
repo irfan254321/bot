@@ -1,4 +1,4 @@
-﻿# Vikings Bot v2 â€” Mouse Mode â€¢ VM-Ready â€¢ AutoHotkey v2 â€¢ Pure OpenCV (Gold Target)
+# Vikings Bot v2 â€” Mouse Mode â€¢ VM-Ready â€¢ AutoHotkey v2 â€¢ Pure OpenCV (Gold Target)
 
 window:
   process_name: "Minia.exe"
@@ -36,8 +36,11 @@ perception:
   yolo_model_path: "models/yolo11n_ryl.onnx"
   yolo_imgsz: 640
   yolo_conf_threshold: 0.45
+  gold_bag_conf_threshold: 0.32
   yolo_iou_threshold: 0.45
   yolo_intra_op_threads: 2
+  anti_ks_use_hsv_damage: false
+  anti_ks_player_min_conf: 0.50
 
   # Pure OpenCV Gold Rustler nameplate + HP bar + Combat-Status Anti-KS (fallback when ONNX unavailable)
   anti_ks_enabled: true
