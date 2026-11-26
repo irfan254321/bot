@@ -34,7 +34,7 @@ class GoldRustlerDetector:
         self.ks_melee_radius_px = float(p.get("ks_melee_radius_px", 75.0))
         self.ks_hp_damaged_threshold = float(p.get("ks_hp_damaged_threshold", 0.98))
 
-        self.np_lo = np.array(p.get("gold_nameplate_hsv_lower", [140, 20, 58]), dtype=np.uint8)
+        self.np_lo = np.array(p.get("gold_nameplate_hsv_lower", [138, 16, 48]), dtype=np.uint8)
         self.np_hi = np.array(p.get("gold_nameplate_hsv_upper", [179, 215, 255]), dtype=np.uint8)
         self.np_wrap_lo = np.array(p.get("gold_nameplate_wrap_hsv_lower", [0, 26, 58]), dtype=np.uint8)
         self.np_wrap_hi = np.array(p.get("gold_nameplate_wrap_hsv_upper", [6, 95, 110]), dtype=np.uint8)
@@ -43,8 +43,8 @@ class GoldRustlerDetector:
         self.np_min_h = int(p.get("gold_nameplate_min_height", 5))
         self.np_max_h = int(p.get("gold_nameplate_max_height", 28))
         self.np_min_px = int(p.get("gold_nameplate_min_pixels", 10))
-        self.np_min_fill = float(p.get("gold_nameplate_min_fill_ratio", 0.14))
-        self.np_max_fill = float(p.get("gold_nameplate_max_fill_ratio", 0.68))
+        self.np_min_fill = float(p.get("gold_nameplate_min_fill_ratio", 0.08))
+        self.np_max_fill = float(p.get("gold_nameplate_max_fill_ratio", 0.78))
         ck = p.get("gold_nameplate_close_kernel", [14, 3])
         self.np_close_kx = max(8, int(ck[0])) if isinstance(ck, (list, tuple)) and len(ck) >= 2 else 14
         self.np_close_ky = max(2, int(ck[1])) if isinstance(ck, (list, tuple)) and len(ck) >= 2 else 3
@@ -361,9 +361,10 @@ class GoldRustlerDetector:
                     continue
                 raw_nps.append((ox + x, oy + y, w, h, raw_px))
 
-        # 1b. Horizontal green HP-bar booster/candidate outside SELF zone (H=45..80, S>=120, V>=120, w=45..95, h=3..7)
+        # 1b. Hybrid horizontal green HP-bar detector outside SELF zone (x=430..595, y=305..480 at 1024x768)
+        #     HSV H=45..80, S>=130, V>=130, width 35..95px, height 3..7px -> click torso at (cx, bar_y + 38)!
         hp_bar_mask = cv2.bitwise_and(
-            cv2.inRange(pf_hsv, np.array([45, 120, 120], dtype=np.uint8), np.array([80, 255, 255], dtype=np.uint8)),
+            cv2.inRange(pf_hsv, np.array([45, 130, 130], dtype=np.uint8), np.array([80, 255, 255], dtype=np.uint8)),
             hud_mask,
         )
         sx1_s, sy1_s, sx2_s, sy2_s = self_box
@@ -371,9 +372,18 @@ class GoldRustlerDetector:
             max(0, sy1_s - oy) : min(hp_bar_mask.shape[0], sy2_s - oy),
             max(0, sx1_s - ox) : min(hp_bar_mask.shape[1], sx2_s - ox),
         ] = 0
-        if cv2.countNonZero(hp_bar_mask) >= int(round(135.0 * sx * sy)):
+        # Explicit wide SELF exclusion box (x=430..595, y=305..480 at 1024x768, scaled)
+        sx_1024 = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
+        sy_1024 = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
+        hp_bar_mask[
+            max(0, int(round(305.0 * sy_1024)) - oy) : min(hp_bar_mask.shape[0], int(round(480.0 * sy_1024)) - oy),
+            max(0, int(round(430.0 * sx_1024)) - ox) : min(hp_bar_mask.shape[1], int(round(595.0 * sx_1024)) - ox),
+        ] = 0
+
+        hp_bar_click_y_by_np: dict[tuple[int, int, int, int], int] = {}
+        if cv2.countNonZero(hp_bar_mask) >= max(45, int(round(70.0 * sx * sy))):
             n_hb, _lhb, st_hb, _ = cv2.connectedComponentsWithStats(hp_bar_mask, connectivity=8)
-            min_hbw, max_hbw = int(round(45.0 * sx)), int(round(95.0 * sx))
+            min_hbw, max_hbw = int(round(35.0 * sx)), int(round(95.0 * sx))
             min_hbh, max_hbh = max(3, int(round(3.0 * sy))), max(7, int(round(7.0 * sy)))
             for idx in range(1, n_hb):
                 hx = int(st_hb[idx, cv2.CC_STAT_LEFT])
@@ -387,7 +397,9 @@ class GoldRustlerDetector:
                 gx, gy = ox + hx, oy + hy
                 if any(abs(gx - nx) <= 45 * sx and abs(gy - (ny + nh)) <= 24 * sy for nx, ny, _nw, nh, _ in raw_nps):
                     continue
-                raw_nps.append((gx, max(oy, gy - int(round(14.0 * sy))), hw, max(8, int(round(9.0 * sy))), hw * 4))
+                syn_np = (gx, max(oy, gy - int(round(14.0 * sy))), hw, max(8, int(round(9.0 * sy))))
+                raw_nps.append((*syn_np, hw * 4))
+                hp_bar_click_y_by_np[syn_np] = min(fh - 2, int(round(gy + 38.0 * sy_1024)))
 
         np_bboxes = [(x, y, w, h) for x, y, w, h, _ in raw_nps]
 
@@ -412,6 +424,8 @@ class GoldRustlerDetector:
                 click_y_top_ratio=self.click_y_top_ratio,
                 max_body_height_1024=self.mob_body_max_height_1024,
             )
+            if np_box in hp_bar_click_y_by_np:
+                click_y = hp_bar_click_y_by_np[np_box]
             dist_px = math.hypot(foot_x - feet_x, foot_y - feet_y)
             has_hp, hp_est = self._read_hp_bar_below_nameplate(pf_hsv, ox, oy, np_box, fw, fh)
             conf = min(1.0, max(0.45, raw_px / max(1.0, float(mw * mh) * 0.45)))

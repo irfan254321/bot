@@ -108,6 +108,7 @@ class FarmingFSM:
         self._sweeps_in_search: int = 0
 
         # COMBAT_WAIT (1-click, wait until dead) tracking
+        self.active_lock: MobTarget | None = None
         self._combat_click_xy: tuple[int, int] | None = None
         self._combat_started_fresh: bool = True
         self._combat_first_hp_checked: bool = False
@@ -507,10 +508,20 @@ class FarmingFSM:
                 self.navigator.route.farm_radius,
             )
 
+        if self.state == BotState.COMBAT_WAIT:
+            # Priority #1 Hard-Gate at top of fsm.step(): nothing can interrupt COMBAT_WAIT
+            # except confirmed death; force zero mouse/camera/ESC actions!
+            self.active_lock = None
+            elapsed = max(0.0, now - self._state_entered_at)
+            intents = self._check_survival_potions(world, now)
+            intents.extend(self._check_weapon_swap(world, now))
+            intents.extend(self._handle_combat_wait(world, now, elapsed))
+            return intents
+
         intents: list[ActionIntent] = (
             [] if self.state == BotState.DEAD_RESPAWN else self._check_survival_potions(world, now)
         )
-        if self.state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE, BotState.COMBAT_WAIT):
+        if self.state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE):
             intents.extend(self._check_weapon_swap(world, now))
 
         elapsed = max(0.0, now - self._state_entered_at)
@@ -643,11 +654,9 @@ class FarmingFSM:
         fw = max(1, world.snapshot.frame_width)
         scale_x = fw / 1920.0
 
-        # Priority 1: Enter PHASE: LOOT ONLY after a recent kill (<= 4.0s) or for a bag close to feet (<= 220px)
+        # Priority 1: BotState.LOOT is strictly entered ONLY right after COMBAT_WAIT kills a monster
+        # (except standalone --mode loot CLI). Never enter LOOT from SEARCH_MOB in FULL mode!
         if self.mode == BotMode.LOOT and (world.pending_loot or self.farm.select_local_loot(world)):
-            self.transition(BotState.LOOT, now, "gold_bags_waiting")
-            return []
-        if self.mode == BotMode.FULL and self.farm.should_enter_loot(world, now):
             self.transition(BotState.LOOT, now, "gold_bags_waiting")
             return []
 
@@ -763,12 +772,13 @@ class FarmingFSM:
                 self._combat_min_hp = hp_val
                 self._combat_last_hp_drop_ts = now
 
-        # 3. Kill Trigger A: Gold Bag drop appeared near feet/kill spot while target HP gone (or lethal blow)
+        # 3. Kill Trigger A: Gold Bag drop appeared near feet/kill spot ONLY AFTER target HP was seen & is now gone!
         near_bags = [b for b in world.loot if b.dist_to_player_px <= 260.0 * scale_x]
         loot_kill_ok = (
-            bool(near_bags)
+            self._combat_saw_hp
+            and (not hp_vis)
+            and bool(near_bags)
             and elapsed >= 0.70
-            and ((not hp_vis) or (self._combat_min_hp <= 0.35 and len(near_bags) >= 2))
         )
         self._combat_loot_streak = (self._combat_loot_streak + 1) if loot_kill_ok else 0
         confirm_need = 1 if (len(near_bags) >= 2 and not hp_vis and elapsed >= 0.90) else 2
@@ -825,8 +835,7 @@ class FarmingFSM:
                 click_xy=self._combat_click_xy,
             )
             self.tracker.clear_target_lock()
-            next_st = BotState.LOOT if (near_bags and self.mode != BotMode.COMBAT) else BotState.SEARCH_MOB
-            self.transition(next_st, now, "anti_ghost_lock_idle")
+            self.transition(BotState.SEARCH_MOB, now, "anti_ghost_lock_idle")
             return []
 
         # 6. Watchdog Stagnant HP while standing still

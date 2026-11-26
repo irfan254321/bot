@@ -371,6 +371,7 @@ class BotEngine:
                     skip_mob_detection=skip_mob_det,
                     skip_all_object_detectors=skip_all_objs,
                     loot_radius_limit_px=loot_rad_lim,
+                    current_state=self.fsm.state,
                 )
                 world = self.tracker.update(snapshot)
 

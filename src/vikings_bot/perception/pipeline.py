@@ -16,7 +16,7 @@ from vikings_bot.perception.hud_bars import HudBarReader
 from vikings_bot.perception.hud_mask import build_playfield_hud_mask
 from vikings_bot.perception.minimap import MinimapAnalyzer
 from vikings_bot.perception.ui_matcher import UiTemplateMatcher
-from vikings_bot.state.models import LootDrop, MobTarget, PerceptionSnapshot
+from vikings_bot.state.models import BotState, LootDrop, MobTarget, PerceptionSnapshot
 
 
 class PerceptionPipeline:
@@ -144,7 +144,24 @@ class PerceptionPipeline:
         skip_mob_detection: bool = False,
         skip_all_object_detectors: bool = False,
         loot_radius_limit_px: float | None = None,
+        current_state: BotState | None = None,
     ) -> PerceptionSnapshot:
+        # Hard-gate at perception entry based on FSM state:
+        # - COMBAT_WAIT: NEVER run GoldRustlerDetector, GoldBagDetector, or CorpseDetector (THP & Player HP only!)
+        # - Non-LOOT states: NEVER run GoldBagDetector so living monster armor never triggers LOOT!
+        # - LOOT: NEVER run GoldRustlerDetector; run ONLY GoldBagDetector within <=220px close radius!
+        in_combat_wait = current_state == BotState.COMBAT_WAIT or skip_all_object_detectors
+        run_loot_detector = (not in_combat_wait) and (
+            current_state is None or current_state == BotState.LOOT
+        )
+        run_mob_detector = (not in_combat_wait) and (not skip_mob_detection) and (
+            current_state != BotState.LOOT
+        )
+        effective_loot_radius = (
+            loot_radius_limit_px
+            if loot_radius_limit_px is not None
+            else (220.0 if current_state == BotState.LOOT else None)
+        )
         t_wall0 = time.perf_counter()
         timings: dict[str, float] = {}
 
@@ -196,7 +213,7 @@ class PerceptionPipeline:
             timings["hsv_conv"] = (time.perf_counter() - t_pf) * 1000.0
 
             t_m = time.perf_counter()
-            if skip_all_object_detectors:
+            if in_combat_wait:
                 if shared_pf_hsv is not None:
                     combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
                         shared_pf_hsv, ox, oy, frame.width, frame.height
@@ -204,7 +221,7 @@ class PerceptionPipeline:
                 timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
                 timings["gold_loot"] = 0.0
             else:
-                if skip_mob_detection:
+                if not run_mob_detector:
                     if shared_pf_hsv is not None:
                         combat_target_hp_visible, combat_target_hp_ratio = self._probe_combat_target_hp_bar(
                             shared_pf_hsv, ox, oy, frame.width, frame.height
@@ -215,16 +232,19 @@ class PerceptionPipeline:
                     )
                 timings["gold_mobs"] = (time.perf_counter() - t_m) * 1000.0
 
-                t_l = time.perf_counter()
-                loot_list, pickup_changed = self.loot.detect(
-                    frame,
-                    mobs=mob_list + contested_list,
-                    other_player_boxes=other_player_boxes,
-                    shared_playfield_hsv=shared_pf_hsv,
-                    max_dist_override_px=loot_radius_limit_px,
-                )
-                dead_corpses = self.loot.last_corpse_boxes
-                timings["gold_loot"] = (time.perf_counter() - t_l) * 1000.0
+                if run_loot_detector:
+                    t_l = time.perf_counter()
+                    loot_list, pickup_changed = self.loot.detect(
+                        frame,
+                        mobs=mob_list + contested_list,
+                        other_player_boxes=other_player_boxes,
+                        shared_playfield_hsv=shared_pf_hsv,
+                        max_dist_override_px=effective_loot_radius,
+                    )
+                    dead_corpses = self.loot.last_corpse_boxes
+                    timings["gold_loot"] = (time.perf_counter() - t_l) * 1000.0
+                else:
+                    timings["gold_loot"] = 0.0
 
         sign_bbox = None
         menu_bbox = None

@@ -248,12 +248,12 @@ def test_loot_max_3_attempts_blacklists_obstructed_bag_and_never_blocks_80m_repa
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
 
-    # Simulate 80m repair timer already due while an obstructed bag is sitting on the ground
+    # Simulate 80m repair timer already due while an obstructed bag is sitting on the ground after a kill
     fsm._active_farming_sec = 4810.0
     blocked_bag = _bag(cx=1120, cy=520, dist=165.0)
 
-    # Enters LOOT first
-    fsm.step(tracker.update(_snap(1.5, loot=(blocked_bag,))))
+    # Enters LOOT strictly post-kill
+    fsm.transition(BotState.LOOT, 1.5, "test_post_kill_loot")
     assert fsm.state == BotState.LOOT
 
     # Attempt 1, 2, 3 (spaced past click cooldown 0.42s) -> on attempt #3 blacklists coord & exits LOOT!
@@ -403,33 +403,28 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
 
 
 def test_loot_entry_gate_blocks_far_drops_without_kill_and_24px_grid_caps_jittery_bag():
-    """Verify LOOT only triggers within 4.0s of kill or <=220px from feet, and 24x24px grid blacklists jittery bags on try #3."""
+    """Verify SEARCH_MOB never enters LOOT directly (post-kill only), and 24x24px grid blacklists jittery bags on try #3."""
     cfg = load_config("config/default.yaml")
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
 
-    # 1. No kill yet + faraway yellow drop (dist=290px > 220px) -> MUST stay in SEARCH_MOB (never detour to LOOT!)
+    # 1. Even with Gold Bags on the ground in SEARCH_MOB (no kill from COMBAT_WAIT), MUST stay in SEARCH_MOB!
     far_drop = _bag(cx=820, cy=480, dist=290.0)
-    fsm.step(tracker.update(_snap(1.5, fw=1024, fh=768, loot=(far_drop,))))
+    close_drop = _bag(cx=510, cy=500, dist=140.0)
+    fsm.step(tracker.update(_snap(1.5, fw=1024, fh=768, loot=(far_drop, close_drop))))
     assert fsm.state == BotState.SEARCH_MOB
 
-    # 2. Record a kill -> within 4.0s window, near_last_kill drop IS allowed to enter LOOT!
-    tracker.record_kill_pos((820, 480), now=2.0)
-    fsm.step(tracker.update(_snap(2.4, fw=1024, fh=768, loot=(far_drop,))))
-    assert fsm.state == BotState.LOOT
-
-    # 3. After > 4.0s with no kill, close bag (<=220px) enters LOOT and jitters by +-4px across 3 attempts ->
-    #    quantized to 24x24px grid so 3rd attempt ALWAYS triggers blacklist_point!
+    # 2. Inside post-kill LOOT, a bag that jitters by +-4px across 3 attempts is quantized to 24x24px grid -> blacklist!
     tracker2 = WorldStateTracker()
     fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
     fsm2.resume(10.0, ensure_mouse_mode=False)
+    fsm2.transition(BotState.LOOT, 10.5, "test_post_kill_loot")
     jitter_bags = [
         _bag(cx=510, cy=500, dist=180.0),
         _bag(cx=516, cy=505, dist=182.0),
         _bag(cx=513, cy=503, dist=181.0),
     ]
-    fsm2.step(tracker2.update(_snap(10.5, fw=1024, fh=768, loot=(jitter_bags[0],))))
     assert fsm2.state == BotState.LOOT
 
     blacklisted = None
@@ -807,3 +802,120 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
         assert fsm.state == BotState.LOOT
     fsm.step(tracker.update(_snap(30.1, fw=1024, fh=768, loot=(_bag(cx=520, cy=440, dist=110.0),))))
     assert fsm.state == BotState.SEARCH_MOB
+
+
+def test_combat_wait_hard_gate_post_kill_loot_e_tap_and_hybrid_green_hp_bar_detector():
+    """Verify COMBAT_WAIT perception/FSM hard-gate, non-LOOT GoldBagDetector block, 0.45s E-tap,
+    thin vertical armor rejection (+140px HP-bar guard), and 5-mob hybrid green HP-bar detection."""
+    import cv2
+    import numpy as np
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    pipe = PerceptionPipeline(cfg)
+
+    # Build a 1024x768 frame with 5 living Gold Rustlers (green HP bars outside SELF) + 1 SELF bar + Gold Bags
+    hsv_bg = np.zeros((768, 1024, 3), dtype=np.uint8)
+    hsv_bg[:, :] = (28, 120, 60)
+    bgr = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+
+    green_bar = cv2.cvtColor(np.full((4, 52, 3), (62, 210, 210), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    mob_bars = [(180, 240), (310, 250), (660, 245), (790, 260), (240, 380)]
+    for bx, by in mob_bars:
+        bgr[by : by + 4, bx : bx + 52] = green_bar
+    # Self bar inside SELF exclusion zone (x=430..595, y=305..480) -> MUST be ignored!
+    bgr[360:364, 485:537] = green_bar
+    # Close Gold Bag at (420, 440)
+    bgr[444:454, 416:428] = cv2.cvtColor(np.full((10, 12, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr[440:444, 419:424] = cv2.cvtColor(np.full((4, 5, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+
+    # 1. COMBAT_WAIT Hard-Gate in pipeline: NEVER invokes GoldRustlerDetector or GoldBagDetector!
+    calls = {"mobs": 0, "loot": 0}
+    orig_mobs = pipe.mobs.detect_with_context
+    orig_loot = pipe.loot.detect
+
+    def _spy_mobs(*args, **kwargs):
+        calls["mobs"] += 1
+        return orig_mobs(*args, **kwargs)
+
+    def _spy_loot(*args, **kwargs):
+        calls["loot"] += 1
+        return orig_loot(*args, **kwargs)
+
+    pipe.mobs.detect_with_context = _spy_mobs
+    pipe.loot.detect = _spy_loot
+
+    snap_cw = pipe.analyze(
+        FramePacket(image_bgr=bgr, timestamp=1.0),
+        current_state=BotState.COMBAT_WAIT,
+        check_interface_mode=False,
+    )
+    assert len(snap_cw.mobs) == 0 and len(snap_cw.gold_bags) == 0 and len(snap_cw.dead_corpses) == 0
+    assert calls["mobs"] == 0 and calls["loot"] == 0, f"Detectors must NOT be called in COMBAT_WAIT: {calls}"
+
+    # 2. SEARCH_MOB: GoldRustlerDetector detects all 5 mobs via green HP bars (click_y = bar_y + 38),
+    #    SELF bar ignored, AND GoldBagDetector is OFF (gold_bags == ())!
+    snap_scan = pipe.analyze(
+        FramePacket(image_bgr=bgr, timestamp=2.0),
+        current_state=BotState.SEARCH_MOB,
+        check_interface_mode=False,
+    )
+    assert len(snap_scan.mobs) == 5, f"Expected 5 hybrid green-HP-bar Gold Rustlers, got {len(snap_scan.mobs)}: {snap_scan.mobs}"
+    assert len(snap_scan.gold_bags) == 0, "GoldBagDetector must be OFF outside BotState.LOOT!"
+    assert calls["loot"] == 0
+    for m in snap_scan.mobs:
+        assert not (430 <= m.click_x <= 595 and 305 <= m.click_y <= 480)
+        assert any(abs(m.click_x - (bx + 26)) <= 4 and abs(m.click_y - (by + 38)) <= 2 for bx, by in mob_bars)
+
+    # 3. FSM COMBAT_WAIT Hard-Gate: injecting fake mobs + fake bags NEVER jumps to LOOT and returns len(actions)==0!
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    m_eng = _mob(cx=510, cy=330, dist=95.0, has_hp=False)
+    fsm.step(tracker.update(_snap(1.1, fw=1024, fh=768, mobs=(m_eng,))))
+    assert fsm.state == BotState.COMBAT_WAIT
+
+    fake_mobs = (_mob(cx=200, cy=280, dist=240.0), _mob(cx=720, cy=280, dist=260.0))
+    fake_bags = (_bag(cx=440, cy=450, dist=110.0), _bag(cx=540, cy=460, dist=95.0))
+    w_fake = tracker.update(
+        PerceptionSnapshot(
+            timestamp=2.0,
+            frame_width=1024,
+            frame_height=768,
+            hp_ratio=1.0,
+            mp_ratio=1.0,
+            coords=CoordReading(x=615, y=1830, confidence=0.98),
+            minimap=MinimapReading(),
+            mobs=fake_mobs,
+            loot=fake_bags,
+            combat_target_hp_visible=True,
+            combat_target_hp_ratio=0.80,
+        )
+    )
+    acts_cw = fsm.step(w_fake)
+    assert fsm.state == BotState.COMBAT_WAIT
+    assert len(acts_cw) == 0
+    assert fsm.active_lock is None
+
+    # 4. Post-kill LOOT taps E every 0.45s without DRAG_MMB
+    fsm.transition(BotState.LOOT, 5.0, "test_e_tap")
+    acts_e1 = fsm.step(tracker.update(_snap(5.0, fw=1024, fh=768, loot=())))
+    assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_e1)
+    assert not any(isinstance(a, DragCameraIntent) for a in acts_e1)
+    assert fsm.step(tracker.update(_snap(5.2, fw=1024, fh=768, loot=()))) == []  # < 0.45s cooldown
+    acts_e2 = fsm.step(tracker.update(_snap(5.5, fw=1024, fh=768, loot=())))
+    assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_e2)
+
+    # 5. GoldBagDetector rejects thin vertical monster-arm gleam (h > w * 1.25) AND gleam +130px below HP bar!
+    bgr_arm = cv2.cvtColor(hsv_bg, cv2.COLOR_HSV2BGR)
+    # Thin vertical golden arm gleam at (380, 420): 6px wide x 18px tall -> MUST BE REJECTED!
+    bgr_arm[420:438, 380:386] = cv2.cvtColor(np.full((18, 6, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr_arm[438:450, 378:388] = cv2.cvtColor(np.full((12, 10, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    # Gleam +130px below a green HP bar at (600, 260) -> MUST BE MASKED by +140px HP bar guard!
+    bgr_arm[260:264, 600:652] = green_bar
+    bgr_arm[394:404, 620:632] = cv2.cvtColor(np.full((10, 12, 3), (18, 120, 22), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    bgr_arm[390:394, 623:628] = cv2.cvtColor(np.full((4, 5, 3), (16, 230, 220), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    drops_arm, _ = orig_loot(FramePacket(image_bgr=bgr_arm, timestamp=6.0), mobs=(), max_dist_override_px=220.0)
+    assert len(drops_arm) == 0, f"Vertical arm / +130px HP-bar armor gleam must be rejected: {drops_arm}"

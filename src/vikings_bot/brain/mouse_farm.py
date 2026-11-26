@@ -36,7 +36,7 @@ class MouseFarmController:
         self.mob_max_engage_dist_px: float = float(f.get("mob_max_engage_dist_px", 560.0))
         self.mob_min_y_ratio: float = float(f.get("mob_min_y_ratio", 0.14))
         self.loot_e_close_dist_px: float = float(f.get("loot_e_close_dist_px", 85.0))
-        self.loot_e_interval_sec: float = float(f.get("loot_e_interval_sec", 0.14))
+        self.loot_e_interval_sec: float = float(f.get("loot_e_interval_sec", 0.45))
         self.loot_click_interval_sec: float = float(f.get("loot_click_interval_sec", 0.42))
         self.loot_max_local_dist_px: float = float(f.get("loot_max_local_dist_px", 360.0))
         self.loot_close_radius_px: float = float(
@@ -225,7 +225,7 @@ class MouseFarmController:
         for mob in ordered_mobs:
             if mob.contested:
                 continue
-            if not allow_wounded and mob.has_hp_bar:
+            if not allow_wounded and mob.has_hp_bar and (mob.hp_ratio_est is None or mob.hp_ratio_est < 0.95):
                 continue
             if is_ignored is not None and is_ignored(mob):
                 continue
@@ -298,15 +298,15 @@ class MouseFarmController:
         world: WorldState,
         now: float,
     ) -> tuple[list[ActionIntent], LootDrop | None, str]:
-        """Execute one Mouse Mode loot action: tap E if close (<=85px), else click Gold Bag 1x.
+        """Execute one Mouse Mode post-kill loot step: prioritize tap E every 0.45s + click close Gold Bag (<=220px).
 
         Returns `(intents, target_drop, action_kind)` where `action_kind` is `'tap_e' | 'click_bag' | 'wait'`.
         """
         local_bags = self.select_local_loot(world)
         if not local_bags:
-            if self.tracker.is_ready("loot_e_cleanup", now):
-                self.tracker.set_cooldown("loot_e_cleanup", now, self.loot_e_interval_sec)
-                return ([TapKeyIntent(key=self.pickup_key, reason="loot_cleanup_e")], None, "tap_e")
+            if self.tracker.is_ready("loot_tap_e", now):
+                self.tracker.set_cooldown("loot_tap_e", now, self.loot_e_interval_sec)
+                return ([TapKeyIntent(key=self.pickup_key, reason="loot_primary_e")], None, "tap_e")
             return ([], None, "wait")
 
         bag = local_bags[0]
@@ -317,20 +317,24 @@ class MouseFarmController:
         if bag.dist_to_player_px <= close_r:
             if not self.tracker.is_ready("loot_tap_e", now):
                 return ([], bag, "wait")
-            cd = self.humanizer.jitter(self.loot_e_interval_sec, pct=0.15, lo=0.09)
-            self.tracker.set_cooldown("loot_tap_e", now, cd)
+            self.tracker.set_cooldown("loot_tap_e", now, self.loot_e_interval_sec)
             return (
                 [TapKeyIntent(key=self.pickup_key, reason=f"loot_e_close(d={bag.dist_to_player_px:.0f})")],
                 bag,
                 "tap_e",
             )
 
-        if not self.tracker.is_ready("loot_click_bag", now):
-            return ([], bag, "wait")
-        cd = self.humanizer.jitter(self.loot_click_interval_sec, pct=0.15, lo=0.25)
-        self.tracker.set_cooldown("loot_click_bag", now, cd)
-        return (
-            [
+        intents: list[ActionIntent] = []
+        act_kind = "wait"
+        if self.tracker.is_ready("loot_tap_e", now):
+            self.tracker.set_cooldown("loot_tap_e", now, self.loot_e_interval_sec)
+            intents.append(TapKeyIntent(key=self.pickup_key, reason="loot_primary_e"))
+            act_kind = "tap_e"
+
+        if self.tracker.is_ready("loot_click_bag", now):
+            cd = self.humanizer.jitter(self.loot_click_interval_sec, pct=0.15, lo=0.25)
+            self.tracker.set_cooldown("loot_click_bag", now, cd)
+            intents.append(
                 ClickScreenIntent(
                     x=int(bag.click_x),
                     y=int(bag.click_y),
@@ -338,10 +342,10 @@ class MouseFarmController:
                     reason=f"loot_click_bag({bag.click_x},{bag.click_y})",
                     no_jitter=True,
                 )
-            ],
-            bag,
-            "click_bag",
-        )
+            )
+            act_kind = "click_bag"
+
+        return (intents, bag, act_kind)
 
     def build_mmb_camera_sweep(self, world: WorldState, now: float) -> list[ActionIntent]:
         """Rotate camera horizontally via Middle Mouse Button drag (strict dy=0, zero pitch drift)."""

@@ -54,13 +54,13 @@ class GoldBagDetector:
         self._silver_hi = np.array([179, 55, 255], dtype=np.uint8)
         self._tunic_lo = np.array([68, 65, 45], dtype=np.uint8)
         self._tunic_hi = np.array([135, 255, 255], dtype=np.uint8)
-        self._hp_green_lo = np.array([46, 105, 100], dtype=np.uint8)
-        self._hp_green_hi = np.array([78, 255, 255], dtype=np.uint8)
+        self._hp_green_lo = np.array([45, 110, 110], dtype=np.uint8)
+        self._hp_green_hi = np.array([80, 255, 255], dtype=np.uint8)
         self._hp_red_lo_1 = np.array([0, 140, 120], dtype=np.uint8)
         self._hp_red_hi_1 = np.array([7, 255, 255], dtype=np.uint8)
         self._hp_red_lo_2 = np.array([172, 140, 120], dtype=np.uint8)
         self._hp_red_hi_2 = np.array([179, 255, 255], dtype=np.uint8)
-        self.hp_bar_guard_below_px = int(p.get("loot_hp_bar_guard_below_px", 110))
+        self.hp_bar_guard_below_px = int(p.get("loot_hp_bar_guard_below_px", 140))
         self.horizon_min_y_px = int(p.get("loot_horizon_min_y_px", 230))
 
     def _mask_below_hp_bar_strips(
@@ -342,17 +342,22 @@ class GoldBagDetector:
                 h = int(st_g[idx, cv2.CC_STAT_HEIGHT])
                 if w > int(round(28 * scale_x)) or h > int(round(24 * scale_y)):
                     continue
+                # Reject thin vertical golden armor gleams on living monster arms (require width >= height * 0.85)
+                if h > w * 1.25 or w < h * 0.85:
+                    continue
                 ry1 = min(hsv.shape[0] - 1, y + h)
-                ry2 = min(hsv.shape[0], ry1 + max(6, int(round(15.0 * scale_y))))
-                rx1 = max(0, x - max(3, int(round(6.0 * scale_x))))
-                rx2 = min(hsv.shape[1], x + w + max(3, int(round(6.0 * scale_x))))
+                ry2 = min(hsv.shape[0], ry1 + max(6, int(round(12.0 * scale_y))))
+                rx1 = max(0, x - max(4, int(round(6.0 * scale_x))))
+                rx2 = min(hsv.shape[1], x + w + max(4, int(round(6.0 * scale_x))))
                 if ry2 <= ry1 or rx2 <= rx1:
                     continue
                 patch_v = v_ch[ry1:ry2, rx1:rx2]
                 dark_r = float((patch_v <= self.dark_body_v_max).mean())
                 if dark_r >= self.min_dark_ratio:
                     bw = max(10, rx2 - rx1)
-                    bh = max(12, ry2 - y)
+                    bh = max(10, ry2 - y)
+                    if bh > bw * 1.25 or bw < bh * 0.85:
+                        continue
                     if _is_isolated_bag(rx1, y, bw, bh):
                         raw_hits.append((ox + rx1, oy + y, bw, bh, min(1.0, 0.65 + dark_r * 0.35)))
 
@@ -381,7 +386,8 @@ class GoldBagDetector:
                 if w > max_pw or h > max_ph:
                     continue
                 asp = w / max(1.0, float(h))
-                if not (0.45 <= asp <= 2.1):
+                # Reject thin vertical monster-arm contours (height > width * 1.25; require width >= height * 0.85)
+                if not (0.85 <= asp <= 2.1):
                     continue
                 ry1 = max(0, y - max(4, int(round(7.0 * scale_y))))
                 ry2 = min(hsv.shape[0], y + h + 2)

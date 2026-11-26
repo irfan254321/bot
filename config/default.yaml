@@ -39,7 +39,7 @@ perception:
   lock_dist_threshold_px: 85.0
   last_kill_loot_radius_px: 140.0
   last_kill_loot_window_sec: 0.80
-  gold_nameplate_hsv_lower: [140, 20, 58]
+  gold_nameplate_hsv_lower: [138, 16, 48]
   gold_nameplate_hsv_upper: [179, 215, 255]
   gold_nameplate_wrap_hsv_lower: [0, 26, 58]
   gold_nameplate_wrap_hsv_upper: [6, 95, 110]
@@ -48,8 +48,8 @@ perception:
   gold_nameplate_min_height: 5
   gold_nameplate_max_height: 28
   gold_nameplate_min_pixels: 10
-  gold_nameplate_min_fill_ratio: 0.14
-  gold_nameplate_max_fill_ratio: 0.68
+  gold_nameplate_min_fill_ratio: 0.08
+  gold_nameplate_max_fill_ratio: 0.78
   gold_nameplate_close_kernel: [14, 3]
   mob_body_max_height_1024: 135
   mob_hp_bar_hsv_lower: [48, 110, 105]
@@ -71,6 +71,7 @@ perception:
   loot_pouch_warm_min_px: 8
   loot_cluster_radius_px: 20
   loot_max_dist_px: 580
+  loot_hp_bar_guard_below_px: 140
 
   # Minimap red blips & cyan facing cone
   minimap_red_hsv_lower_1: [0, 140, 120]
@@ -126,7 +127,7 @@ farming:
   combat_hard_timeout_sec: 28.0
   combat_zero_drop_kill_sec: 1.6
   loot_e_close_dist_px: 85.0
-  loot_e_interval_sec: 0.14
+  loot_e_interval_sec: 0.45
   loot_click_interval_sec: 0.42
   loot_max_local_dist_px: 360.0
   loot_close_radius_px: 220

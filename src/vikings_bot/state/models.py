@@ -146,6 +146,10 @@ class PerceptionSnapshot:
         return None
 
     @property
+    def gold_bags(self) -> tuple[LootDrop, ...]:
+        return self.loot
+
+    @property
     def target_hp_visible(self) -> bool:
         return self.combat_target_hp_visible or (self.engaged_mob is not None)
 
