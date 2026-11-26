@@ -48,6 +48,10 @@ perception:
   gold_nameplate_min_height: 5
   gold_nameplate_max_height: 28
   gold_nameplate_min_pixels: 10
+  gold_nameplate_min_fill_ratio: 0.14
+  gold_nameplate_max_fill_ratio: 0.68
+  gold_nameplate_close_kernel: [14, 3]
+  mob_body_max_height_1024: 135
   mob_hp_bar_hsv_lower: [48, 110, 105]
   mob_hp_bar_hsv_upper: [76, 255, 255]
   mob_hp_bar_min_pixels: 10
@@ -141,6 +145,12 @@ farming:
   stuck_timeout_sec: 2.2
   stuck_min_move_units: 2.5
   recovery_duration_sec: 0.85
+  # Auto-daylight weather lock via AHK v2 CHAT_CMD (/setweather 11)
+  auto_daylight_weather: true
+  daylight_weather_cmd: "/setweather 11"
+  daylight_weather_interval_sec: 600.0
+  daylight_dark_luma_threshold: 68.0
+  daylight_dark_cooldown_sec: 45.0
 
 respawn_travel:
   enabled: true

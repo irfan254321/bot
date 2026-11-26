@@ -260,15 +260,15 @@ HandleCommand(line) {
         text := parts[4]
         if (mode = "host_background" && hwnd > 0) {
             ControlSend("{Enter}", , "ahk_id " . hwnd)
-            Sleep 120
+            Sleep 70
             ControlSendText(text, , "ahk_id " . hwnd)
-            Sleep 90
+            Sleep 70
             ControlSend("{Enter}", , "ahk_id " . hwnd)
         } else {
             SendEvent("{Enter}")
-            Sleep 120
+            Sleep 70
             SendText(text)
-            Sleep 90
+            Sleep 70
             SendEvent("{Enter}")
         }
         return "OK|CHAT_CMD"

@@ -43,6 +43,12 @@ class GoldRustlerDetector:
         self.np_min_h = int(p.get("gold_nameplate_min_height", 5))
         self.np_max_h = int(p.get("gold_nameplate_max_height", 28))
         self.np_min_px = int(p.get("gold_nameplate_min_pixels", 10))
+        self.np_min_fill = float(p.get("gold_nameplate_min_fill_ratio", 0.14))
+        self.np_max_fill = float(p.get("gold_nameplate_max_fill_ratio", 0.68))
+        ck = p.get("gold_nameplate_close_kernel", [14, 3])
+        self.np_close_kx = max(8, int(ck[0])) if isinstance(ck, (list, tuple)) and len(ck) >= 2 else 14
+        self.np_close_ky = max(2, int(ck[1])) if isinstance(ck, (list, tuple)) and len(ck) >= 2 else 3
+        self.mob_body_max_height_1024 = float(p.get("mob_body_max_height_1024", 135.0))
 
         self.hp_lo = np.array(p.get("mob_hp_bar_hsv_lower", [48, 110, 105]), dtype=np.uint8)
         self.hp_hi = np.array(p.get("mob_hp_bar_hsv_upper", [76, 255, 255]), dtype=np.uint8)
@@ -68,6 +74,7 @@ class GoldRustlerDetector:
         frame_h: int,
         *,
         click_y_top_ratio: float = 0.35,
+        max_body_height_1024: float = 135.0,
     ) -> tuple[tuple[int, int, int, int], tuple[int, int], tuple[int, int]]:
         """Project 3D body_bbox, upper-torso click point, and ground foot point from nameplate bbox."""
         mx, my, mw, mh = np_bbox
@@ -76,7 +83,8 @@ class GoldRustlerDetector:
         cx = mx + mw // 2
         depth = max(0.38, min(1.38, ((float(my) / max(1.0, float(frame_h))) - 0.14) / 0.56))
         bw = max(float(mw) * 1.10, 82.0 * sx * depth)
-        bh = max(78.0 * sy * depth, bw * 1.15)
+        max_bh = float(max_body_height_1024) if frame_w <= 1100 else (float(max_body_height_1024) * (frame_h / 768.0))
+        bh = min(max_bh, max(78.0 * sy * depth, bw * 1.15))
         y1 = min(frame_h - 4, my + mh + int(round(10.0 * sy)))
         y2 = min(frame_h - 2, max(y1 + 12, int(round(y1 + bh))))
         x1 = max(0, int(round(cx - bw * 0.5)))
@@ -319,8 +327,9 @@ class GoldRustlerDetector:
 
         raw_nps: list[tuple[int, int, int, int, int]] = []
         if cv2.countNonZero(pink) >= min_px:
-            kx = max(7, int(round(13.0 * sx)))
-            closed = cv2.morphologyEx(pink, cv2.MORPH_CLOSE, self._get_kernel(kx, 2))
+            kx = max(10, int(round(float(self.np_close_kx) * sx)))
+            ky = max(2, int(round(float(self.np_close_ky) * sy)))
+            closed = cv2.morphologyEx(pink, cv2.MORPH_CLOSE, self._get_kernel(kx, ky))
             n_lbl, _lbl, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
 
             for idx in range(1, n_lbl):
@@ -334,6 +343,10 @@ class GoldRustlerDetector:
                     continue
                 raw_px = cv2.countNonZero(pink[y : y + h, x : x + w])
                 if raw_px < min_px:
+                    continue
+                # Validate text stroke density (fill_ratio 0.14..0.68) to reject solid hill/horizon smudges
+                fill_ratio = raw_px / max(1.0, float(w * h))
+                if not (self.np_min_fill <= fill_ratio <= self.np_max_fill):
                     continue
                 # Require >=30% true magenta pixels (H>=140) so pure brown/red dirt or hills never match
                 main_px = cv2.countNonZero(pink_main[y : y + h, x : x + w])
@@ -358,7 +371,11 @@ class GoldRustlerDetector:
         for mx, my, mw, mh, raw_px in raw_nps:
             np_box = (mx, my, mw, mh)
             body_bbox, (click_x, click_y), (foot_x, foot_y) = self.project_body_from_nameplate(
-                np_box, fw, fh, click_y_top_ratio=self.click_y_top_ratio
+                np_box,
+                fw,
+                fh,
+                click_y_top_ratio=self.click_y_top_ratio,
+                max_body_height_1024=self.mob_body_max_height_1024,
             )
             dist_px = math.hypot(foot_x - feet_x, foot_y - feet_y)
             has_hp, hp_est = self._read_hp_bar_below_nameplate(pf_hsv, ox, oy, np_box, fw, fh)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 import cv2
+import numpy as np
 
 from vikings_bot.capture.screen import FramePacket
 from vikings_bot.config import BotConfig, roi_to_pixels
@@ -12,6 +13,7 @@ from vikings_bot.perception.coords import CoordReader
 from vikings_bot.perception.gold_detector import GoldRustlerDetector
 from vikings_bot.perception.gold_loot_detector import GoldBagDetector
 from vikings_bot.perception.hud_bars import HudBarReader
+from vikings_bot.perception.hud_mask import build_playfield_hud_mask
 from vikings_bot.perception.minimap import MinimapAnalyzer
 from vikings_bot.perception.ui_matcher import UiTemplateMatcher
 from vikings_bot.state.models import LootDrop, MobTarget, PerceptionSnapshot
@@ -79,12 +81,23 @@ class PerceptionPipeline:
         loot_list: tuple[LootDrop, ...] = ()
         dead_corpses: tuple[tuple[int, int, int, int], ...] = ()
         pickup_changed = False
+        playfield_luma: float | None = None
 
         if not skip_field_detectors:
             t_pf = time.perf_counter()
             ox, oy, px2, py2 = roi_to_pixels(self.playfield_roi, frame.width, frame.height)
             pf_crop = frame.image_bgr[oy:py2, ox:px2]
             shared_pf_hsv = cv2.cvtColor(pf_crop, cv2.COLOR_BGR2HSV) if pf_crop.size > 0 else None
+            if shared_pf_hsv is not None:
+                hud_mask = build_playfield_hud_mask(
+                    frame.width,
+                    frame.height,
+                    (ox, oy, px2, py2),
+                    hud_fixed_pixel_ui=self.mobs.hud_fixed_pixel_ui,
+                )
+                v_sub = shared_pf_hsv[::4, ::4, 2]
+                m_sub = hud_mask[::4, ::4] > 0
+                playfield_luma = float(v_sub[m_sub].mean()) if bool(np.any(m_sub)) else float(v_sub.mean())
             timings["hsv_conv"] = (time.perf_counter() - t_pf) * 1000.0
 
             t_m = time.perf_counter()
@@ -187,5 +200,6 @@ class PerceptionPipeline:
             interface_mode=interface_mode,
             detected_control_mode=detected_ctrl_mode,
             camera_pitch_state="ok",
+            playfield_luma=playfield_luma,
             timings_ms=timings,
         )

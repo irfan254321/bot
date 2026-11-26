@@ -246,3 +246,25 @@ def test_vm_1024_raw_night_screenshot_regression():
     assert snap.mp_ratio > 0.90, f"Expected MP > 90% on 6200/6200 bar, got {snap.mp_ratio:.2%}"
     assert len(snap.mobs) >= 3, f"Expected >= 3 night Gold Rustlers on vm_1024_raw.jpg, got {len(snap.mobs)}: {snap.mobs}"
     assert len(snap.loot) == 0, f"Expected 0 false-positive Gold Bags on vm_1024_raw.jpg, got {snap.loot}"
+    for m in snap.mobs:
+        assert (m.body_bbox[3] - m.body_bbox[1]) <= 135, f"Body bbox too tall on 1024x768: {m.body_bbox}"
+
+    # Verify fill_ratio rejects solid horizon smudge (>0.68), 14x3 MORPH_CLOSE merges split 'Gold  Rustler',
+    # and foreground body_bbox height is capped <= 135px on 1024x768
+    hsv_syn = np.zeros((768, 1024, 3), dtype=np.uint8)
+    hsv_syn[:, :] = (28, 120, 62)
+    bgr_syn = cv2.cvtColor(hsv_syn, cv2.COLOR_HSV2BGR)
+    # Solid reddish-magenta hill smudge (fill_ratio ~ 1.0 > 0.68 -> must be rejected!)
+    bgr_syn[200:210, 220:265] = cv2.cvtColor(np.full((10, 45, 3), (160, 110, 140), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    # Split 'Gold' + 10px gap + 'Rustler' (50% stroke density -> must merge into 1 single mob!)
+    word_a = np.full((10, 24, 3), (160, 110, 190), dtype=np.uint8)
+    word_a[:, ::2] = (28, 120, 50)
+    word_b = np.full((10, 32, 3), (160, 110, 190), dtype=np.uint8)
+    word_b[:, ::2] = (28, 120, 50)
+    bgr_syn[480:490, 400:424] = cv2.cvtColor(word_a, cv2.COLOR_HSV2BGR)
+    bgr_syn[480:490, 434:466] = cv2.cvtColor(word_b, cv2.COLOR_HSV2BGR)
+
+    mobs_syn = pipe_vm.mobs.detect(FramePacket(image_bgr=bgr_syn, timestamp=2.0))
+    assert len(mobs_syn) == 1, f"Expected 1 merged mob (and 0 solid hill smudge), got {mobs_syn}"
+    assert mobs_syn[0].nameplate_bbox[2] >= 55
+    assert (mobs_syn[0].body_bbox[3] - mobs_syn[0].body_bbox[1]) <= 135

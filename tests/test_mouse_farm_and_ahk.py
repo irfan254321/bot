@@ -6,7 +6,7 @@ from vikings_bot.brain.fsm import FarmingFSM
 from vikings_bot.capture.window import GameWindow
 from vikings_bot.cli import build_parser
 from vikings_bot.config import load_config
-from vikings_bot.input.actions import ClickScreenIntent, DragCameraIntent, TapKeyIntent
+from vikings_bot.input.actions import ClickScreenIntent, DragCameraIntent, TapKeyIntent, TypeChatCommandIntent
 from vikings_bot.input.ahk_driver import AhkInputDriver
 from vikings_bot.state.models import (
     BotMode,
@@ -62,6 +62,7 @@ def _snap(
     interface_mode: str = "mouse_cursor",
     pickup_changed: bool = False,
     respawn_dialog_bbox: tuple[int, int, int, int] | None = None,
+    playfield_luma: float | None = None,
 ) -> PerceptionSnapshot:
     return PerceptionSnapshot(
         timestamp=ts,
@@ -77,6 +78,7 @@ def _snap(
         respawn_dialog_bbox=respawn_dialog_bbox,
         interface_mode=interface_mode,
         pickup_log_changed=pickup_changed,
+        playfield_luma=playfield_luma,
     )
 
 
@@ -381,3 +383,64 @@ def test_loot_entry_gate_blocks_far_drops_without_kill_and_24px_grid_caps_jitter
             blacklisted = fsm2.last_blacklisted_loot
     assert blacklisted is not None
     assert fsm2.state == BotState.SEARCH_MOB
+
+
+def test_auto_daylight_weather_sends_setweather_in_scan_spot_and_never_in_combat_wait():
+    """Verify `/setweather 11` fires on resume/dark luma/600s interval ONLY in SEARCH_MOB, never during COMBAT_WAIT."""
+    from pathlib import Path
+    import cv2
+    from vikings_bot.capture.screen import FramePacket
+    from vikings_bot.perception.pipeline import PerceptionPipeline
+
+    cfg = load_config("config/default.yaml")
+    assert cfg.farming["auto_daylight_weather"] is True
+    assert cfg.farming["daylight_weather_cmd"] == "/setweather 11"
+    assert float(cfg.farming["daylight_weather_interval_sec"]) == 600.0
+    assert float(cfg.farming["daylight_dark_luma_threshold"]) == 68.0
+
+    # Real night fixture vm_1024_raw.jpg must produce playfield_luma < 68.0
+    vm_fix = Path(__file__).parent / "fixtures" / "vm_1024_raw.jpg"
+    if vm_fix.exists():
+        cfg_vm = load_config("config/default.yaml")
+        cfg_vm.perception["hud_fixed_pixel_ui"] = True
+        snap_vm = PerceptionPipeline(cfg_vm).analyze(
+            FramePacket(image_bgr=cv2.imread(str(vm_fix)), timestamp=1.0, source_name="vm_1024_raw.jpg")
+        )
+        assert snap_vm.playfield_luma is not None and snap_vm.playfield_luma < 68.0
+
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    fsm.resume(10.0)
+
+    # 1. First entry into SEARCH_MOB after resume (F9) -> sends `/setweather 11`
+    acts_init = fsm.step(tracker.update(_snap(10.5, fw=1024, fh=768, playfield_luma=92.0)))
+    assert any(isinstance(a, TypeChatCommandIntent) and a.command == "/setweather 11" for a in acts_init)
+
+    # 2. Immediately after (10s later) even if still dark (<68.0) -> respects 45s cooldown, does NOT spam!
+    acts_cd = fsm.step(tracker.update(_snap(20.5, fw=1024, fh=768, playfield_luma=45.0)))
+    assert not any(isinstance(a, TypeChatCommandIntent) for a in acts_cd)
+
+    # 3. Engage a Gold Rustler -> enters COMBAT_WAIT; even when dark AND >=600s elapsed, NEVER sends `/setweather 11`!
+    m = _mob(cx=510, cy=320, dist=140.0, has_hp=False)
+    acts_eng = fsm.step(tracker.update(_snap(25.0, fw=1024, fh=768, mobs=(m,), playfield_luma=95.0)))
+    assert fsm.state == BotState.COMBAT_WAIT
+    assert any(isinstance(a, ClickScreenIntent) for a in acts_eng)
+
+    m_alive = _mob(cx=510, cy=320, dist=95.0, has_hp=True, hp=0.65)
+    acts_combat = fsm.step(tracker.update(_snap(640.0, fw=1024, fh=768, mobs=(m_alive,), playfield_luma=38.0)))
+    assert not any(isinstance(a, TypeChatCommandIntent) for a in acts_combat)
+
+    # 4. Return to SEARCH_MOB: dark playfield_luma (< 68.0) past 45s cooldown -> sends `/setweather 11`!
+    fsm.transition(BotState.SEARCH_MOB, 70.0, "test_back_to_scan")
+    acts_dark = fsm.step(tracker.update(_snap(70.5, fw=1024, fh=768, playfield_luma=44.0)))
+    assert any(
+        isinstance(a, TypeChatCommandIntent) and a.command == "/setweather 11" and "dark" in a.reason
+        for a in acts_dark
+    )
+
+    # 5. Bright daylight (luma=96.0) but 600s timer elapsed -> sends periodic `/setweather 11`!
+    acts_int = fsm.step(tracker.update(_snap(671.0, fw=1024, fh=768, playfield_luma=96.0)))
+    assert any(
+        isinstance(a, TypeChatCommandIntent) and a.command == "/setweather 11" and "interval" in a.reason
+        for a in acts_int
+    )

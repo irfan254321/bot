@@ -11,6 +11,7 @@ from vikings_bot.input.actions import (
     ClickScreenIntent,
     DragCameraIntent,
     TapKeyIntent,
+    TypeChatCommandIntent,
 )
 from vikings_bot.input.humanizer import Humanizer
 from vikings_bot.state.models import LootDrop, MobTarget, WorldState
@@ -42,9 +43,52 @@ class MouseFarmController:
         self.loot_entry_kill_window_sec: float = float(f.get("loot_entry_kill_window_sec", 4.0))
         self.camera_sweep_drag_px: int = int(f.get("camera_sweep_drag_px", 185))
         self.camera_sweep_interval_sec: float = float(f.get("camera_sweep_interval_sec", 0.85))
+        self.auto_daylight_weather: bool = bool(f.get("auto_daylight_weather", True))
+        self.daylight_weather_cmd: str = str(f.get("daylight_weather_cmd", "/setweather 11")).strip()
+        self.daylight_weather_interval_sec: float = max(30.0, float(f.get("daylight_weather_interval_sec", 600.0)))
+        self.daylight_dark_luma_threshold: float = float(f.get("daylight_dark_luma_threshold", 68.0))
+        self.daylight_dark_cooldown_sec: float = max(10.0, float(f.get("daylight_dark_cooldown_sec", 45.0)))
 
         self._sweep_dir: int = 1
         self._sweep_dir_chosen: bool = False
+        self._weather_pending_first_entry: bool = True
+        self._last_weather_sent_at: float | None = None
+        self._last_dark_weather_sent_at: float | None = None
+
+    def request_daylight_weather_sync(self) -> None:
+        """Schedule a daylight weather command on the next safe SEARCH_MOB / SCAN_SPOT entry."""
+        self._weather_pending_first_entry = True
+
+    def maybe_build_daylight_weather_cmd(self, world: WorldState, now: float) -> list[ActionIntent]:
+        """Send `/setweather 11` via AHK v2 CHAT_CMD when safe in SEARCH_MOB / SCAN_SPOT.
+
+        Triggers on:
+        1. First entry into SEARCH_MOB after resume (F9), DEAD_RESPAWN, or TRAVEL_TO_SPOT.
+        2. Periodic interval elapsed (`daylight_weather_interval_sec`, default 600s).
+        3. HUD-masked `playfield_luma` drops below `daylight_dark_luma_threshold` (default 68.0)
+           with a minimum 45s cooldown to avoid spamming if rejected by server.
+        """
+        if not self.auto_daylight_weather or not self.daylight_weather_cmd or world.playfield_luma is None:
+            return []
+
+        reason: str | None = None
+        if self._weather_pending_first_entry:
+            reason = "daylight_weather_initial"
+        elif self._last_weather_sent_at is None or (now - self._last_weather_sent_at) >= self.daylight_weather_interval_sec:
+            reason = "daylight_weather_interval"
+        elif world.playfield_luma < self.daylight_dark_luma_threshold and (
+            self._last_dark_weather_sent_at is None
+            or (now - self._last_dark_weather_sent_at) >= self.daylight_dark_cooldown_sec
+        ):
+            reason = f"daylight_weather_dark(luma={world.playfield_luma:.1f})"
+
+        if reason is None:
+            return []
+
+        self._weather_pending_first_entry = False
+        self._last_weather_sent_at = now
+        self._last_dark_weather_sent_at = now
+        return [TypeChatCommandIntent(command=self.daylight_weather_cmd, reason=reason)]
 
     def reset_sweep_direction(self) -> None:
         self._sweep_dir_chosen = False

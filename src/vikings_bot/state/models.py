@@ -126,6 +126,7 @@ class PerceptionSnapshot:
     interface_mode: str = "unknown"  # "keyboard_banner" | "mouse_banner" | "mouse_cursor" | "no_cursor" | "unknown"
     detected_control_mode: str | None = None  # "mouse" | "keyboard" | None
     camera_pitch_state: str = "ok"
+    playfield_luma: float | None = None
     timings_ms: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -191,3 +192,7 @@ class WorldState:
     @property
     def engaged_mob(self) -> MobTarget | None:
         return self.snapshot.engaged_mob
+
+    @property
+    def playfield_luma(self) -> float | None:
+        return self.snapshot.playfield_luma

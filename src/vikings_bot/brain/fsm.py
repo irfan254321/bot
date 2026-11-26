@@ -206,6 +206,7 @@ class FarmingFSM:
             self.tracker.reset_for_respawn()
             self.respawn_travel.reset_teleport_state(now)
             self.respawn_travel.reset_travel_state()
+            self.farm.request_daylight_weather_sync()
         elif new_state == BotState.REPAIR_RECALL:
             self.tracker.clear_target_lock()
             self.tracker.notify_movement_stopped()
@@ -224,6 +225,7 @@ class FarmingFSM:
             self.tracker.clear_target_lock()
             self.tracker.notify_movement_stopped()
             self.respawn_travel.reset_travel_state()
+            self.farm.request_daylight_weather_sync()
             self._mouse_mode_verified = False
         elif new_state == BotState.RECOVER_STUCK:
             self._recovery_attempts += 1
@@ -235,6 +237,7 @@ class FarmingFSM:
             return
         self._just_resumed = True
         self._mouse_mode_verified = False
+        self.farm.request_daylight_weather_sync()
         if self.mode == BotMode.NAVIGATE:
             self.transition(BotState.NAVIGATE_TO_SPOT, now, "resume_navigate")
         elif self.mode == BotMode.LOOT:
@@ -592,6 +595,11 @@ class FarmingFSM:
             self.tracker.waypoint_index = 0
             self.transition(BotState.NAVIGATE_TO_SPOT, now, "drifted_outside_spot_area")
             return self.release_move_keys("spot_to_nav_release")
+
+        # Priority 3b: Safe daylight weather lock (/setweather 11) ONLY while idle/scanning in SEARCH_MOB
+        weather_intents = self.farm.maybe_build_daylight_weather_cmd(world, now)
+        if weather_intents:
+            return weather_intents
 
         # Wait settle window after MMB camera drag so we never click stale pre-drag coordinates
         if now < self._post_drag_settle_until:
