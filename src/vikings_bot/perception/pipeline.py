@@ -254,6 +254,8 @@ class PerceptionPipeline:
         loot_radius_limit_px: float | None = None,
         current_state: BotState | None = None,
         external_combat_zones: Sequence[tuple[float, float]] = (),
+        tele_menu_anchor_xy: tuple[int, int] | None = None,
+        trade_menu_anchor_xy: tuple[int, int] | None = None,
     ) -> PerceptionSnapshot:
         # Hard-gate at perception entry based on FSM state:
         # - COMBAT_WAIT: NEVER run GoldRustlerDetector, GoldBagDetector, or CorpseDetector (THP & Player HP only!)
@@ -453,14 +455,14 @@ class PerceptionPipeline:
         if check_tele_ui:
             t0 = time.perf_counter()
             sign_bbox = self.ui_matcher.find_addon_keep_sign(frame)
-            menu_bbox = self.ui_matcher.find_teleport_menu(frame)
+            menu_bbox = self.ui_matcher.find_teleport_menu(frame, anchor_xy=tele_menu_anchor_xy)
             talk_ok_bbox = self.ui_matcher.find_npc_talk_dialog(frame)
             timings["tele_ui"] = (time.perf_counter() - t0) * 1000.0
 
         if check_repair_ui:
             t0 = time.perf_counter()
             merchant_sign_bbox = self.ui_matcher.find_merchant_sign(frame)
-            trade_menu_bbox = self.ui_matcher.find_trade_menu(frame)
+            trade_menu_bbox = self.ui_matcher.find_trade_menu(frame, anchor_xy=trade_menu_anchor_xy)
             repair_all_bbox = self.ui_matcher.find_repair_all_btn(frame)
             repair_yes_bbox = self.ui_matcher.find_repair_yes_btn(frame)
             no_equipment_repair_bbox = self.ui_matcher.find_no_equipment_repair(frame)

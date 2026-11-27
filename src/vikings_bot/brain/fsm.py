@@ -505,8 +505,11 @@ class FarmingFSM:
         )
         self._force_repair_requested = False
         self._need_dynamic_anchor = False
-        if self.respawn_travel.is_in_city(world.coords_smoothed):
-            self.transition(BotState.REPAIR_AT_NPC, now, f"{rsn}_already_in_town")
+        if self.respawn_travel.is_in_city(world.coords_smoothed) or self.state == BotState.TELEPORT_TO_SPOT:
+            if self._ensure_mode_enabled and self.state != BotState.TELEPORT_TO_SPOT:
+                self._enter_ensure_keyboard_mode(BotState.REPAIR_AT_NPC, now, f"{rsn}_already_in_town_ensure_kb")
+            else:
+                self.transition(BotState.REPAIR_AT_NPC, now, f"{rsn}_already_in_town")
             return self.respawn_travel.release_all_move_keys("repair_in_town_start")
         self.transition(BotState.REPAIR_RECALL, now, rsn)
         return self.respawn_travel.release_all_move_keys("enter_repair_recall")
@@ -620,6 +623,20 @@ class FarmingFSM:
                 world.coords_smoothed.y,
                 self.navigator.route.farm_radius,
             )
+
+        # --- IMMEDIATE F7 FORCE REPAIR INTERCEPTION (even while in TELEPORT_TO_SPOT or TRAVEL_TO_SPOT!) ---
+        if self._force_repair_requested and self.state in (
+            BotState.TELEPORT_TO_SPOT,
+            BotState.TRAVEL_TO_SPOT,
+        ):
+            self._force_repair_requested = False
+            self._need_dynamic_anchor = False
+            if self.respawn_travel.is_in_city(world.coords_smoothed) or self.state == BotState.TELEPORT_TO_SPOT:
+                # Already in Green Wales town (and already in Keyboard Mode if in TELEPORT_TO_SPOT) -> go straight to REPAIR_AT_NPC without /kill!
+                self.transition(BotState.REPAIR_AT_NPC, now, "manual_repair_now_already_in_town")
+                return self.respawn_travel.release_all_move_keys("f7_in_town_repair_start")
+            self.transition(BotState.REPAIR_RECALL, now, "manual_repair_now_from_travel")
+            return self.respawn_travel.release_all_move_keys("f7_from_travel_recall")
 
         if self.state == BotState.COMBAT_WAIT:
             # Priority #1 Hard-Gate at top of fsm.step(): nothing can interrupt COMBAT_WAIT
@@ -852,16 +869,6 @@ class FarmingFSM:
             ):
                 self.transition(BotState.SEARCH_MOB, now, "arrived_within_spot_center_12u")
                 return self.release_move_keys("arrived_within_spot_center_12u")
-
-        # Accidental Mouse Mode guard during navigation: if interface_mouse_banner is visible, press Esc once to return to Keyboard Mode!
-        if world.snapshot.interface_mode == "mouse_banner" and self.tracker.is_ready("kb_guard_esc", now):
-            self.tracker.set_cooldown("kb_guard_esc", now, 1.0)
-            esc_key = str(self.config.respawn_travel.get("mode_toggle_key", "esc"))
-            logger.warning("NAVIGATE_TO_SPOT: interface_mouse_banner detected -> pressing %s once to restore Keyboard Mode", esc_key.upper())
-            return [
-                *self.release_move_keys("nav_restore_kb_mode"),
-                TapKeyIntent(key=esc_key, hold_sec=0.05, reason="restore_kb_from_mouse_banner"),
-            ]
 
         return self.navigator.step_to_waypoint_keyboard(world, now)
 

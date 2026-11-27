@@ -434,18 +434,11 @@ class BotEngine:
                     else None
                 )
                 cursor_rel_xy: tuple[int, int] | None = None
-                # Check interface mode during ENSURE_MOUSE_MODE / ENSURE_KEYBOARD_MODE, and throttled (0.5s) during Keyboard-Mode travel/repair/nav
-                # so accidental interface_mouse_banner.png is caught and restored to Keyboard Mode immediately.
-                in_kb_walk_state = self.fsm.state in (
-                    BotState.REPAIR_AT_NPC,
-                    BotState.TELEPORT_TO_SPOT,
-                    BotState.TRAVEL_TO_SPOT,
-                    BotState.NAVIGATE_TO_SPOT,
-                )
+                # One-shot interface mode check ONLY during ENSURE_MOUSE_MODE / ENSURE_KEYBOARD_MODE (never mid-walk!)
                 need_imode_check = self.fsm.state in (
                     BotState.ENSURE_MOUSE_MODE,
                     BotState.ENSURE_KEYBOARD_MODE,
-                ) or (in_kb_walk_state and (now - last_imode_check_ts) >= 0.5)
+                )
                 if need_imode_check:
                     last_imode_check_ts = now
                     cpos = Win32InputDriver.get_cursor_pos()
@@ -467,6 +460,8 @@ class BotEngine:
                     loot_radius_limit_px=loot_rad_lim,
                     current_state=self.fsm.state,
                     external_combat_zones=active_ext_zones,
+                    tele_menu_anchor_xy=self.fsm.respawn_travel._last_tele_npc_click_xy,
+                    trade_menu_anchor_xy=self.fsm.respawn_travel._last_merchant_npc_click_xy,
                 )
                 world = self.tracker.update(snapshot)
 

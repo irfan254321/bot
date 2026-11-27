@@ -19,11 +19,11 @@ class UiTemplateMatcher:
     def __init__(self, config: BotConfig) -> None:
         rt = config.respawn_travel
         rep = config.repair
-        self.sign_thresh = float(rt.get("sign_match_threshold", 0.78))
-        self.menu_thresh = float(rt.get("menu_match_threshold", 0.62))
+        self.sign_thresh = float(rt.get("sign_match_threshold", 0.66))
+        self.menu_thresh = float(rt.get("menu_match_threshold", 0.78))
         self.ok_thresh = float(rt.get("npc_talk_ok_threshold", 0.72))
-        self.merchant_sign_thresh = float(rep.get("merchant_sign_threshold", 0.76))
-        self.trade_menu_thresh = float(rep.get("trade_menu_threshold", 0.62))
+        self.merchant_sign_thresh = float(rep.get("merchant_sign_threshold", 0.66))
+        self.trade_menu_thresh = float(rep.get("trade_menu_threshold", 0.78))
         self.repair_btn_thresh = float(rep.get("repair_btn_threshold", 0.72))
         self.repair_yes_thresh = float(rep.get("repair_yes_threshold", 0.72))
         self.no_equip_repair_thresh = float(rep.get("no_equipment_repair_threshold", 0.70))
@@ -237,9 +237,85 @@ class UiTemplateMatcher:
         self._record_template_score(template_name, float(max_v), threshold, True, frame.timestamp)
         return (ox + int(max_l[0]), oy + int(max_l[1]), int(tw), int(th))
 
+    @staticmethod
+    def _build_sign_fg_mask(tmpl_bgr: np.ndarray) -> np.ndarray:
+        """Mask out semi-transparent interior background; keep golden frame + bright NPC name text."""
+        hsv = cv2.cvtColor(tmpl_bgr, cv2.COLOR_BGR2HSV)
+        gold_frame = (hsv[:, :, 0] >= 14) & (hsv[:, :, 0] <= 42) & (hsv[:, :, 1] >= 45) & (hsv[:, :, 2] >= 75)
+        bright_text = hsv[:, :, 2] >= 85
+        mask = ((gold_frame | bright_text).astype(np.uint8)) * 255
+        return cv2.merge([mask, mask, mask])
+
+    def _match_sign_in_roi(
+        self,
+        frame: FramePacket,
+        tmpl: np.ndarray | None,
+        tmpl_g2: np.ndarray | None,
+        roi_norm: tuple[float, float, float, float],
+        threshold: float,
+        *,
+        template_name: str,
+    ) -> tuple[int, int, int, int] | None:
+        hit = self._match_in_roi(
+            frame,
+            tmpl,
+            tmpl_g2,
+            roi_norm=roi_norm,
+            threshold=threshold,
+            template_name=template_name,
+        )
+        if hit is not None or tmpl is None or frame.image_bgr.size == 0:
+            return hit
+
+        # Semi-transparent NPC sign fallback: match ONLY golden border + text pixels (ignores varying grass/wall background)
+        crop, (ox, oy, _x2, _y2) = frame.crop_norm(roi_norm)
+        t_use = tmpl if self.hud_fixed_pixel_ui else self._scale_template(tmpl, frame.width, frame.height)
+        th, tw = t_use.shape[:2]
+        if crop.shape[0] < th or crop.shape[1] < tw:
+            return None
+        fg_mask = self._build_sign_fg_mask(t_use)
+        if int((fg_mask[:, :, 0] > 0).sum()) < 24:
+            return None
+        res_m = cv2.matchTemplate(crop, t_use, cv2.TM_CCOEFF_NORMED, mask=fg_mask)
+        res_m = np.nan_to_num(res_m, nan=-1.0, posinf=-1.0, neginf=-1.0)
+        _min_m, max_m, _min_lm, max_lm = cv2.minMaxLoc(res_m)
+        best_m = float(max_m)
+        if best_m >= threshold:
+            self._record_template_score(template_name, best_m, threshold, True, frame.timestamp)
+            return (ox + int(max_lm[0]), oy + int(max_lm[1]), int(tw), int(th))
+        prev_best = self.last_match_scores.get(template_name, -1.0)
+        if best_m > prev_best:
+            self.last_match_scores[template_name] = best_m
+        return None
+
+    def _compute_popup_roi_norm(
+        self,
+        frame: FramePacket,
+        default_roi: tuple[float, float, float, float],
+        anchor_xy: tuple[int, int] | None,
+    ) -> tuple[float, float, float, float]:
+        """Forbid detections in top sky strip (y < 140 on 1024x768, scaled) and constrain around last NPC click when known."""
+        fw = max(1, frame.width)
+        fh = max(1, frame.height)
+        sx = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
+        sy = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
+        min_y_px = int(round(140.0 * sy))
+        if anchor_xy is None:
+            x1n, y1n, x2n, y2n = default_roi
+            return (x1n, max(y1n, min_y_px / fh), x2n, y2n)
+        ax, ay = int(anchor_xy[0]), int(anchor_xy[1])
+        x1 = max(0, int(round(ax - 180.0 * sx)))
+        x2 = min(fw, int(round(ax + 180.0 * sx)))
+        y1 = max(min_y_px, int(round(ay - 240.0 * sy)))
+        y2 = min(fh, int(round(ay + 200.0 * sy)))
+        if (x2 - x1) < 40 or (y2 - y1) < 30:
+            x1n, y1n, x2n, y2n = default_roi
+            return (x1n, max(y1n, min_y_px / fh), x2n, y2n)
+        return (x1 / fw, y1 / fh, x2 / fw, y2 / fh)
+
     def find_addon_keep_sign(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
         """Locate the golden-framed 'Addon Keep Teleport' NPC nameplate in the playfield."""
-        return self._match_in_roi(
+        return self._match_sign_in_roi(
             frame,
             self.sign_tmpl,
             self._sign_g2,
@@ -248,20 +324,26 @@ class UiTemplateMatcher:
             template_name="addon_keep_sign",
         )
 
-    def find_teleport_menu(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
-        """Locate the 'Talk / Teleport' popup box above the Addon Keep Teleport NPC."""
+    def find_teleport_menu(
+        self,
+        frame: FramePacket,
+        *,
+        anchor_xy: tuple[int, int] | None = None,
+    ) -> tuple[int, int, int, int] | None:
+        """Locate the 'Talk / Teleport' popup box near the clicked Addon Keep Teleport NPC (forbids sky y<140)."""
+        roi = self._compute_popup_roi_norm(frame, (0.10, 0.185, 0.92, 0.78), anchor_xy)
         return self._match_in_roi(
             frame,
             self.menu_tmpl,
             self._menu_g2,
-            roi_norm=(0.10, 0.08, 0.92, 0.74),
+            roi_norm=roi,
             threshold=self.menu_thresh,
             template_name="teleport_menu",
         )
 
     def find_merchant_sign(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
         """Locate the golden-framed 'Beginner Armor Merchant' NPC nameplate in town."""
-        return self._match_in_roi(
+        return self._match_sign_in_roi(
             frame,
             self.merchant_sign_tmpl,
             self._merchant_sign_g2,
@@ -270,13 +352,19 @@ class UiTemplateMatcher:
             template_name="merchant_sign",
         )
 
-    def find_trade_menu(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
-        """Locate the 'Talk / Trade' popup box above Beginner Armor Merchant."""
+    def find_trade_menu(
+        self,
+        frame: FramePacket,
+        *,
+        anchor_xy: tuple[int, int] | None = None,
+    ) -> tuple[int, int, int, int] | None:
+        """Locate the 'Talk / Trade' popup box near the clicked Beginner Armor Merchant NPC (forbids sky y<140)."""
+        roi = self._compute_popup_roi_norm(frame, (0.10, 0.185, 0.92, 0.78), anchor_xy)
         return self._match_in_roi(
             frame,
             self.trade_menu_tmpl,
             self._trade_menu_g2,
-            roi_norm=(0.10, 0.08, 0.92, 0.76),
+            roi_norm=roi,
             threshold=self.trade_menu_thresh,
             template_name="trade_menu",
         )
@@ -513,29 +601,6 @@ class UiTemplateMatcher:
                 return ("keyboard_banner", f"banner_keyboard({kb_score:.2f})")
             if ms_score >= self.interface_mode_thresh and ms_score > (kb_score + 0.10):
                 return ("mouse_banner", f"banner_mouse({ms_score:.2f})")
-
-        # 1b) Top-center INTERFACE TYPE banner white-text width fallback (x=395..585, y=91..109 at 1024x768, scaled).
-        #     White text pixels (V >= 200, S <= 45): 'Mouse' ~55-92px vs 'Keyboard' ~98-150px.
-        if frame.width >= 320 and frame.height >= 240:
-            sx_b = 1.0 if self.hud_fixed_pixel_ui else (frame.width / 1024.0)
-            sy_b = 1.0 if self.hud_fixed_pixel_ui else (frame.height / 768.0)
-            bx1 = max(0, int(round(395.0 * sx_b)))
-            bx2 = min(frame.width, int(round(585.0 * sx_b)))
-            by1 = max(0, int(round(91.0 * sy_b)))
-            by2 = min(frame.height, int(round(109.0 * sy_b)))
-            if (bx2 - bx1) >= 40 and (by2 - by1) >= 8:
-                bpatch = frame.image_bgr[by1:by2, bx1:bx2]
-                bhsv = cv2.cvtColor(bpatch, cv2.COLOR_BGR2HSV)
-                dark_bg = float((bhsv[:, :, 2] <= 85).mean())
-                if dark_bg >= 0.35:
-                    wmask = (bhsv[:, :, 2] >= 200) & (bhsv[:, :, 1] <= 45)
-                    col_hits = np.where(wmask.sum(axis=0) >= 2)[0]
-                    if col_hits.size >= 15:
-                        span_norm = float(col_hits[-1] - col_hits[0] + 1) / max(0.5, sx_b)
-                        if 98.0 <= span_norm <= 150.0:
-                            return ("keyboard_banner", f"banner_width_keyboard({span_norm:.0f}px)")
-                        if 55.0 <= span_norm <= 92.0:
-                            return ("mouse_banner", f"banner_width_mouse({span_norm:.0f}px)")
 
         # 2) Tight 64x64 patch around live cursor position inside game client.
         #    Ignore exact screen center (fw/2, fh/2) +-14px because RYL locks the hidden cursor to center

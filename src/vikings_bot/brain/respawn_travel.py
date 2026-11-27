@@ -47,7 +47,7 @@ class RespawnTravelController:
 
         npc = rt.get("addon_teleport_coord", rt.get("npc_stand_coord", [1066.0, 2627.0]))
         self.npc_stand = Point2D(float(npc[0]), float(npc[1]))
-        self.npc_arrival_radius = float(rt.get("npc_arrival_radius", 4.5))
+        self.npc_arrival_radius = float(rt.get("npc_arrival_radius", 6.5))
 
         ak = rt.get("addon_keep_landing", [1409.0, 1773.0])
         self.addon_keep_landing = Point2D(float(ak[0]), float(ak[1]))
@@ -84,6 +84,7 @@ class RespawnTravelController:
         self._tele_phase: str = "WALK_TO_NPC"  # WALK_TO_NPC | FIND_SIGN | WAIT_MENU | WAIT_LOAD
         self._tele_phase_ts: float = 0.0
         self._tele_click_attempts: int = 0
+        self._last_tele_npc_click_xy: tuple[int, int] | None = None
         self._talk_dismiss_attempts: int = 0
         self._cursor_toggled_by_us: bool = False
         self._cursor_ready_at: float = 0.0
@@ -118,6 +119,7 @@ class RespawnTravelController:
         self._repair_phase: str = "WALK_TO_MERCHANT"
         self._repair_phase_ts: float = 0.0
         self._repair_click_attempts: int = 0
+        self._last_merchant_npc_click_xy: tuple[int, int] | None = None
         self._repair_confirm_retries: int = 0
         self._repair_talk_dismiss_attempts: int = 0
         self._repair_cursor_toggled: bool = False
@@ -140,6 +142,7 @@ class RespawnTravelController:
         self._tele_phase = "WALK_TO_NPC"
         self._tele_phase_ts = now
         self._tele_click_attempts = 0
+        self._last_tele_npc_click_xy = None
         self._talk_dismiss_attempts = 0
         self._cursor_toggled_by_us = False
         self._cursor_ready_at = 0.0
@@ -161,6 +164,7 @@ class RespawnTravelController:
         self._repair_phase = "WALK_TO_MERCHANT"
         self._repair_phase_ts = now
         self._repair_click_attempts = 0
+        self._last_merchant_npc_click_xy = None
         self._repair_confirm_retries = 0
         self._repair_talk_dismiss_attempts = 0
         self._repair_cursor_toggled = False
@@ -198,25 +202,28 @@ class RespawnTravelController:
             return best_idx + 1
         return best_idx
 
-    def _check_accidental_mouse_mode_guard(
+    def _is_valid_popup_near_npc(
         self,
-        world: WorldState,
-        now: float,
-        context: str,
-    ) -> list[ActionIntent]:
-        """If interface_mouse_banner is detected during Keyboard-Mode walking/town/travel, tap Esc once to return to Keyboard Mode."""
-        if world.snapshot.interface_mode == "mouse_banner" and self.tracker.is_ready("kb_guard_esc", now):
-            self.tracker.set_cooldown("kb_guard_esc", now, 1.0)
-            logger.warning(
-                "%s: interface_mouse_banner detected (accidental Mouse Mode) -> pressing %s once to restore Keyboard Mode",
-                context,
-                self.mode_toggle_key.upper(),
-            )
-            return [
-                *self.release_all_move_keys(f"{context}_restore_kb"),
-                TapKeyIntent(key=self.mode_toggle_key, hold_sec=0.05, reason="restore_kb_from_mouse_banner"),
-            ]
-        return []
+        menu_bbox: tuple[int, int, int, int],
+        anchor_xy: tuple[int, int] | None,
+        fw: int,
+        fh: int,
+    ) -> bool:
+        """Reject sky/top false positives (y < 140 on 1024x768, scaled) and popups far from last NPC click."""
+        mx, my, mw, mh = menu_bbox
+        sx = 1.0 if self.hud_fixed_pixel_ui else (fw / 1024.0)
+        sy = 1.0 if self.hud_fixed_pixel_ui else (fh / 768.0)
+        if my < int(round(140.0 * sy)):
+            return False
+        if anchor_xy is not None:
+            ax, ay = anchor_xy
+            mcx = mx + mw // 2
+            mcy = my + mh // 2
+            if abs(mcx - ax) > int(round(180.0 * sx)):
+                return False
+            if (mcy - ay) < int(round(-240.0 * sy)) or (mcy - ay) > int(round(200.0 * sy)):
+                return False
+        return True
 
     def _steer_keyboard_toward(
         self,
@@ -245,7 +252,8 @@ class RespawnTravelController:
             ]
 
         intents: list[ActionIntent] = []
-        if abs(rel_angle) > 10.0 and self.tracker.is_ready("travel_yaw", now):
+        turn_thresh = 8.0 if dist < 10.0 else 10.0
+        if abs(rel_angle) > turn_thresh and self.tracker.is_ready("travel_yaw", now):
             raw_dx = int(round(-rel_angle * self.yaw_px_per_deg * 0.58))
             dx = max(-self.max_turn_px, min(self.max_turn_px, raw_dx))
             if abs(dx) >= 4:
@@ -261,7 +269,9 @@ class RespawnTravelController:
                     )
                 )
 
-        if abs(rel_angle) <= 50.0:
+        # Tighter heading cone when dist < 10 units so character brakes & aligns instead of overshooting NPC!
+        walk_cone = 28.0 if dist < 10.0 else 50.0
+        if abs(rel_angle) <= walk_cone:
             intents.append(
                 HoldKeyIntent(
                     key=self.forward_key,
@@ -427,11 +437,6 @@ class RespawnTravelController:
         if self._repair_phase in ("FIND_MERCHANT_SIGN", "WAIT_TRADE_MENU"):
             self._repair_talk_dismiss_attempts = 0
 
-        # Accidental Mouse Mode guard: never allow Mouse Mode during Keyboard-Mode repair walk/interaction
-        guard_intents = self._check_accidental_mouse_mode_guard(world, now, "REPAIR_AT_NPC")
-        if guard_intents:
-            return (guard_intents, None, "")
-
         # Phase 1: Walk from town spawn (1075,2631) -> Beginner Armor Merchant (1094,2644) strictly in Keyboard Mode (WASD)
         if self._repair_phase == "WALK_TO_MERCHANT":
             intents = []
@@ -463,7 +468,14 @@ class RespawnTravelController:
                 self._repair_phase = "CLICK_REPAIR_ALL"
                 self._repair_phase_ts = now
                 return (intents, None, "")
-            if world.snapshot.trade_menu_bbox is not None:
+            # NEVER shortcut into trade_menu before NPC has actually been clicked (_repair_click_attempts > 0)!
+            if (
+                self._repair_click_attempts > 0
+                and world.snapshot.trade_menu_bbox is not None
+                and self._is_valid_popup_near_npc(
+                    world.snapshot.trade_menu_bbox, self._last_merchant_npc_click_xy, fw, fh
+                )
+            ):
                 self._repair_phase = "WAIT_TRADE_MENU"
                 self._repair_phase_ts = now
                 return (intents, None, "")
@@ -493,6 +505,7 @@ class RespawnTravelController:
                     self._repair_click_attempts = next_attempt
                     click_x = max(20, min(fw - 20, sign_cx))
                     click_y = max(20, min(fh - 40, int(round(sign_cy + self.npc_body_offset_y_px * scale_y))))
+                    self._last_merchant_npc_click_xy = (click_x, click_y)
                     self.tracker.set_cooldown("repair_npc_click", now, 1.6)
                     intents.append(
                         ClickScreenIntent(
@@ -539,7 +552,7 @@ class RespawnTravelController:
                 self._repair_phase_ts = now
                 return (intents, None, "")
             tmenu = world.snapshot.trade_menu_bbox
-            if tmenu is not None:
+            if tmenu is not None and self._is_valid_popup_near_npc(tmenu, self._last_merchant_npc_click_xy, fw, fh):
                 mx, my, mw, mh = tmenu
                 trade_x = mx + mw // 2
                 trade_y = my + int(round(mh * 0.74))
@@ -766,15 +779,7 @@ class RespawnTravelController:
             self._talk_dismiss_attempts = 0
             self.reset_travel_state()
             self.tracker.travel_waypoint_index = 0
-            if world.snapshot.interface_mode == "mouse_banner":
-                intents.append(
-                    TapKeyIntent(
-                        key=self.mode_toggle_key,
-                        hold_sec=0.05,
-                        reason="restore_kb_from_mouse_banner",
-                    )
-                )
-            elif was_cursor_open and world.snapshot.interface_mode == "mouse_cursor":
+            if was_cursor_open and world.snapshot.interface_mode == "mouse_cursor":
                 intents.append(
                     TapKeyIntent(
                         key=self.cursor_toggle_key,
@@ -783,11 +788,6 @@ class RespawnTravelController:
                     )
                 )
             return (intents, BotState.TRAVEL_TO_SPOT, "teleported_to_addon_keep")
-
-        # Accidental Mouse Mode guard during town teleport sequence
-        guard_intents = self._check_accidental_mouse_mode_guard(world, now, "TELEPORT_TO_SPOT")
-        if guard_intents:
-            return (guard_intents, None, "")
 
         # Accidental 'Talk' NPC modal dialog guard ("Hi there! ... [ OK ]"):
         # Works across ALL teleport phases (including WAIT_LOAD so we NEVER sit frozen for 12s!).
@@ -861,8 +861,14 @@ class RespawnTravelController:
         # Phase 2: Locate 'Addon Keep Teleport' golden sign on screen, then toggle Tab cursor & click NPC
         if self._tele_phase == "FIND_SIGN":
             intents = self.release_all_move_keys("find_tele_sign")
-            # If menu is ALREADY open on screen, jump straight to clicking 'Teleport'!
-            if world.snapshot.teleport_menu_bbox is not None:
+            # NEVER shortcut to teleport_menu before NPC has actually been clicked (_tele_click_attempts > 0)!
+            if (
+                self._tele_click_attempts > 0
+                and world.snapshot.teleport_menu_bbox is not None
+                and self._is_valid_popup_near_npc(
+                    world.snapshot.teleport_menu_bbox, self._last_tele_npc_click_xy, fw, fh
+                )
+            ):
                 self._tele_phase = "WAIT_MENU"
                 self._tele_phase_ts = now
                 return (intents, None, "")
@@ -895,6 +901,7 @@ class RespawnTravelController:
                     self._tele_click_attempts = next_attempt
                     click_x = max(20, min(fw - 20, sign_cx))
                     click_y = max(20, min(fh - 40, int(round(sign_cy + self.npc_body_offset_y_px * scale_y))))
+                    self._last_tele_npc_click_xy = (click_x, click_y)
                     self.tracker.set_cooldown("tele_npc_click", now, 1.8)
                     intents.append(
                         ClickScreenIntent(
@@ -938,7 +945,7 @@ class RespawnTravelController:
         if self._tele_phase == "WAIT_MENU":
             intents = self.release_all_move_keys("wait_tele_menu")
             menu = world.snapshot.teleport_menu_bbox
-            if menu is not None:
+            if menu is not None and self._is_valid_popup_near_npc(menu, self._last_tele_npc_click_xy, fw, fh):
                 mx, my, mw, mh = menu
                 tele_x = mx + mw // 2
                 # In teleport_menu.png (43px tall): 'Talk' sits on rows 9..16 (0.21..0.37),
@@ -1000,11 +1007,6 @@ class RespawnTravelController:
         farm_radius: float,
     ) -> tuple[list[ActionIntent], BotState | None, str]:
         """Run smoothly along travel_waypoints from Ardun Keep (1409,1773) -> farming spot in 100% Keyboard Mode (WASD)."""
-        # Accidental Mouse Mode guard: if interface_mouse_banner is visible, press Esc once to return to Keyboard Mode!
-        guard_intents = self._check_accidental_mouse_mode_guard(world, now, "TRAVEL_TO_SPOT")
-        if guard_intents:
-            return (guard_intents, None, "")
-
         coords = world.coords_smoothed
         if coords is None:
             return ([], None, "")

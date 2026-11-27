@@ -234,22 +234,38 @@ def test_travel_waypoints_100pct_keyboard_wasd_never_mouse_mode_or_ground_click(
     assert not any(isinstance(a, DragCameraIntent) for a in travel_acts)
     assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in travel_acts)
 
-    # 4. Accidental interface_mouse_banner during TRAVEL_TO_SPOT or NAVIGATE_TO_SPOT -> presses Esc ONCE to restore Keyboard Mode!
-    fsm.transition(BotState.TRAVEL_TO_SPOT, 40.0, "test_mouse_banner_guard")
+    # 4. ZERO ESC ping-pong mid-walk: even if mouse_banner flickers during TRAVEL_TO_SPOT or TELEPORT_TO_SPOT, NEVER send Esc!
+    fsm.transition(BotState.TRAVEL_TO_SPOT, 40.0, "test_no_esc_pingpong")
     sn_mb = PerceptionSnapshot(
         timestamp=40.5, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
         coords=CoordReading(x=1230, y=1765, confidence=0.98), minimap=MinimapReading(),
         interface_mode="mouse_banner",
     )
-    acts_guard = fsm.step(tracker.update(sn_mb))
-    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "restore_kb_from_mouse_banner" for a in acts_guard)
-    assert not any(isinstance(a, ClickScreenIntent) for a in acts_guard)
+    acts_no_esc = fsm.step(tracker.update(sn_mb))
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_no_esc)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_no_esc)
 
-    # 5. NAVIGATE_TO_SPOT also walks strictly in Keyboard Mode (no ground clicks)
+    # 5. NAVIGATE_TO_SPOT also walks strictly in Keyboard Mode (no ground clicks, no Esc)
     fsm.transition(BotState.NAVIGATE_TO_SPOT, 45.0, "test_nav_kb_only")
     acts_nav = fsm.step(tracker.update(_snap(45.5, 700, 1817)))
     assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and a.hold for a in acts_nav)
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_nav)
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_nav)
+
+    # 6. FIND_SIGN NEVER shortcuts to teleport_menu before NPC has been clicked (_tele_click_attempts == 0),
+    #    and sky false positive (669, 99) is strictly rejected!
+    fsm.transition(BotState.TELEPORT_TO_SPOT, 50.0, "test_no_sky_menu_shortcut")
+    fsm.respawn_travel._tele_phase = "FIND_SIGN"
+    fsm.respawn_travel._tele_click_attempts = 0
+    acts_sky = fsm.step(tracker.update(_snap(50.5, 1066, 2627, menu_bbox=(669, 99, 64, 43))))
+    assert fsm.respawn_travel._tele_phase == "FIND_SIGN"
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_sky)
+
+    # 7. F7 Force Repair while already in Green Wales (TELEPORT_TO_SPOT) jumps straight to REPAIR_AT_NPC (NO /kill!)
+    fsm.request_repair_now()
+    acts_f7_city = fsm.step(tracker.update(_snap(51.0, 1066, 2627)))
+    assert fsm.state == BotState.REPAIR_AT_NPC
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_f7_city)
 
 
 @pytest.mark.skipif(not SCREENSHOTS_DIR.exists(), reason="Real Vikings Online screenshots not present")

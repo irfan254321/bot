@@ -169,31 +169,30 @@ def test_auto_esc_guard_switches_keyboard_banner_back_to_mouse_mode():
 
     cfg = load_config("config/default.yaml")
 
-    # 1. Width-based top-center INTERFACE TYPE banner detection at x=395..585, y=91..109 (1024x768)
-    #    Uses real ref_mode_mouse.jpg / ref_mode_keyboard.jpg if present, else calibrated 1024x768 synthetic banner.
-    from pathlib import Path
+    # 1. Strict template-only INTERFACE TYPE banner detection (NO width heuristic false positives on sky/overlay!)
     import cv2
 
     cfg_vm = load_config("config/default.yaml")
     cfg_vm.perception["hud_fixed_pixel_ui"] = True
     um = UiTemplateMatcher(cfg_vm)
 
-    fix_dir = Path(__file__).parent / "fixtures"
-    ref_mouse = fix_dir / "ref_mode_mouse.jpg"
-    ref_kb = fix_dir / "ref_mode_keyboard.jpg"
-    if ref_mouse.exists():
-        img_ms = cv2.imread(str(ref_mouse), cv2.IMREAD_COLOR)
-    else:
-        img_ms = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
-        img_ms[96:105, 455:529] = (235, 235, 235)  # 74px in [55..92px] -> Mouse
+    # Random bright white strip (simulating cloud/sky/overlay bar) MUST NOT false-trigger mouse_banner!
+    img_cloud = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
+    img_cloud[96:105, 455:529] = (235, 235, 235)
+    mode_cloud, _ = um.detect_interface_mode(FramePacket(image_bgr=img_cloud, timestamp=1.0))
+    assert mode_cloud == "no_cursor"
+
+    # Real interface_mouse_banner.png / interface_keyboard_banner.png templates match accurately
+    assert um.ms_banner_tmpl is not None and um.kb_banner_tmpl is not None
+    img_ms = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
+    mh, mw = um.ms_banner_tmpl.shape[:2]
+    img_ms[70 : 70 + mh, 384 : 384 + mw] = um.ms_banner_tmpl
     mode_ms, _ = um.detect_interface_mode(FramePacket(image_bgr=img_ms, timestamp=1.0))
     assert mode_ms == "mouse_banner"
 
-    if ref_kb.exists():
-        img_kb = cv2.imread(str(ref_kb), cv2.IMREAD_COLOR)
-    else:
-        img_kb = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
-        img_kb[96:105, 430:550] = (235, 235, 235)  # 120px in [98..150px] -> Keyboard
+    img_kb = np.full((768, 1024, 3), (25, 25, 25), dtype=np.uint8)
+    kh, kw = um.kb_banner_tmpl.shape[:2]
+    img_kb[70 : 70 + kh, 384 : 384 + kw] = um.kb_banner_tmpl
     mode_kb, _ = um.detect_interface_mode(FramePacket(image_bgr=img_kb, timestamp=1.0))
     assert mode_kb == "keyboard_banner"
 

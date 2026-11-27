@@ -227,14 +227,14 @@ respawn_travel:
   city_radius: 55.0
   npc_stand_coord: [1066.0, 2627.0]
   addon_teleport_coord: [1066.0, 2627.0]
-  npc_arrival_radius: 4.5
+  npc_arrival_radius: 6.5
   addon_keep_landing: [1409.0, 1773.0]
   addon_keep_radius: 75.0
   addon_keep_sign_template: "assets/ui_templates/addon_keep_sign.png"
   teleport_menu_template: "assets/ui_templates/teleport_menu.png"
   npc_talk_ok_template: "assets/ui_templates/npc_talk_ok.png"
-  sign_match_threshold: 0.78
-  menu_match_threshold: 0.62
+  sign_match_threshold: 0.66
+  menu_match_threshold: 0.78
   npc_talk_ok_threshold: 0.72
   npc_body_offset_y_px: 38
   cursor_toggle_key: "tab"
@@ -265,8 +265,8 @@ repair:
   repair_yes_template: "assets/ui_templates/repair_yes_btn.png"
   no_equipment_repair_template: "assets/ui_templates/no_equipment_repair.png"
   inventory_tab_template: "assets/ui_templates/inventory_tab.png"
-  merchant_sign_threshold: 0.76
-  trade_menu_threshold: 0.62
+  merchant_sign_threshold: 0.66
+  trade_menu_threshold: 0.78
   repair_btn_threshold: 0.72
   repair_yes_threshold: 0.72
   no_equipment_repair_threshold: 0.70

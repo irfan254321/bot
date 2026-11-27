@@ -627,14 +627,15 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
         _text_tag(_x(lx1), _y(ly1) - 18, f"{head}{cls_s} {int(round(lm.dist_px))}px{hp_s}", "#67E8F9", bg="#083344", font_sz=9)
         drawn += 4
 
+    # Keep debug banner compact at top (y=2..42) so it NEVER overlaps RYL's 'INTERFACE TYPE: Mouse / Keyboard' banner (y~55..115)
     bx1 = max(124, int(round(cw * 0.068)))
-    by1 = 8
+    by1 = 2
     banner_w = min(cw - bx1 - 12, 790)
     if banner_w < 360:
         bx1 = 8
         banner_w = max(240, min(cw - 16, 790))
     bx2 = bx1 + banner_w
-    by2 = by1 + 48
+    by2 = by1 + 40
 
     phase_color = {
         "COMBAT_WAIT": "#F87171",
@@ -667,8 +668,8 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
 
     canvas.create_rectangle(bx1, by1, bx2, by2, fill="#0B1120", outline="#22D3EE", width=1)
     canvas.create_rectangle(bx1, by1, bx1 + 4, by2, fill=phase_color, outline="")
-    canvas.create_text(bx1 + 12, by1 + 14, text=line1, fill=phase_color, anchor="w", font=("Consolas", 9, "bold"))
-    canvas.create_text(bx1 + 12, by1 + 34, text=line2, fill="#E2E8F0", anchor="w", font=("Consolas", 8, "bold"))
+    canvas.create_text(bx1 + 12, by1 + 11, text=line1, fill=phase_color, anchor="w", font=("Consolas", 9, "bold"))
+    canvas.create_text(bx1 + 12, by1 + 28, text=line2, fill="#E2E8F0", anchor="w", font=("Consolas", 8, "bold"))
     drawn += 4
     return drawn
 
