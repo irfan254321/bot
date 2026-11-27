@@ -45,9 +45,9 @@ class RespawnTravelController:
         self.city_spawn = Point2D(float(cs[0]), float(cs[1]))
         self.city_radius = float(rt.get("city_radius", 55.0))
 
-        npc = rt.get("addon_teleport_coord", rt.get("npc_stand_coord", [1066.0, 2627.0]))
+        npc = rt.get("addon_teleport_coord", rt.get("npc_stand_coord", [1062.0, 2627.0]))
         self.npc_stand = Point2D(float(npc[0]), float(npc[1]))
-        self.npc_arrival_radius = float(rt.get("addon_keep_arrival_radius", rt.get("npc_arrival_radius", 8.5)))
+        self.npc_arrival_radius = float(rt.get("addon_keep_arrival_radius", rt.get("npc_arrival_radius", 4.0)))
 
         ak = rt.get("addon_keep_landing", [1409.0, 1773.0])
         self.addon_keep_landing = Point2D(float(ak[0]), float(ak[1]))
@@ -269,17 +269,29 @@ class RespawnTravelController:
                     )
                 )
 
-        # Tighter heading cone when dist < 10 units so character brakes & aligns instead of overshooting NPC!
-        walk_cone = 28.0 if dist < 10.0 else 50.0
+        # Tighter heading cone when dist < 8 units + short-step pulsing so character NEVER overshoots (1062, 2627)!
+        walk_cone = 24.0 if dist < 8.0 else 50.0
         if abs(rel_angle) <= walk_cone:
-            intents.append(
-                HoldKeyIntent(
-                    key=self.forward_key,
-                    hold=True,
-                    reason=f"travel->{target_name} d={dist:.1f}",
-                    move_rel_angle_deg=0.0,
+            if dist < 8.0:
+                intents.append(HoldKeyIntent(key=self.forward_key, hold=False, reason="travel_short_step_brake"))
+                if self.tracker.is_ready("travel_short_step", now):
+                    self.tracker.set_cooldown("travel_short_step", now, 0.26)
+                    intents.append(
+                        TapKeyIntent(
+                            key=self.forward_key,
+                            hold_sec=0.14,
+                            reason=f"travel_short_step->{target_name} d={dist:.1f}",
+                        )
+                    )
+            else:
+                intents.append(
+                    HoldKeyIntent(
+                        key=self.forward_key,
+                        hold=True,
+                        reason=f"travel->{target_name} d={dist:.1f}",
+                        move_rel_angle_deg=0.0,
+                    )
                 )
-            )
         else:
             intents.append(HoldKeyIntent(key=self.forward_key, hold=False, reason="travel_turn_first"))
         return intents
@@ -808,25 +820,19 @@ class RespawnTravelController:
             return (intents, None, "")
         self._talk_dismiss_attempts = 0
 
-        # Phase 1: Walk close to Addon Keep Teleport NPC at (1066, 2627) strictly in Keyboard Mode (WASD)
+        # Phase 1: Walk close to Addon Keep Teleport NPC at (1062, 2627) strictly in Keyboard Mode (WASD)
+        # NEVER stop early just because the sign is visible from across the street; MUST reach <= 4.0 units!
         if self._tele_phase == "WALK_TO_NPC":
             intents: list[ActionIntent] = []
             if coords is None:
                 return (intents, None, "")
 
             dist_npc = coords.distance_to(self.npc_stand)
-            early_visual_arrived = (dist_npc <= 15.0) and (world.snapshot.addon_keep_sign_bbox is not None)
-            if dist_npc <= self.npc_arrival_radius or early_visual_arrived:
+            if dist_npc <= self.npc_arrival_radius:
                 intents.extend(self.release_all_move_keys("arrived_at_tele_npc"))
                 self._tele_phase = "FIND_SIGN"
                 self._tele_phase_ts = now
-                logger.info(
-                    "Arrived near Addon Keep Teleport NPC at (%.0f, %.0f) dist=%.1f%s",
-                    coords.x,
-                    coords.y,
-                    dist_npc,
-                    " [early_visual_sign]" if early_visual_arrived else "",
-                )
+                logger.info("Arrived right in front of Addon Keep Teleport NPC at (%.0f, %.0f) dist=%.1f", coords.x, coords.y, dist_npc)
                 return (intents, None, "")
 
             # Handle obstacle stuck while walking to NPC (e.g. wooden fence edge)
@@ -950,9 +956,21 @@ class RespawnTravelController:
                 logger.info("Clicked 'Teleport' menu option at (%d, %d); waiting for Addon Keep load...", tele_x, tele_y)
                 return (intents, None, "")
 
-            # Timeout waiting for popup -> retry clicking NPC (and re-check distance)
+            # Timeout waiting for popup -> if >=2 failed clicks and dist > 4.5u, walk closer to (1062, 2627)!
             if (now - self._tele_phase_ts) >= 2.2:
-                if coords is not None and coords.distance_to(self.npc_stand) > (self.npc_arrival_radius + 4.0):
+                if (
+                    coords is not None
+                    and (
+                        (self._tele_click_attempts >= 2 and coords.distance_to(self.npc_stand) > 4.5)
+                        or coords.distance_to(self.npc_stand) > (self.npc_arrival_radius + 4.0)
+                    )
+                ):
+                    if self._cursor_toggled_by_us:
+                        intents.append(
+                            TapKeyIntent(key=self._active_cursor_key, hold_sec=0.04, reason="hide_cursor_reapproach_npc")
+                        )
+                        self._cursor_toggled_by_us = False
+                    self._tele_click_attempts = 0
                     self._tele_phase = "WALK_TO_NPC"
                 else:
                     self._tele_phase = "FIND_SIGN"

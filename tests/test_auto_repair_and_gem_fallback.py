@@ -704,26 +704,37 @@ def test_green_wales_instant_recall_1x_esc_close_tele_arrival_antispike_and_80m_
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_done)
     assert fsm_a.respawn_travel._repair_phase == "WALK_TO_HUB"
 
-    # (c) TELE:WALK_TO_NPC arrives at <=8.5u OR <=15u when addon_keep_sign visible -> release -> Tab -> click NPC -> click Teleport
+    # (c) TELE:WALK_TO_NPC MUST NOT stop at (1074, 2622) even when addon_keep_sign is visible;
+    #     stops & enters FIND_SIGN ONLY when <= 4.0u of (1062, 2627) -> release -> Tab -> click NPC -> click Teleport!
     tr_c = WorldStateTracker()
     fsm_c = FarmingFSM(cfg, tr_c, mode=BotMode.FULL)
     fsm_c.resume(1.0, ensure_mouse_mode=False)
-    fsm_c.transition(BotState.TELEPORT_TO_SPOT, 10.0, "test_tele_early_visual")
-    # At (1078, 2627) -> dist = 12.0u <= 15.0u AND addon_keep_sign visible -> early visual arrival to FIND_SIGN!
-    sn_early = PerceptionSnapshot(
-        timestamp=10.2, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
-        coords=CoordReading(x=1078, y=2627, confidence=0.99), minimap=MinimapReading(),
+    fsm_c.transition(BotState.TELEPORT_TO_SPOT, 10.0, "test_tele_strict_4u")
+    # Across the street at (1074, 2622) (dist=13.0u > 4.0u) with sign visible -> MUST keep walking, NOT FIND_SIGN!
+    sn_far_sign = PerceptionSnapshot(
+        timestamp=10.1, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=1074, y=2622, confidence=0.99), minimap=MinimapReading(),
         addon_keep_sign_bbox=(430, 291, 162, 31),
     )
-    acts_arr = fsm_c.step(tr_c.update(sn_early))
+    acts_far = fsm_c.step(tr_c.update(sn_far_sign))
+    assert fsm_c.respawn_travel._tele_phase == "WALK_TO_NPC"
+    assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and a.hold for a in acts_far)
+
+    # Arrives right in front of NPC at (1063, 2627) (dist=1.0u <= 4.0u) -> stops & enters FIND_SIGN!
+    sn_close = PerceptionSnapshot(
+        timestamp=11.2, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=1063, y=2627, confidence=0.99), minimap=MinimapReading(),
+        addon_keep_sign_bbox=(430, 291, 162, 31),
+    )
+    acts_arr = fsm_c.step(tr_c.update(sn_close))
     assert fsm_c.respawn_travel._tele_phase == "FIND_SIGN"
     assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and not a.hold for a in acts_arr)
     # Next tick: Tab -> wait 0.20s -> left-click NPC (100ms hold) -> WAIT_MENU -> left-click Teleport (100ms hold) -> WAIT_LOAD
     acts_tab = fsm_c.step(
         tr_c.update(
             PerceptionSnapshot(
-                timestamp=10.3, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
-                coords=CoordReading(x=1078, y=2627, confidence=0.99), minimap=MinimapReading(),
+                timestamp=11.3, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=1063, y=2627, confidence=0.99), minimap=MinimapReading(),
                 addon_keep_sign_bbox=(430, 291, 162, 31),
             )
         )
@@ -732,8 +743,8 @@ def test_green_wales_instant_recall_1x_esc_close_tele_arrival_antispike_and_80m_
     acts_npc = fsm_c.step(
         tr_c.update(
             PerceptionSnapshot(
-                timestamp=10.55, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
-                coords=CoordReading(x=1078, y=2627, confidence=0.99), minimap=MinimapReading(),
+                timestamp=11.55, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=1063, y=2627, confidence=0.99), minimap=MinimapReading(),
                 addon_keep_sign_bbox=(430, 291, 162, 31),
             )
         )
@@ -743,8 +754,8 @@ def test_green_wales_instant_recall_1x_esc_close_tele_arrival_antispike_and_80m_
     acts_tp = fsm_c.step(
         tr_c.update(
             PerceptionSnapshot(
-                timestamp=10.8, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
-                coords=CoordReading(x=1078, y=2627, confidence=0.99), minimap=MinimapReading(),
+                timestamp=11.8, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=1063, y=2627, confidence=0.99), minimap=MinimapReading(),
                 teleport_menu_bbox=(563, 155, 64, 43),
             )
         )

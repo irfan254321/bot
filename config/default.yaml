@@ -225,10 +225,10 @@ respawn_travel:
   mouse_only_travel: false
   city_spawn: [1075.0, 2631.0]
   city_radius: 55.0
-  npc_stand_coord: [1066.0, 2627.0]
-  addon_teleport_coord: [1066.0, 2627.0]
-  npc_arrival_radius: 8.5
-  addon_keep_arrival_radius: 8.5
+  npc_stand_coord: [1062.0, 2627.0]
+  addon_teleport_coord: [1062.0, 2627.0]
+  npc_arrival_radius: 4.0
+  addon_keep_arrival_radius: 4.0
   addon_keep_landing: [1409.0, 1773.0]
   addon_keep_radius: 75.0
   addon_keep_sign_template: "assets/ui_templates/addon_keep_sign.png"
