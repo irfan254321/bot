@@ -409,9 +409,9 @@ def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832
     assert str(cfg.respawn_travel.get("cursor_toggle_key")).lower() == "tab"
     assert cfg.farming["anchor_spot_on_resume"] is False
 
-    # 1. AHK v2 bridge hard interlock (>=210ms sleep on CHAT_CMD, 40ms settle before CLICK)
+    # 1. AHK v2 bridge hard interlock (>=210ms sleep on CHAT_CMD, MouseMove + 75ms hover settle before CLICK)
     ahk_src = Path("ahk/vikings_input_bridge.ahk").read_text(encoding="utf-8")
-    assert "Sleep 210" in ahk_src and "Sleep 40" in ahk_src
+    assert "Sleep 210" in ahk_src and "MouseMove(x, y, 0)" in ahk_src and "Sleep 75" in ahk_src and 'Click(btn . " Down")' in ahk_src
 
     # 2. SafetyMonitor F7 hotkey triggers force_repair_requested
     sm = SafetyMonitor(cfg, enable_hotkeys=True)
@@ -816,8 +816,9 @@ def test_native_1024_ocr_2frame_consensus_antijump_and_coord_gate_anti_arcadia()
 
     cfg = load_config("config/default.yaml")
     cfg.perception["hud_fixed_pixel_ui"] = True
-    assert list(cfg.respawn_travel["addon_teleport_coord"]) == [1066.0, 2626.0]
-    assert float(cfg.respawn_travel["addon_keep_arrival_radius"]) == 5.0
+    assert list(cfg.respawn_travel["addon_teleport_coord"]) == [1061.0, 2625.0]
+    assert float(cfg.respawn_travel["addon_keep_arrival_radius"]) == 3.5
+    assert float(cfg.respawn_travel["npc_body_offset_y_px"]) == 52.0
 
     # (a) 100% exact offline OCR on native 1024x768 dataset/ui_refs screenshots
     cr = CoordReader(cfg)
@@ -851,20 +852,33 @@ def test_native_1024_ocr_2frame_consensus_antijump_and_coord_gate_anti_arcadia()
     w_rec = tr2.update(_make_snap(1.2, 1067, 2626, fw=1024, fh=768))  # within 1.0u <= 4.5u of pending -> ACCEPTED!
     assert w_rec.coords_smoothed is not None and int(round(w_rec.coords_smoothed.x)) == 1067
 
-    # (c1) Anti-Jump: no 'space' (tele_jump) when dist <= 8.0u even if is_stuck=True!
+    # (c1) 2-stage approach: from (1075, 2631) steers to (1066, 2626) first, does NOT stop at (1067, 2628),
+    #      and blocks 'space' jump when dist <= 8.0u!
     tr3 = WorldStateTracker()
     fsm3 = FarmingFSM(cfg, tr3, mode=BotMode.FULL)
     fsm3.resume(1.0, ensure_mouse_mode=False)
-    fsm3.transition(BotState.TELEPORT_TO_SPOT, 2.0, "test_antijump")
-    w_near = tr3.update(_make_snap(2.1, 1072, 2626, fw=1024, fh=768))  # dist = 6.0u <= 8.0u
+    fsm3.transition(BotState.TELEPORT_TO_SPOT, 2.0, "test_2stage_and_antijump")
+    acts_s1 = fsm3.step(tr3.update(_make_snap(2.05, 1075, 2631, fw=1024, fh=768)))
+    assert fsm3.respawn_travel._tele_phase == "WALK_TO_NPC"
+    assert any("addon_keep_approach" in a.reason for a in acts_s1)
+
+    # At (1067, 2628) (old stop spot, dist=6.7u > 3.5u & x > 1066) -> MUST NOT stop, keeps walking to (1061, 2625) with NO jump!
+    w_near = tr3.update(_make_snap(3.1, 1067, 2628, fw=1024, fh=768))
     w_near.is_stuck = True
     acts_near = fsm3.step(w_near)
+    assert fsm3.respawn_travel._tele_phase == "WALK_TO_NPC"
+    assert any("addon_keep_npc" in a.reason for a in acts_near)
     assert not any(isinstance(a, TapKeyIntent) and a.key == "space" for a in acts_near)
 
-    # (c2) Coordinate Gate: at (1075, 2622) (x > 1073, near Arcadia/Snowland), NEVER press Tab or click NPC; force WALK_TO_NPC!
+    # Arrives at (1062, 2625) (dist=1.0u <= 3.5u & x <= 1066) -> enters FIND_SIGN!
+    fsm3.step(tr3.update(_make_snap(4.2, 1062, 2625, fw=1024, fh=768)))
+    assert fsm3.respawn_travel._tele_phase == "FIND_SIGN"
+
+    # (c2) Coordinate Gate: at (1075, 2622) (x > 1066, near Arcadia/Snowland), NEVER press Tab or click NPC; force WALK_TO_NPC!
     fsm3.respawn_travel._tele_phase = "FIND_SIGN"
+    tr3.accept_teleport_jump()
     sn_arc = PerceptionSnapshot(
-        timestamp=3.0, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        timestamp=5.0, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
         coords=CoordReading(x=1075, y=2622, confidence=0.99), minimap=MinimapReading(),
         addon_keep_sign_bbox=(456, 297, 110, 18),
     )

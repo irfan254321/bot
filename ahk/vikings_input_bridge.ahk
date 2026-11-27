@@ -178,8 +178,8 @@ HandleCommand(line) {
                 DllCall("PostMessageW", "Ptr", hwnd, "UInt", upMsg, "Ptr", 0, "Ptr", lParam)
             }
         } else {
-            DllCall("SetCursorPos", "Int", x, "Int", y)
-            Sleep 40
+            MouseMove(x, y, 0)
+            Sleep 75
             Click(btn . " Down")
             gHeldButtons[btn] := true
             Sleep holdMs

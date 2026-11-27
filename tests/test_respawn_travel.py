@@ -106,7 +106,7 @@ def test_full_death_respawn_teleport_and_travel_to_gem_spot():
     assert any(isinstance(a, TapKeyIntent) and a.key == "tab" for a in acts_cur)
 
     acts_npc = fsm.step(tracker.update(_snap(t + 5.95, 1062, 2627, sign_bbox=sign_box)))
-    assert any(isinstance(a, ClickScreenIntent) and 960 <= a.x <= 985 and 470 <= a.y <= 500 for a in acts_npc)
+    assert any(isinstance(a, ClickScreenIntent) and 960 <= a.x <= 985 and 480 <= a.y <= 515 for a in acts_npc)
     assert fsm.respawn_travel._tele_phase == "WAIT_MENU"
 
     menu_box = (1026, 318, 64, 43)
@@ -258,7 +258,7 @@ def test_travel_waypoints_100pct_keyboard_wasd_never_mouse_mode_or_ground_click(
     fsm.respawn_travel._tele_phase = "FIND_SIGN"
     fsm.respawn_travel._tele_click_attempts = 0
     tracker.accept_teleport_jump()
-    acts_sky = fsm.step(tracker.update(_snap(50.5, 1066, 2626, menu_bbox=(669, 99, 64, 43))))
+    acts_sky = fsm.step(tracker.update(_snap(50.5, 1061, 2625, menu_bbox=(669, 99, 64, 43))))
     assert fsm.respawn_travel._tele_phase == "FIND_SIGN"
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_sky)
 

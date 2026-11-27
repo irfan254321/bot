@@ -225,10 +225,12 @@ respawn_travel:
   mouse_only_travel: false
   city_spawn: [1075.0, 2631.0]
   city_radius: 55.0
-  npc_stand_coord: [1066.0, 2626.0]
-  addon_teleport_coord: [1066.0, 2626.0]
-  npc_arrival_radius: 5.0
-  addon_keep_arrival_radius: 5.0
+  npc_stand_coord: [1061.0, 2625.0]
+  addon_teleport_coord: [1061.0, 2625.0]
+  addon_keep_npc_coord: [1058.0, 2624.0]
+  addon_keep_approach_coord: [1066.0, 2626.0]
+  npc_arrival_radius: 3.5
+  addon_keep_arrival_radius: 3.5
   addon_keep_landing: [1409.0, 1773.0]
   addon_keep_radius: 75.0
   addon_keep_sign_template: "assets/ui_templates/addon_keep_sign.png"
@@ -237,7 +239,7 @@ respawn_travel:
   sign_match_threshold: 0.72
   menu_match_threshold: 0.78
   npc_talk_ok_threshold: 0.72
-  npc_body_offset_y_px: 38
+  npc_body_offset_y_px: 52
   cursor_toggle_key: "tab"
   cursor_fallback_key: "esc"
   mode_toggle_key: "esc"
