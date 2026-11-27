@@ -361,6 +361,8 @@ class AhkInputDriver(InputDriver):
         was_spamming = self._e_spam_enabled
         if was_spamming:
             self.set_e_spam(False)
+            if self._transport_override is None:
+                time.sleep(0.20)
         try:
             self._run_or_fallback(
                 f"CHAT_CMD|{self.ahk_mode}|{hwnd}|{clean}",

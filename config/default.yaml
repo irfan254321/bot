@@ -245,6 +245,8 @@ repair:
   suicide_command: "/kill"
   suicide_wait_sec: 18.0
   suicide_retry_sec: 22.0
+  npc_click_hold_sec: 0.10
+  close_dialog_with_esc: true
   merchant_stand_coord: [1094.0, 2643.0]
   merchant_arrival_radius: 4.5
   town_hub_waypoint: [1075.0, 2631.0]
@@ -263,7 +265,8 @@ safety:
   kill_switch: "F10"
   pause_toggle: "F9"
   dataset_capture_key: "F8"
-  snapshot_key: "F7"
+  force_repair_key: "F7"
+  snapshot_key: "F11"
   overlay_toggle: "F6"
   audio_cues: true
   death_zero_hp_frames: 12

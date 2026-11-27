@@ -390,6 +390,8 @@ class FarmingFSM:
 
     @property
     def configured_spot_center(self) -> Point2D:
+        if self.config.active_route_name == "gold_rustler_spot":
+            return Point2D(self.spot_center_x, self.spot_center_y)
         if self.navigator.route.waypoints:
             w0 = self.navigator.route.waypoints[0]
             return Point2D(w0.x, w0.y)

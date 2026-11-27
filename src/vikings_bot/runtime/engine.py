@@ -270,6 +270,11 @@ class BotEngine:
                         self._handle_overlay_toggle(safety)
                     if chk_p.dataset_capture_requested:
                         self.save_clean_dataset_frame(capture.latest_frame())
+                    if chk_p.force_repair_requested:
+                        self.fsm.request_repair_now()
+                        self._last_saved_notice = "FORCE REPAIR ARMED (F7)"
+                        self._last_saved_notice_until = now + 2.5
+                        logger.info("F7 Force Repair armed while PAUSED -> will start REPAIR_RECALL on F9 resume")
                     gui_toggle_p = self._toggle_pause_event.is_set()
                     if gui_toggle_p:
                         self._toggle_pause_event.clear()
@@ -475,6 +480,11 @@ class BotEngine:
                     self._handle_overlay_toggle(safety)
                 if chk.dataset_capture_requested:
                     self.save_clean_dataset_frame(frame)
+                if chk.force_repair_requested:
+                    self.fsm.request_repair_now()
+                    self._last_saved_notice = "FORCE REPAIR NOW (F7)"
+                    self._last_saved_notice_until = now + 2.5
+                    logger.info("F7 Force Repair triggered -> repair_rem_min=0 (entering REPAIR_RECALL)")
 
                 if chk.force_pause_reason is not None and active:
                     self.executor.release_all()

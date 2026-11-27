@@ -102,6 +102,8 @@ class RespawnTravelController:
         self.suicide_command: str = str(rep.get("suicide_command", "/kill"))
         self.suicide_wait_sec: float = float(rep.get("suicide_wait_sec", 18.0))
         self.suicide_retry_sec: float = float(rep.get("suicide_retry_sec", 22.0))
+        self.npc_click_hold_sec: float = max(0.04, float(rep.get("npc_click_hold_sec", 0.10)))
+        self.close_dialog_with_esc: bool = bool(rep.get("close_dialog_with_esc", True))
         ms_c = rep.get("merchant_stand_coord", [1094.0, 2643.0])
         self.merchant_stand = Point2D(float(ms_c[0]), float(ms_c[1]))
         self.merchant_arrival_radius: float = float(rep.get("merchant_arrival_radius", 4.5))
@@ -359,16 +361,30 @@ class RespawnTravelController:
             self.reset_repair_npc_state(now)
             return (intents, BotState.REPAIR_AT_NPC, "arrived_in_town_for_repair")
 
-        # Fallback: if a mob killed us mid-countdown, click 2x to revive to town & proceed straight to Repair!
-        if world.is_dead and elapsed >= 1.5 and self.tracker.is_ready("respawn_click", now):
-            cx = world.snapshot.frame_width // 2
-            cy = world.snapshot.frame_height // 2
+        # Fallback: if a mob killed us mid-countdown or respawn popup appeared, click respawn button / center!
+        if (world.is_dead or world.snapshot.respawn_dialog_bbox is not None) and elapsed >= 1.5 and self.tracker.is_ready("respawn_click", now):
+            if world.snapshot.respawn_dialog_bbox is not None:
+                rx, ry, rw, rh = world.snapshot.respawn_dialog_bbox
+                cx = rx + rw // 2
+                cy = ry + rh // 2
+            else:
+                cx = world.snapshot.frame_width // 2
+                cy = world.snapshot.frame_height // 2
             self._dead_clicks_in_burst += 1
             cd = 0.22 if self._dead_clicks_in_burst == 1 else 2.2
             if self._dead_clicks_in_burst >= 2:
                 self._dead_clicks_in_burst = 0
             self.tracker.set_cooldown("respawn_click", now, cd)
-            intents.append(ClickScreenIntent(x=cx, y=cy, button="left", reason="repair_dead_revive_click"))
+            intents.append(
+                ClickScreenIntent(
+                    x=cx,
+                    y=cy,
+                    button="left",
+                    hold_sec=self.npc_click_hold_sec,
+                    no_jitter=True,
+                    reason="repair_dead_revive_click",
+                )
+            )
             return (intents, None, "")
 
         need_send = self._recall_cmd_sent_at is None or (
@@ -536,7 +552,9 @@ class RespawnTravelController:
                             x=click_x,
                             y=click_y,
                             button="left",
+                            hold_sec=self.npc_click_hold_sec,
                             reason=f"click_merchant_npc#{self._repair_click_attempts}",
+                            no_jitter=True,
                         )
                     )
                     self._repair_phase = "WAIT_TRADE_MENU"
@@ -598,6 +616,7 @@ class RespawnTravelController:
                         x=trade_x,
                         y=trade_y,
                         button="left",
+                        hold_sec=self.npc_click_hold_sec,
                         reason="click_trade_option",
                         no_jitter=True,
                     )
@@ -633,6 +652,7 @@ class RespawnTravelController:
                         x=rcx,
                         y=rcy,
                         button="left",
+                        hold_sec=self.npc_click_hold_sec,
                         reason="click_repair_all_btn",
                         no_jitter=True,
                     )
@@ -662,10 +682,19 @@ class RespawnTravelController:
                         x=ycx,
                         y=ycy,
                         button="left",
+                        hold_sec=self.npc_click_hold_sec,
                         reason="click_repair_yes_btn",
                         no_jitter=True,
                     )
                 )
+                if self.close_dialog_with_esc:
+                    intents.append(
+                        TapKeyIntent(
+                            key="esc",
+                            hold_sec=0.05,
+                            reason="close_merchant_dialog_esc",
+                        )
+                    )
                 logger.info("Confirmed Repair '[Yes]' at (%d, %d)!", ycx, ycy)
                 return (intents, None, "")
 
@@ -716,6 +745,7 @@ class RespawnTravelController:
                         x=sx_close,
                         y=sy_close,
                         button="left",
+                        hold_sec=self.npc_click_hold_sec,
                         reason=f"click_shop_close_x#{self._close_ui_attempts}",
                         no_jitter=True,
                     )
@@ -736,6 +766,7 @@ class RespawnTravelController:
                             x=ix_close,
                             y=iy_close,
                             button="left",
+                            hold_sec=self.npc_click_hold_sec,
                             reason=f"click_inventory_close_x#{self._close_inv_attempts}",
                             no_jitter=True,
                         )

@@ -114,6 +114,8 @@ class UiTemplateMatcher:
             else None
         )
         self._banner_cache: dict[tuple[int, int, bool], tuple[np.ndarray, np.ndarray]] = {}
+        self.last_match_scores: dict[str, float] = {}
+        self._last_miss_log_ts: dict[str, float] = {}
 
         if self.sign_tmpl is None:
             logger.debug("Addon Keep sign template not found at %s", sign_path)
@@ -132,6 +134,28 @@ class UiTemplateMatcher:
         nh = max(6, int(round(tmpl.shape[0] * sy)))
         return cv2.resize(tmpl, (nw, nh), interpolation=cv2.INTER_AREA)
 
+    def _record_template_score(
+        self,
+        name: str,
+        score: float,
+        threshold: float,
+        matched: bool,
+        ts: float,
+    ) -> None:
+        if not name:
+            return
+        self.last_match_scores[name] = float(score)
+        if not matched:
+            prev = self._last_miss_log_ts.get(name, -999.0)
+            if (ts - prev) >= 2.0:
+                self._last_miss_log_ts[name] = ts
+                logger.info(
+                    "UI template '%s' miss: best_score=%.3f < thresh=%.3f",
+                    name,
+                    float(score),
+                    float(threshold),
+                )
+
     def _match_in_roi(
         self,
         frame: FramePacket,
@@ -139,10 +163,13 @@ class UiTemplateMatcher:
         tmpl_g2: np.ndarray | None,
         roi_norm: tuple[float, float, float, float],
         threshold: float,
+        *,
+        template_name: str = "",
     ) -> tuple[int, int, int, int] | None:
         if tmpl is None or frame.image_bgr.size == 0:
             return None
         crop, (ox, oy, _x2, _y2) = frame.crop_norm(roi_norm)
+        best_seen = -1.0
 
         # In RYL / Vikings Online at 1024x768, UI elements & NPC sign frames render at native 1:1 pixels
         # (not scaled by 1024/1920 = 0.53x), so try native 1:1 matching first when hud_fixed_pixel_ui=True!
@@ -151,12 +178,16 @@ class UiTemplateMatcher:
             if crop.shape[0] >= th_n and crop.shape[1] >= tw_n:
                 res_n = cv2.matchTemplate(crop, tmpl, cv2.TM_CCOEFF_NORMED)
                 _min_n, max_n, _min_ln, max_ln = cv2.minMaxLoc(res_n)
+                best_seen = max(best_seen, float(max_n))
                 if float(max_n) >= threshold:
+                    self._record_template_score(template_name, float(max_n), threshold, True, frame.timestamp)
                     return (ox + int(max_ln[0]), oy + int(max_ln[1]), int(tw_n), int(th_n))
 
         scaled = self._scale_template(tmpl, frame.width, frame.height)
         th, tw = scaled.shape[:2]
         if crop.shape[0] < th or crop.shape[1] < tw:
+            if best_seen >= 0.0:
+                self._record_template_score(template_name, best_seen, threshold, False, frame.timestamp)
             return None
 
         # Fast 2-stage coarse-to-fine matching (~6x faster at 1080p with bit-exact 1x BGR verification!)
@@ -167,7 +198,9 @@ class UiTemplateMatcher:
             if g_half.shape[0] >= tmpl_g2.shape[0] and g_half.shape[1] >= tmpl_g2.shape[1]:
                 res_c = cv2.matchTemplate(g_half, tmpl_g2, cv2.TM_CCOEFF_NORMED)
                 _min_c, max_c, _min_lc, max_lc = cv2.minMaxLoc(res_c)
+                best_seen = max(best_seen, float(max_c))
                 if float(max_c) < max(0.35, threshold - 0.25):
+                    self._record_template_score(template_name, best_seen, threshold, False, frame.timestamp)
                     return None
                 cx0, cy0 = int(max_lc[0]) * 2, int(max_lc[1]) * 2
                 pad = 16
@@ -179,14 +212,20 @@ class UiTemplateMatcher:
                 if patch.shape[0] >= th and patch.shape[1] >= tw:
                     res_f = cv2.matchTemplate(patch, scaled, cv2.TM_CCOEFF_NORMED)
                     _min_v, max_v, _min_l, max_l = cv2.minMaxLoc(res_f)
+                    best_seen = max(best_seen, float(max_v))
                     if float(max_v) < threshold:
+                        self._record_template_score(template_name, best_seen, threshold, False, frame.timestamp)
                         return None
+                    self._record_template_score(template_name, float(max_v), threshold, True, frame.timestamp)
                     return (ox + x1 + int(max_l[0]), oy + y1 + int(max_l[1]), int(tw), int(th))
 
         res = cv2.matchTemplate(crop, scaled, cv2.TM_CCOEFF_NORMED)
         _min_v, max_v, _min_l, max_l = cv2.minMaxLoc(res)
+        best_seen = max(best_seen, float(max_v))
         if float(max_v) < threshold:
+            self._record_template_score(template_name, best_seen, threshold, False, frame.timestamp)
             return None
+        self._record_template_score(template_name, float(max_v), threshold, True, frame.timestamp)
         return (ox + int(max_l[0]), oy + int(max_l[1]), int(tw), int(th))
 
     def find_addon_keep_sign(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
@@ -197,6 +236,7 @@ class UiTemplateMatcher:
             self._sign_g2,
             roi_norm=(0.06, 0.08, 0.94, 0.78),
             threshold=self.sign_thresh,
+            template_name="addon_keep_sign",
         )
 
     def find_teleport_menu(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
@@ -207,6 +247,7 @@ class UiTemplateMatcher:
             self._menu_g2,
             roi_norm=(0.10, 0.08, 0.92, 0.74),
             threshold=self.menu_thresh,
+            template_name="teleport_menu",
         )
 
     def find_merchant_sign(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
@@ -217,6 +258,7 @@ class UiTemplateMatcher:
             self._merchant_sign_g2,
             roi_norm=(0.06, 0.08, 0.94, 0.80),
             threshold=self.merchant_sign_thresh,
+            template_name="merchant_sign",
         )
 
     def find_trade_menu(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
@@ -227,6 +269,7 @@ class UiTemplateMatcher:
             self._trade_menu_g2,
             roi_norm=(0.10, 0.08, 0.92, 0.76),
             threshold=self.trade_menu_thresh,
+            template_name="trade_menu",
         )
 
     def find_repair_all_btn(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
@@ -237,6 +280,7 @@ class UiTemplateMatcher:
             None,
             roi_norm=(0.30, 0.32, 0.98, 0.88),
             threshold=self.repair_btn_thresh,
+            template_name="repair_all",
         )
 
     def find_repair_yes_btn(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
@@ -248,6 +292,7 @@ class UiTemplateMatcher:
             None,
             roi_norm=roi_yes,
             threshold=self.repair_yes_thresh,
+            template_name="repair_yes",
         )
         if hit is None:
             return None

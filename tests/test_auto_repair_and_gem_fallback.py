@@ -280,6 +280,7 @@ def test_1024x768_pure_mouse_auto_repair_never_uses_wasd_or_esc() -> None:
     cfg.controls["auto_restore_mouse_mode"] = True
     cfg.respawn_travel["mouse_only_travel"] = True
     cfg.perception["hud_fixed_pixel_ui"] = True
+    cfg.repair["close_dialog_with_esc"] = False
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
@@ -378,3 +379,96 @@ def test_gems_new_spot_1195_1568_switches_to_old_spot_1092_1115_only_after_2_rea
     assert fsm.state == BotState.SEARCH_MOB
     assert abs(fsm.navigator.spot_center.x - 1092.0) <= 1.0
     assert abs(fsm.navigator.spot_center.y - 1115.0) <= 1.0
+
+
+def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832_return() -> None:
+    """Verify F7 Force Repair hotkey, 210ms AHK /kill interlock, 100ms NPC/UI click-hold,
+    Esc close after repair_yes, UI template miss score logging, and return route to (594, 1832) + /setweather 11."""
+    from vikings_bot.runtime.safety import SafetyMonitor
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    assert str(cfg.safety.get("force_repair_key")).upper() == "F7"
+    assert float(cfg.repair.get("npc_click_hold_sec", 0.0)) == 0.10
+    assert bool(cfg.repair.get("close_dialog_with_esc", False)) is True
+
+    # 1. AHK v2 bridge hard interlock (>=210ms sleep on CHAT_CMD, 40ms settle before CLICK)
+    ahk_src = Path("ahk/vikings_input_bridge.ahk").read_text(encoding="utf-8")
+    assert "Sleep 210" in ahk_src and "Sleep 40" in ahk_src
+
+    # 2. SafetyMonitor F7 hotkey triggers force_repair_requested
+    sm = SafetyMonitor(cfg, enable_hotkeys=True)
+    assert sm.hotkeys is not None and "force_repair" in sm.hotkeys._keys
+    sm.hotkeys.poll = lambda: {"force_repair"}  # type: ignore[method-assign]
+    chk = sm.check(None, is_running_active=True)
+    assert chk.force_repair_requested is True
+
+    # 3. UI template matcher records best match scores on miss for easy VM calibration
+    um = UiTemplateMatcher(cfg)
+    blank = FramePacket(image_bgr=np.full((768, 1024, 3), 50, dtype=np.uint8), timestamp=10.0)
+    assert um.find_merchant_sign(blank) is None
+    assert "merchant_sign" in um.last_match_scores
+
+    # 4. Full F7 Force Repair -> /kill -> REPAIR_AT_NPC (100ms clicks + Esc) -> TELEPORT -> TRAVEL -> (594, 1832) + /setweather 11
+    tracker = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
+    assert (fsm.configured_spot_center.x, fsm.configured_spot_center.y) == (594.0, 1832.0)
+    fsm.resume(1.0, ensure_mouse_mode=False)
+    fsm.step(tracker.update(_make_snap(1.0, 594, 1832, fw=1024, fh=768)))
+    # Pause does NOT reset active farming timer
+    fsm._active_farming_sec = 1234.0
+    fsm.pause(2.0, "test_pause")
+    assert fsm._active_farming_sec == 1234.0
+    fsm.resume(3.0, ensure_mouse_mode=False)
+    assert fsm._active_farming_sec == 1234.0
+
+    # F7 Force Repair -> repair_rem_min == 0 -> enters REPAIR_RECALL immediately!
+    fsm.request_repair_now()
+    assert fsm.repair_remaining_minutes == 0.0
+    fsm.step(tracker.update(_make_snap(3.5, 594, 1832, fw=1024, fh=768)))
+    assert fsm.state == BotState.REPAIR_RECALL
+
+    acts_k = fsm.step(tracker.update(_make_snap(3.7, 594, 1832, fw=1024, fh=768)))
+    assert any(isinstance(a, TypeChatCommandIntent) and a.command == "/kill" for a in acts_k)
+
+    # Arrives in town -> walks to merchant -> 100ms clicks on NPC, Trade, Repair All, Yes + Esc close!
+    fsm.step(tracker.update(_make_snap(21.0, 1075, 2631, fw=1024, fh=768)))
+    assert fsm.state == BotState.REPAIR_AT_NPC
+    fsm.step(tracker.update(_make_snap(23.0, 1094, 2643, fw=1024, fh=768)))
+    a_npc = fsm.step(tracker.update(_make_snap(23.3, 1094, 2643, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 for a in a_npc)
+    a_tr = fsm.step(tracker.update(_make_snap(23.7, 1094, 2643, fw=1024, fh=768, trade_menu_bbox=(510, 245, 58, 43))))
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 for a in a_tr)
+    a_ra = fsm.step(tracker.update(_make_snap(24.1, 1094, 2643, fw=1024, fh=768, repair_all_bbox=(596, 532, 66, 25))))
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 for a in a_ra)
+    a_yes = fsm.step(tracker.update(_make_snap(24.5, 1094, 2643, fw=1024, fh=768, repair_yes_bbox=(510, 438, 55, 25))))
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 and "click_repair_yes_btn" in a.reason for a in a_yes)
+    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and "close_merchant_dialog_esc" in a.reason for a in a_yes)
+
+    # Dialog closed -> walks to hub (1075, 2631) -> TELEPORT_TO_SPOT -> resets 80m timer!
+    fsm.step(tracker.update(_make_snap(25.0, 1094, 2643, fw=1024, fh=768)))
+    fsm.step(tracker.update(_make_snap(26.5, 1075, 2631, fw=1024, fh=768)))
+    assert fsm.state == BotState.TELEPORT_TO_SPOT
+    assert fsm.repairs_count == 1 and fsm._active_farming_sec == 0.0
+
+    # Teleports to Addon Keep (1409, 1779) -> TRAVEL_TO_SPOT -> traverses travel_waypoints -> arrives (594, 1832)!
+    fsm.step(tracker.update(_make_snap(32.0, 1409, 1779, fw=1024, fh=768)))
+    assert fsm.state == BotState.TRAVEL_TO_SPOT
+    ts = 33.0
+    for wp in cfg.active_route.travel_waypoints:
+        fsm.step(tracker.update(_make_snap(ts, int(wp.x), int(wp.y), fw=1024, fh=768)))
+        ts += 1.5
+    fsm.step(tracker.update(_make_snap(ts + 1.0, 594, 1832, fw=1024, fh=768)))
+    assert fsm.state == BotState.SEARCH_MOB
+    assert (fsm.navigator.spot_center.x, fsm.navigator.spot_center.y) == (594.0, 1832.0)
+
+    # First SEARCH_MOB tick back at (594, 1832) sends /setweather 11!
+    w_back = tracker.update(
+        PerceptionSnapshot(
+            timestamp=ts + 2.0, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+            coords=CoordReading(x=594, y=1832, confidence=0.99), minimap=MinimapReading(),
+            playfield_luma=90.0,
+        )
+    )
+    acts_w = fsm.step(w_back)
+    assert any(isinstance(a, TypeChatCommandIntent) and a.command == "/setweather 11" for a in acts_w)

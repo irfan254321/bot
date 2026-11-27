@@ -113,6 +113,7 @@ class SafetyCheckResult:
     toggle_pause: bool = False
     snapshot_requested: bool = False
     dataset_capture_requested: bool = False
+    force_repair_requested: bool = False
     force_pause_reason: str | None = None
     toggle_overlay: bool = False
 
@@ -142,7 +143,8 @@ class SafetyMonitor:
                     "kill": str(s.get("kill_switch", "F10")),
                     "pause": str(s.get("pause_toggle", "F9")),
                     "dataset_capture": str(s.get("dataset_capture_key", "F8")),
-                    "snapshot": str(s.get("snapshot_key", "F7")),
+                    "force_repair": str(s.get("force_repair_key", "F7")),
+                    "snapshot": str(s.get("snapshot_key", "F11")),
                     "overlay": str(s.get("overlay_toggle", "F6")),
                 }
             )
@@ -161,8 +163,11 @@ class SafetyMonitor:
 
         snap = "snapshot" in triggered
         ds_cap = "dataset_capture" in triggered
+        force_rep = "force_repair" in triggered
         if snap or ds_cap:
             self.audio.play("snapshot")
+        if force_rep:
+            self.audio.play("alert")
 
         toggle = "pause" in triggered
         toggle_overlay = "overlay" in triggered
@@ -192,6 +197,7 @@ class SafetyMonitor:
             toggle_pause=toggle,
             snapshot_requested=snap,
             dataset_capture_requested=ds_cap,
+            force_repair_requested=force_rep,
             force_pause_reason=force_pause,
             toggle_overlay=toggle_overlay,
         )

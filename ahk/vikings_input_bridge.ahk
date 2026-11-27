@@ -179,7 +179,7 @@ HandleCommand(line) {
             }
         } else {
             DllCall("SetCursorPos", "Int", x, "Int", y)
-            Sleep 12
+            Sleep 40
             Click(btn . " Down")
             gHeldButtons[btn] := true
             Sleep holdMs
@@ -296,7 +296,8 @@ HandleCommand(line) {
         text := parts[4]
         chat_lock := true
         try {
-            Sleep 60
+            ; Hard interlock: guarantee >=210ms with E-spam completely silent before opening chat!
+            Sleep 210
             if (mode = "host_background" && hwnd > 0) {
                 ControlSend("{Enter}", , "ahk_id " . hwnd)
                 Sleep 75
