@@ -155,6 +155,7 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
     fsm.step(tracker.update(_snap(6.6, mobs=(), loot=())))
     assert fsm.state == BotState.RETURN_TO_CENTER
     fsm.step(tracker.update(_snap(6.8, x=627, y=1817, mobs=(), loot=())))
+    fsm.step(tracker.update(_snap(6.9, x=627, y=1817, mobs=(), loot=())))
     assert fsm.state == BotState.SEARCH_MOB
 
     acts_sweep = fsm.step(tracker.update(_snap(7.0, x=627, y=1817, mobs=(), loot=())))
@@ -1036,6 +1037,7 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     fsm.step(tracker.update(_snap(28.8, fw=1024, fh=768)))
     assert fsm.state == BotState.RETURN_TO_CENTER
     fsm.step(tracker.update(_snap(29.0, x=627, y=1817, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(29.1, x=627, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. NAVIGATE_TO_SPOT guard: when spot_dist <= 25u and len(mobs) >= 1, stays in SEARCH_MOB & engages mob!
@@ -1131,6 +1133,7 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
     fsm.step(tracker.update(_snap(26.6, x=665, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.RETURN_TO_CENTER
     fsm.step(tracker.update(_snap(27.0, x=627, y=1817, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(27.1, x=627, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. At drift=72u (outside 55u farm_radius, <=85u) with 2 visible mobs -> attacks mob instead of drifting/patrolling!

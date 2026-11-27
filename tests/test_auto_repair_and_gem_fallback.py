@@ -259,6 +259,7 @@ def test_full_80m_auto_repair_cycle_with_weapon_swap_talk_guard_and_return_to_sp
     assert fsm.deaths_count == 0
 
     fsm.step(tracker.update(_make_snap(38.0, 1409, 1779)))
+    fsm.step(tracker.update(_make_snap(38.1, 1409, 1779)))
     assert fsm.state == BotState.TRAVEL_TO_SPOT
     ts = 39.0
     for wp in cfg.active_route.travel_waypoints:
@@ -495,6 +496,7 @@ def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832
 
     # Teleports to Ardun Keep (1409, 1773) -> TRAVEL_TO_SPOT -> traverses travel_waypoints -> arrives (627, 1817)!
     fsm.step(tracker.update(_make_snap(32.0, 1409, 1773, fw=1024, fh=768)))
+    fsm.step(tracker.update(_make_snap(32.1, 1409, 1773, fw=1024, fh=768)))
     assert fsm.state == BotState.TRAVEL_TO_SPOT
     ts = 33.0
     for wp in cfg.active_route.travel_waypoints:
@@ -633,13 +635,14 @@ def test_ensure_keyboard_mode_transitions_kill_freeze_and_no_esc_after_repair_ye
     # (d) TRAVEL_TO_SPOT arrives at (627, 1817) -> MUST trigger ENSURE_MOUSE_MODE before SEARCH_MOB!
     fsm.transition(BotState.TRAVEL_TO_SPOT, 30.0, "test_travel_arrival")
     fsm.step(tr.update(_make_snap(31.0, 627, 1817, fw=1024, fh=768)))
+    fsm.step(tr.update(_make_snap(31.1, 627, 1817, fw=1024, fh=768)))
     assert fsm.state == BotState.ENSURE_MOUSE_MODE
-    a_m1 = fsm.step(tr.update(_make_snap(31.05, 627, 1817, fw=1024, fh=768)))
+    a_m1 = fsm.step(tr.update(_make_snap(31.15, 627, 1817, fw=1024, fh=768)))
     assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "ensure_mouse_mode_esc_1" for a in a_m1)
     fsm.step(
         tr.update(
             PerceptionSnapshot(
-                timestamp=31.40, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                timestamp=31.50, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
                 coords=CoordReading(x=627, y=1817, confidence=0.99), minimap=MinimapReading(),
                 interface_mode="mouse_banner",
             )
@@ -800,3 +803,72 @@ def test_green_wales_instant_recall_1x_esc_close_tele_arrival_antispike_and_80m_
     assert fsm_e.repairs_count == 1
     assert fsm_e.repair_remaining_minutes is not None
     assert abs(fsm_e.repair_remaining_minutes - 80.0) <= 0.05
+
+
+def test_native_1024_ocr_2frame_consensus_antijump_and_coord_gate_anti_arcadia() -> None:
+    """Verify:
+    (a) Offline OCR reads 100% exact coords on 6 real 1024x768 screenshots in dataset/ui_refs/.
+    (b) 2-Frame Consensus filters 1-frame glitch (1065->1056->1066) AND recovers in 2 frames from wrong pos (1056->1066->1067).
+    (c) Anti-Jump blocks space when dist<=8.0u, and Coordinate Gate (dist<=7.5u & x<=1073) blocks Tab/click at (1075, 2622).
+    """
+    import cv2
+    from vikings_bot.perception.coords import CoordReader
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    assert list(cfg.respawn_travel["addon_teleport_coord"]) == [1066.0, 2626.0]
+    assert float(cfg.respawn_travel["addon_keep_arrival_radius"]) == 5.0
+
+    # (a) 100% exact offline OCR on native 1024x768 dataset/ui_refs screenshots
+    cr = CoordReader(cfg)
+    expected_refs = [
+        ("dataset/ui_refs/ref_addon_teleport_npc.jpg", 1060, 2627),
+        ("dataset/ui_refs/ref_town_respawn.jpg", 1080, 2632),
+        ("dataset/ui_refs/ref_merchant_sign_far.jpg", 1089, 2638),
+        ("dataset/ui_refs/ref_merchant_sign_close.jpg", 1095, 2645),
+        ("dataset/ui_refs/ref_ardun_keep_02_dup.jpg", 1409, 1779),
+        ("dataset/ui_refs/ref_travel_field.jpg", 621, 1812),
+    ]
+    for path_s, ex, ey in expected_refs:
+        p = Path(path_s)
+        if not p.exists():
+            continue
+        img = cv2.imread(str(p), cv2.IMREAD_COLOR)
+        r = cr.read(FramePacket(image_bgr=img, timestamp=1.0, source_name=p.name))
+        assert r is not None and (r.x, r.y) == (ex, ey), f"OCR mismatch on {p.name}: got {r}, expected ({ex}, {ey})"
+
+    # (b1) 2-Frame Consensus filters 1-frame OCR glitch: (1065,2625) -> (1056,2622) -> (1066,2626) -> (1066,2626)
+    tr1 = WorldStateTracker()
+    assert int(round(tr1.update(_make_snap(1.0, 1065, 2625, fw=1024, fh=768)).coords_smoothed.x)) == 1065
+    assert int(round(tr1.update(_make_snap(1.1, 1056, 2622, fw=1024, fh=768)).coords_smoothed.x)) == 1065  # glitch rejected!
+    assert int(round(tr1.update(_make_snap(1.2, 1066, 2626, fw=1024, fh=768)).coords_smoothed.x)) == 1066
+    assert int(round(tr1.update(_make_snap(1.3, 1066, 2626, fw=1024, fh=768)).coords_smoothed.x)) == 1066
+
+    # (b2) Recovery from wrong pos without deadlock: (1056,2622) -> (1066,2626) -> (1067,2626) recovers immediately!
+    tr2 = WorldStateTracker()
+    assert int(round(tr2.update(_make_snap(1.0, 1056, 2622, fw=1024, fh=768)).coords_smoothed.x)) == 1056
+    assert int(round(tr2.update(_make_snap(1.1, 1066, 2626, fw=1024, fh=768)).coords_smoothed.x)) == 1056  # pending
+    w_rec = tr2.update(_make_snap(1.2, 1067, 2626, fw=1024, fh=768))  # within 1.0u <= 4.5u of pending -> ACCEPTED!
+    assert w_rec.coords_smoothed is not None and int(round(w_rec.coords_smoothed.x)) == 1067
+
+    # (c1) Anti-Jump: no 'space' (tele_jump) when dist <= 8.0u even if is_stuck=True!
+    tr3 = WorldStateTracker()
+    fsm3 = FarmingFSM(cfg, tr3, mode=BotMode.FULL)
+    fsm3.resume(1.0, ensure_mouse_mode=False)
+    fsm3.transition(BotState.TELEPORT_TO_SPOT, 2.0, "test_antijump")
+    w_near = tr3.update(_make_snap(2.1, 1072, 2626, fw=1024, fh=768))  # dist = 6.0u <= 8.0u
+    w_near.is_stuck = True
+    acts_near = fsm3.step(w_near)
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "space" for a in acts_near)
+
+    # (c2) Coordinate Gate: at (1075, 2622) (x > 1073, near Arcadia/Snowland), NEVER press Tab or click NPC; force WALK_TO_NPC!
+    fsm3.respawn_travel._tele_phase = "FIND_SIGN"
+    sn_arc = PerceptionSnapshot(
+        timestamp=3.0, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=1075, y=2622, confidence=0.99), minimap=MinimapReading(),
+        addon_keep_sign_bbox=(456, 297, 110, 18),
+    )
+    acts_gate = fsm3.step(tr3.update(sn_arc))
+    assert fsm3.respawn_travel._tele_phase == "WALK_TO_NPC"
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "tab" for a in acts_gate)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_gate)

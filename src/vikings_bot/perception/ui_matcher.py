@@ -181,7 +181,7 @@ class UiTemplateMatcher:
         best_seen = -1.0
 
         # In RYL / Vikings Online at 1024x768, UI elements & NPC sign frames render at native 1:1 pixels
-        # (not scaled by 1024/1920 = 0.53x), so try native 1:1 matching first when hud_fixed_pixel_ui=True!
+        # (not scaled by 1024/1920 = 0.53x), so match strictly at native 1:1 when hud_fixed_pixel_ui=True!
         if self.hud_fixed_pixel_ui:
             th_n, tw_n = tmpl.shape[:2]
             if crop.shape[0] >= th_n and crop.shape[1] >= tw_n:
@@ -191,6 +191,8 @@ class UiTemplateMatcher:
                 if float(max_n) >= threshold:
                     self._record_template_score(template_name, float(max_n), threshold, True, frame.timestamp)
                     return (ox + int(max_ln[0]), oy + int(max_ln[1]), int(tw_n), int(th_n))
+                self._record_template_score(template_name, best_seen, threshold, False, frame.timestamp)
+                return None
 
         scaled = self._scale_template(tmpl, frame.width, frame.height)
         th, tw = scaled.shape[:2]

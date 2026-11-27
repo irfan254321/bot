@@ -257,7 +257,8 @@ def test_travel_waypoints_100pct_keyboard_wasd_never_mouse_mode_or_ground_click(
     fsm.transition(BotState.TELEPORT_TO_SPOT, 50.0, "test_no_sky_menu_shortcut")
     fsm.respawn_travel._tele_phase = "FIND_SIGN"
     fsm.respawn_travel._tele_click_attempts = 0
-    acts_sky = fsm.step(tracker.update(_snap(50.5, 1066, 2627, menu_bbox=(669, 99, 64, 43))))
+    tracker.accept_teleport_jump()
+    acts_sky = fsm.step(tracker.update(_snap(50.5, 1066, 2626, menu_bbox=(669, 99, 64, 43))))
     assert fsm.respawn_travel._tele_phase == "FIND_SIGN"
     assert not any(isinstance(a, ClickScreenIntent) for a in acts_sky)
 

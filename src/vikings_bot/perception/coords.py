@@ -120,21 +120,43 @@ def segment_glyphs(crop_bgr: np.ndarray, _min_val: int = 130) -> list[tuple[int,
 
     filtered.sort(key=lambda b: b[0])
 
+    # Merge vertically-stacked fragments of the same digit (e.g. dim '2' splitting into top cap + bottom bar)
+    merged_boxes: list[tuple[int, int, int, int]] = []
+    for box in filtered:
+        bx, by, bw, bh = box
+        if merged_boxes:
+            px, py, pw, ph = merged_boxes[-1]
+            overlap_x = min(px + pw, bx + bw) - max(px, bx)
+            comb_y1 = min(py, by)
+            comb_y2 = max(py + ph, by + bh)
+            if overlap_x >= max(1, int(min(pw, bw) * 0.5)) and (comb_y2 - comb_y1) <= 12:
+                nx1 = min(px, bx)
+                nx2 = max(px + pw, bx + bw)
+                merged_boxes[-1] = (nx1, comb_y1, nx2 - nx1, comb_y2 - comb_y1)
+                continue
+        merged_boxes.append(box)
+
     # Split fused wide digits recursively if JPEG/VMware AA bridges a 1px gap
     final_boxes: list[tuple[int, int, int, int]] = []
-    queue_boxes: list[tuple[int, int, int, int]] = list(filtered)
+    queue_boxes: list[tuple[int, int, int, int]] = list(merged_boxes)
     while queue_boxes:
         x, y, w, h = queue_boxes.pop(0)
         if w >= 10 and h >= 6:
             sub = mask[y : y + h, x : x + w]
             col_sums = sub.sum(axis=0)
-            mid_lo = max(2, w // 3)
-            mid_hi = min(w - 2, (2 * w) // 3 + 1)
-            split_rel = mid_lo + int(np.argmin(col_sums[mid_lo:mid_hi]))
-            if split_rel >= 2 and (w - split_rel) >= 2:
-                queue_boxes.insert(0, (x + split_rel, y, w - split_rel, h))
-                queue_boxes.insert(0, (x, y, split_rel, h))
-                continue
+            if w <= 13:
+                # 2-digit fused blob (each digit is 5-6px wide): search near true center so '0' isn't split at its hollow center!
+                mid_lo = max(4, (w // 2) - 1)
+                mid_hi = min(w - 3, (w // 2) + 2)
+            else:
+                mid_lo = max(4, w // 3)
+                mid_hi = min(w - 4, (2 * w) // 3 + 1)
+            if mid_hi > mid_lo:
+                split_rel = mid_lo + int(np.argmin(col_sums[mid_lo:mid_hi]))
+                if split_rel >= 3 and (w - split_rel) >= 3:
+                    queue_boxes.insert(0, (x + split_rel, y, w - split_rel, h))
+                    queue_boxes.insert(0, (x, y, split_rel, h))
+                    continue
         final_boxes.append((x, y, w, h))
 
     glyphs: list[tuple[int, int, int, int, np.ndarray]] = []
@@ -336,7 +358,7 @@ class CoordReader:
         if not self.templates:
             return None
         # Try crisp 1080p threshold first, then gracefully step down for dimmer VMware 1024x768 HUD text
-        for min_val in (130, 110, 88):
+        for min_val in (130, 110, 100, 88):
             res = self._read_crop_with_threshold(crop_bgr, min_val=min_val)
             if res is not None:
                 return res

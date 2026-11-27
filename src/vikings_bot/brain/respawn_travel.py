@@ -45,9 +45,9 @@ class RespawnTravelController:
         self.city_spawn = Point2D(float(cs[0]), float(cs[1]))
         self.city_radius = float(rt.get("city_radius", 55.0))
 
-        npc = rt.get("addon_teleport_coord", rt.get("npc_stand_coord", [1062.0, 2627.0]))
+        npc = rt.get("addon_teleport_coord", rt.get("npc_stand_coord", [1066.0, 2626.0]))
         self.npc_stand = Point2D(float(npc[0]), float(npc[1]))
-        self.npc_arrival_radius = float(rt.get("addon_keep_arrival_radius", rt.get("npc_arrival_radius", 4.0)))
+        self.npc_arrival_radius = float(rt.get("addon_keep_arrival_radius", rt.get("npc_arrival_radius", 5.0)))
 
         ak = rt.get("addon_keep_landing", [1409.0, 1773.0])
         self.addon_keep_landing = Point2D(float(ak[0]), float(ak[1]))
@@ -820,23 +820,33 @@ class RespawnTravelController:
             return (intents, None, "")
         self._talk_dismiss_attempts = 0
 
-        # Phase 1: Walk close to Addon Keep Teleport NPC at (1062, 2627) strictly in Keyboard Mode (WASD)
-        # NEVER stop early just because the sign is visible from across the street; MUST reach <= 4.0 units!
+        # Phase 1: Walk close to Addon Keep Teleport NPC at (1066, 2626) strictly in Keyboard Mode (WASD)
+        # NEVER stop early just because the sign is visible from across the street; MUST reach <= 5.0 units & x <= 1073!
         if self._tele_phase == "WALK_TO_NPC":
             intents: list[ActionIntent] = []
             if coords is None:
                 return (intents, None, "")
 
             dist_npc = coords.distance_to(self.npc_stand)
-            if dist_npc <= self.npc_arrival_radius:
+            if dist_npc <= self.npc_arrival_radius and coords.x <= 1073.0:
                 intents.extend(self.release_all_move_keys("arrived_at_tele_npc"))
                 self._tele_phase = "FIND_SIGN"
                 self._tele_phase_ts = now
-                logger.info("Arrived right in front of Addon Keep Teleport NPC at (%.0f, %.0f) dist=%.1f", coords.x, coords.y, dist_npc)
+                logger.info(
+                    "Arrived at road edge in front of Addon Keep Teleport NPC at (%.0f, %.0f) dist=%.1f",
+                    coords.x,
+                    coords.y,
+                    dist_npc,
+                )
                 return (intents, None, "")
 
-            # Handle obstacle stuck while walking to NPC (e.g. wooden fence edge)
-            if world.is_stuck and self.tracker.is_ready("tele_unstick", now):
+            # Handle obstacle stuck ONLY when > 8.0 units away AND live minimap coords are valid (NEVER jump near NPC!)
+            if (
+                world.is_stuck
+                and world.snapshot.coords is not None
+                and dist_npc > 8.0
+                and self.tracker.is_ready("tele_unstick", now)
+            ):
                 self.tracker.set_cooldown("tele_unstick", now, 0.8)
                 self.tracker.clear_stuck(reset_consecutive=True)
                 intents.extend(self.release_all_move_keys("tele_walk_unstick"))
@@ -847,9 +857,20 @@ class RespawnTravelController:
             intents.extend(self._steer_keyboard_toward(world, self.npc_stand, "addon_keep_npc", now))
             return (intents, None, "")
 
-        # Phase 2: Locate 'Addon Keep Teleport' golden sign on screen, then toggle Tab cursor & click NPC
+        # Phase 2: Locate 'Addon Keep Teleport' text sign on screen, then toggle Tab cursor & click NPC
         if self._tele_phase == "FIND_SIGN":
             intents = self.release_all_move_keys("find_tele_sign")
+            # Coordinate Gate (Anti-Snowland / Anti-Arcadia Teleport):
+            # ONLY allowed to stay in FIND_SIGN / press Tab / click NPC when dist <= 7.5u AND coords.x <= 1073.0!
+            if coords is None or coords.distance_to(self.npc_stand) > 7.5 or coords.x > 1073.0:
+                if self._cursor_toggled_by_us:
+                    intents.append(
+                        TapKeyIntent(key=self._active_cursor_key, hold_sec=0.04, reason="hide_cursor_coord_gate")
+                    )
+                    self._cursor_toggled_by_us = False
+                self._tele_phase = "WALK_TO_NPC"
+                self._tele_phase_ts = now
+                return (intents, None, "")
             # NEVER shortcut to teleport_menu before NPC has actually been clicked (_tele_click_attempts > 0)!
             if (
                 self._tele_click_attempts > 0
