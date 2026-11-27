@@ -192,15 +192,17 @@ class WorldStateTracker:
     def update(self, snapshot: PerceptionSnapshot) -> WorldState:
         now = snapshot.timestamp
 
-        # 1. Coordinate update with outlier rejection & automatic respawn/teleport jump acceptance
+        # 1. Coordinate update with anti-spike OCR filter & automatic respawn/teleport jump acceptance
         if snapshot.coords is not None:
             candidate = snapshot.coords.point
             accept = True
             teleported = False
             if self._last_valid_coord is not None and not self._accept_next_jump:
-                dt = max(0.05, now - self._last_valid_coord_ts)
+                dt = max(0.01, now - self._last_valid_coord_ts)
+                jump_dist = self._last_valid_coord.distance_to(candidate)
                 allowed_jump = self.coord_max_jump * max(1.0, dt / 1.5)
-                if self._last_valid_coord.distance_to(candidate) > allowed_jump:
+                if jump_dist > allowed_jump:
+                    # Large jump (> coord_max_jump, e.g. > 40u teleport/respawn): accept on 3 consistent frames
                     if (
                         self._pending_jump_coords
                         and self._pending_jump_coords[-1].distance_to(candidate) <= 18.0
@@ -213,6 +215,18 @@ class WorldStateTracker:
                         teleported = True
                         self._pending_jump_coords.clear()
                     else:
+                        accept = False
+                elif dt < 0.5 and 8.0 < jump_dist <= 15.0:
+                    # Anti-spike filter for 1-frame minimap OCR digit misreads (e.g. 1065 -> 1075 = 10u in <0.5s):
+                    # reject single outlier; accept only if confirmed on 2 consecutive frames (<= 4u apart)
+                    if (
+                        self._pending_jump_coords
+                        and self._pending_jump_coords[-1].distance_to(candidate) <= 4.0
+                    ):
+                        accept = True
+                        self._pending_jump_coords.clear()
+                    else:
+                        self._pending_jump_coords = [candidate]
                         accept = False
                 else:
                     self._pending_jump_coords.clear()

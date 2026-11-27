@@ -654,11 +654,13 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
     coord_txt = f"({data.coords[0]},{data.coords[1]})" if data.coords is not None else "(-,-)"
     act_clip = (data.action or "-")[:42]
     trv_tag = f" ({data.travel_desc})" if data.travel_desc else ""
-    rep_txt = (
-        " REP:NOW!"
-        if (data.repair_rem_min is not None and data.repair_rem_min <= 0.01)
-        else (f" REP:{data.repair_rem_min:.0f}m" if data.repair_rem_min is not None else "")
-    )
+    if data.repair_rem_min is None:
+        rep_txt = ""
+    elif data.repair_rem_min <= 0.01:
+        rep_txt = " REP:NOW!"
+    else:
+        _rem_s = max(0, int(round(data.repair_rem_min * 60.0)))
+        rep_txt = f" REP:{_rem_s // 60}m{_rem_s % 60:02d}s"
     line1 = f"PHASE: {data.phase}{trv_tag}  |  MODE: {data.input_mode}  |  ACT: {act_clip}"
     line2 = (
         f"HZ: {data.loop_hz:.1f}  |  VIS: {data.vision_ms:.1f}ms  |  THP: {thp_txt}  |  "

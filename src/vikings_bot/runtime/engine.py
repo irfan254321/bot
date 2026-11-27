@@ -559,8 +559,14 @@ class BotEngine:
                     if need_hb:
                         last_heartbeat_ts = now
                         rt_tag = f" ({self.fsm.travel_status_desc})" if self.fsm.travel_status_desc else ""
+                        rem_min = self.fsm.repair_remaining_minutes
+                        if rem_min is None:
+                            rep_in_s = "off"
+                        else:
+                            rem_total_s = max(0, int(round(rem_min * 60.0)))
+                            rep_in_s = f"{rem_total_s // 60}m{rem_total_s % 60:02d}s"
                         logger.info(
-                            "STATUS | state=%s%s | mode=%s | win=%s focused=%s | pos=%s | hp=%.0f%% mp=%.0f%% | mobs=%d gold=%d kills=%d deaths=%d repairs=%d | vis=%.1fms fps=%.1f",
+                            "STATUS | state=%s%s | mode=%s | win=%s focused=%s | pos=%s | hp=%.0f%% mp=%.0f%% | mobs=%d gold=%d kills=%d deaths=%d repairs=%d repair_in=%s | vis=%.1fms fps=%.1f",
                             self.fsm.state.value,
                             rt_tag,
                             in_label,
@@ -574,6 +580,7 @@ class BotEngine:
                             self.fsm.kills_count,
                             self.fsm.deaths_count,
                             self.fsm.repairs_count,
+                            rep_in_s,
                             float(snapshot.timings_ms.get("total", 0.0)),
                             fps_val,
                         )

@@ -47,7 +47,7 @@ class RespawnTravelController:
 
         npc = rt.get("addon_teleport_coord", rt.get("npc_stand_coord", [1066.0, 2627.0]))
         self.npc_stand = Point2D(float(npc[0]), float(npc[1]))
-        self.npc_arrival_radius = float(rt.get("npc_arrival_radius", 6.5))
+        self.npc_arrival_radius = float(rt.get("addon_keep_arrival_radius", rt.get("npc_arrival_radius", 8.5)))
 
         ak = rt.get("addon_keep_landing", [1409.0, 1773.0])
         self.addon_keep_landing = Point2D(float(ak[0]), float(ak[1]))
@@ -177,7 +177,7 @@ class RespawnTravelController:
     def is_in_city(self, coords: Point2D | None) -> bool:
         if coords is None:
             return False
-        if coords.x >= 1000.0 and coords.y >= 2500.0:
+        if 1020.0 <= coords.x <= 1160.0 and 2560.0 <= coords.y <= 2700.0:
             return True
         return coords.distance_to(self.city_spawn) <= self.city_radius
 
@@ -675,7 +675,7 @@ class RespawnTravelController:
                     self._close_ui_attempts = 0
             return (intents, None, "")
 
-        # Phase 6: Close Shop [x] and Inventory [x] cleanly without toggling ESC interface mode
+        # Phase 6: Close Shop & Inventory at once via 1x ESC (no [x] clicks, no 'i', max 1 retry if still open!)
         if self._repair_phase == "CLOSE_SHOP_INV":
             intents = self.release_all_move_keys("close_shop_inv")
             if not self.tracker.is_ready("repair_close_ui", now):
@@ -683,60 +683,36 @@ class RespawnTravelController:
 
             rbtn = world.snapshot.repair_all_bbox
             itab = world.snapshot.inventory_tab_bbox
-            if rbtn is not None and self._close_ui_attempts < 8:
-                self._close_ui_attempts += 1
-                rx, ry, _rw, _rh = rbtn
-                sx_close = max(10, min(fw - 6, rx + int(round(86.0 * ui_sx))))
-                sy_close = max(6, min(fh - 10, ry - int(round(392.0 * ui_sy))))
-                self.tracker.set_cooldown("repair_close_ui", now, 0.34)
-                intents.append(
-                    ClickScreenIntent(
-                        x=sx_close,
-                        y=sy_close,
-                        button="left",
-                        hold_sec=self.npc_click_hold_sec,
-                        reason=f"click_shop_close_x#{self._close_ui_attempts}",
-                        no_jitter=True,
-                    )
-                )
-                logger.info("Closing Shop panel [x] at (%d, %d)", sx_close, sy_close)
-                return (intents, None, "")
+            ui_still_open = (rbtn is not None) or (itab is not None)
 
-            if itab is not None and self._close_inv_attempts < 8:
-                self._close_inv_attempts += 1
-                self.tracker.set_cooldown("repair_close_ui", now, 0.34)
-                pure_mouse = self.mouse_only_travel and self.control_mode == "mouse"
-                if pure_mouse or self._close_inv_attempts % 2 == 1:
-                    ix, iy, _iw, _ih = itab
-                    ix_close = max(10, min(fw - 4, ix + int(round(323.0 * ui_sx))))
-                    iy_close = max(6, min(fh - 10, iy - int(round(6.0 * ui_sy))))
-                    intents.append(
-                        ClickScreenIntent(
-                            x=ix_close,
-                            y=iy_close,
-                            button="left",
-                            hold_sec=self.npc_click_hold_sec,
-                            reason=f"click_inventory_close_x#{self._close_inv_attempts}",
-                            no_jitter=True,
-                        )
-                    )
-                    logger.info("Closing Inventory panel [x] at (%d, %d)", ix_close, iy_close)
-                else:
-                    intents.append(
-                        TapKeyIntent(key="i", hold_sec=0.04, reason="close_inventory_hotkey_i")
-                    )
-                return (intents, None, "")
-
-            # Both Shop and Inventory windows are closed! Restore Keyboard camera lock via Tab if we toggled cursor earlier.
-            if self._repair_cursor_toggled:
+            if self._close_ui_attempts == 0:
+                self._close_ui_attempts = 1
+                self.tracker.set_cooldown("repair_close_ui", now, 0.40)
                 intents.append(
                     TapKeyIntent(
-                        key=self._active_cursor_key,
-                        hold_sec=0.04,
-                        reason="hide_cursor_after_repair",
+                        key="esc",
+                        hold_sec=0.05,
+                        reason="close_shop_inv_esc",
                     )
                 )
-                self._repair_cursor_toggled = False
+                logger.info("Closing Shop & Inventory windows via 1x ESC")
+                return (intents, None, "")
+
+            if self._close_ui_attempts == 1 and ui_still_open:
+                self._close_ui_attempts = 2
+                self.tracker.set_cooldown("repair_close_ui", now, 0.40)
+                intents.append(
+                    TapKeyIntent(
+                        key="esc",
+                        hold_sec=0.05,
+                        reason="close_shop_inv_esc_retry",
+                    )
+                )
+                logger.info("Shop/Inventory still visible -> sending max 1x retry ESC")
+                return (intents, None, "")
+
+            # Windows closed! Do NOT send any extra ESC or ClickScreenIntent; walk WASD straight to hub -> Addon Keep Teleport.
+            self._repair_cursor_toggled = False
             self._repair_phase = "WALK_TO_HUB"
             self._repair_phase_ts = now
             return (intents, None, "")
@@ -839,11 +815,18 @@ class RespawnTravelController:
                 return (intents, None, "")
 
             dist_npc = coords.distance_to(self.npc_stand)
-            if dist_npc <= self.npc_arrival_radius:
+            early_visual_arrived = (dist_npc <= 15.0) and (world.snapshot.addon_keep_sign_bbox is not None)
+            if dist_npc <= self.npc_arrival_radius or early_visual_arrived:
                 intents.extend(self.release_all_move_keys("arrived_at_tele_npc"))
                 self._tele_phase = "FIND_SIGN"
                 self._tele_phase_ts = now
-                logger.info("Arrived near Addon Keep Teleport NPC at (%.0f, %.0f)", coords.x, coords.y)
+                logger.info(
+                    "Arrived near Addon Keep Teleport NPC at (%.0f, %.0f) dist=%.1f%s",
+                    coords.x,
+                    coords.y,
+                    dist_npc,
+                    " [early_visual_sign]" if early_visual_arrived else "",
+                )
                 return (intents, None, "")
 
             # Handle obstacle stuck while walking to NPC (e.g. wooden fence edge)
@@ -889,7 +872,7 @@ class RespawnTravelController:
                     if not self._cursor_toggled_by_us:
                         self._active_cursor_key = toggle_key
                         self._cursor_toggled_by_us = True
-                        self._cursor_ready_at = now + 0.18
+                        self._cursor_ready_at = now + 0.20
                         intents.append(
                             TapKeyIntent(key=toggle_key, hold_sec=0.05, reason=f"show_cursor_{toggle_key}")
                         )

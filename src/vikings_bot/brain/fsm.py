@@ -550,6 +550,8 @@ class FarmingFSM:
             BotState.ENSURE_KEYBOARD_MODE,
             BotState.REPAIR_RECALL,
             BotState.REPAIR_AT_NPC,
+            BotState.TELEPORT_TO_SPOT,
+            BotState.TRAVEL_TO_SPOT,
         ):
             dt = min(1.0, max(0.0, now - self._last_step_ts))
             self._active_farming_sec += dt

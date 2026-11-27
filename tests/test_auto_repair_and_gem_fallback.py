@@ -170,12 +170,14 @@ def test_full_80m_auto_repair_cycle_with_weapon_swap_talk_guard_and_return_to_sp
     fsm.step(tracker.update(_make_snap(1.0, 1195, 1568)))
     assert fsm.state == BotState.SEARCH_MOB
 
+
     # Fast-forward active farming timer to 80 minutes (4800s) -> swaps weapon Q if EA < 130, then enters REPAIR_RECALL
     fsm._active_farming_sec = 4801.0
     w_low_ea = tracker.update(_make_snap(5.2, 1195, 1568, ea=95))
     acts_swap = fsm.step(w_low_ea)
     assert any(isinstance(a, TapKeyIntent) and a.key == "q" for a in acts_swap)
     assert fsm.state == BotState.SEARCH_MOB
+
 
     w_main_ea = tracker.update(_make_snap(5.6, 1195, 1568, ea=180))
     fsm.step(w_main_ea)
@@ -242,19 +244,12 @@ def test_full_80m_auto_repair_cycle_with_weapon_swap_talk_guard_and_return_to_sp
     acts_cs = fsm.step(
         tracker.update(_make_snap(28.9, 1094, 2643, repair_all_bbox=ra_box, inventory_tab_bbox=it_box))
     )
-    assert any(
-        isinstance(a, ClickScreenIntent) and a.x == 1578 and a.y == 140 and "click_shop_close_x" in a.reason
-        for a in acts_cs
-    )
+    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "close_shop_inv_esc" for a in acts_cs)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_cs)
 
-    acts_ci = fsm.step(tracker.update(_make_snap(29.4, 1094, 2643, inventory_tab_bbox=it_box)))
-    assert any(
-        isinstance(a, ClickScreenIntent) and a.x == 1913 and a.y == 140 and "click_inventory_close_x" in a.reason
-        for a in acts_ci
-    )
-
-    acts_done = fsm.step(tracker.update(_make_snap(29.9, 1094, 2643)))
-    assert any(isinstance(a, TapKeyIntent) and a.key == "tab" and "hide_cursor_after_repair" in a.reason for a in acts_done)
+    acts_done = fsm.step(tracker.update(_make_snap(29.4, 1094, 2643)))
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_done)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_done)
     assert fsm.respawn_travel._repair_phase == "WALK_TO_HUB"
 
     fsm.step(tracker.update(_make_snap(31.5, 1075, 2631)))
@@ -270,6 +265,7 @@ def test_full_80m_auto_repair_cycle_with_weapon_swap_talk_guard_and_return_to_sp
         fsm.step(tracker.update(_make_snap(ts, int(wp.x), int(wp.y))))
         ts += 2.0
     assert fsm.state == BotState.SEARCH_MOB
+
     assert abs(fsm.navigator.spot_center.x - 1195.0) <= 1.0
     assert abs(fsm.navigator.spot_center.y - 1568.0) <= 1.0
 
@@ -338,7 +334,11 @@ def test_1024x768_keyboard_mode_auto_repair_uses_wasd_and_tab_cursor_never_esc_o
     assert any(isinstance(a, HoldKeyIntent) and a.hold and a.key == "w" for a in walk_intents)
     assert not any(isinstance(a, ClickScreenIntent) for a in walk_intents)
     assert any(isinstance(a, TapKeyIntent) and a.key == "tab" for a in all_intents)
-    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in all_intents)
+    # Shop & Inventory closed cleanly via 1x ESC (zero [x] clicks, zero 'i' hotkey)
+    esc_close = [a for a in all_intents if isinstance(a, TapKeyIntent) and a.key == "esc"]
+    assert len(esc_close) >= 1 and all("close_shop_inv_esc" in a.reason for a in esc_close)
+    assert not any(isinstance(a, ClickScreenIntent) and "close_x" in a.reason for a in all_intents)
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "i" for a in all_intents)
 
 
 def test_gems_new_spot_1195_1568_switches_to_old_spot_1092_1115_only_after_2_real_deaths() -> None:
@@ -354,6 +354,7 @@ def test_gems_new_spot_1195_1568_switches_to_old_spot_1092_1115_only_after_2_rea
     fsm.resume(1.0)
     fsm.step(tracker.update(_make_snap(1.0, 1195, 1568)))
     assert fsm.state == BotState.SEARCH_MOB
+
     assert (fsm.navigator.spot_center.x, fsm.navigator.spot_center.y) == (1195.0, 1568.0)
 
     fsm.request_repair_now()
@@ -388,6 +389,7 @@ def test_gems_new_spot_1195_1568_switches_to_old_spot_1092_1115_only_after_2_rea
         fsm.step(tracker.update(_make_snap(ts, int(wp.x), int(wp.y))))
         ts += 2.0
     assert fsm.state == BotState.SEARCH_MOB
+
     assert abs(fsm.navigator.spot_center.x - 1092.0) <= 1.0
     assert abs(fsm.navigator.spot_center.y - 1115.0) <= 1.0
 
@@ -484,8 +486,9 @@ def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832
     fsm.step(tracker.update(snap_no_eq))
     assert fsm.respawn_travel._repair_phase == "CLOSE_SHOP_INV"
 
-    # Dialog closed -> walks to hub (1075, 2631) -> TELEPORT_TO_SPOT -> resets 80m timer!
-    fsm.step(tracker.update(_make_snap(25.5, 1094, 2644, fw=1024, fh=768)))
+    # Dialog closed via 1x ESC -> walks to hub (1075, 2631) -> TELEPORT_TO_SPOT -> resets 80m timer!
+    fsm.step(tracker.update(_make_snap(25.5, 1094, 2644, fw=1024, fh=768)))  # 1x ESC close
+    fsm.step(tracker.update(_make_snap(26.0, 1094, 2644, fw=1024, fh=768)))  # transitions to WALK_TO_HUB
     fsm.step(tracker.update(_make_snap(27.0, 1075, 2631, fw=1024, fh=768)))
     assert fsm.state == BotState.TELEPORT_TO_SPOT
     assert fsm.repairs_count == 1 and fsm._active_farming_sec == 0.0
@@ -498,6 +501,7 @@ def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832
         fsm.step(tracker.update(_make_snap(ts, int(wp.x), int(wp.y), fw=1024, fh=768)))
         ts += 1.5
     assert fsm.state == BotState.SEARCH_MOB
+
     assert (fsm.navigator.spot_center.x, fsm.navigator.spot_center.y) == (627.0, 1817.0)
 
     # First SEARCH_MOB tick back at (627, 1817) sends /setweather 11!
@@ -579,6 +583,7 @@ def test_ensure_keyboard_mode_transitions_kill_freeze_and_no_esc_after_repair_ye
     )
     assert fsm.state == BotState.SEARCH_MOB
 
+
     # Trigger F7 Force Repair -> enters REPAIR_RECALL at t=2.0
     fsm.request_repair_now()
     fsm.step(tr.update(_make_snap(2.0, 627, 1817, fw=1024, fh=768)))
@@ -641,3 +646,146 @@ def test_ensure_keyboard_mode_transitions_kill_freeze_and_no_esc_after_repair_ye
         )
     )
     assert fsm.state == BotState.SEARCH_MOB
+
+
+
+def test_green_wales_instant_recall_1x_esc_close_tele_arrival_antispike_and_80m_auto_timer() -> None:
+    """Verify:
+    (a) REPAIR_RECALL immediately transitions to ENSURE_KEYBOARD_MODE -> REPAIR_AT_NPC at (1083, 2634) with zero /kill.
+    (b) CLOSE_SHOP_INV closes Shop & Inventory with 1x ESC (zero [x] clicks, zero 'i', zero clicks toward teleport).
+    (c) TELE:WALK_TO_NPC arrives at <=8.5u OR <=15u with addon_keep_sign visible, then runs release -> Tab -> click NPC -> click Teleport.
+    (d) Anti-spike minimap coord filter rejects 1-frame 1065->1075 spike (<0.5s) while allowing >40u teleport/respawn jumps.
+    (e) 80m auto-repair triggers automatically without F7, survives F9 PAUSE, and resets to 80m after cycle completion.
+    """
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+    assert cfg.repair["enabled"] is True
+    assert float(cfg.repair["interval_minutes"]) == 80.0
+
+    # (a) REPAIR_RECALL at (1083, 2634) -> immediately enters ENSURE_KEYBOARD_MODE -> REPAIR_AT_NPC without /kill!
+    tr_a = WorldStateTracker()
+    fsm_a = FarmingFSM(cfg, tr_a, mode=BotMode.FULL)
+    fsm_a._ensure_mode_enabled = True
+    fsm_a.transition(BotState.REPAIR_RECALL, 1.0, "test_recall_in_city")
+    assert fsm_a.respawn_travel.is_in_city(CoordReading(x=1083, y=2634, confidence=0.99).point) is True
+    acts_a = fsm_a.step(tr_a.update(_make_snap(1.1, 1083, 2634, fw=1024, fh=768)))
+    assert not any(isinstance(a, TypeChatCommandIntent) for a in acts_a)
+    assert fsm_a.state == BotState.ENSURE_KEYBOARD_MODE
+    fsm_a.step(tr_a.update(_make_snap(1.15, 1083, 2634, fw=1024, fh=768)))
+    fsm_a.step(
+        tr_a.update(
+            PerceptionSnapshot(
+                timestamp=1.50, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=1083, y=2634, confidence=0.99), minimap=MinimapReading(),
+                interface_mode="keyboard_banner",
+            )
+        )
+    )
+    assert fsm_a.state == BotState.REPAIR_AT_NPC
+
+    # (b) CLOSE_SHOP_INV closes Shop & Inventory with 1x ESC (no [x] clicks, no 'i', no clicks after repair)
+    fsm_a.respawn_travel._repair_phase = "CONFIRM_REPAIR"
+    fsm_a.step(tr_a.update(_make_snap(5.0, 1094, 2644, fw=1024, fh=768, repair_yes_bbox=(516, 382, 55, 25))))
+    assert fsm_a.respawn_travel._repair_phase == "CLOSE_SHOP_INV"
+    acts_esc = fsm_a.step(
+        tr_a.update(
+            _make_snap(
+                5.40, 1094, 2644, fw=1024, fh=768,
+                repair_all_bbox=(596, 532, 66, 25),
+                inventory_tab_bbox=(694, 146, 105, 22),
+            )
+        )
+    )
+    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "close_shop_inv_esc" for a in acts_esc)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_esc)
+    # 0.45s later both windows closed -> NO second ESC, moves straight to WALK_TO_HUB with zero clicks!
+    acts_done = fsm_a.step(tr_a.update(_make_snap(5.85, 1094, 2644, fw=1024, fh=768)))
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_done)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_done)
+    assert fsm_a.respawn_travel._repair_phase == "WALK_TO_HUB"
+
+    # (c) TELE:WALK_TO_NPC arrives at <=8.5u OR <=15u when addon_keep_sign visible -> release -> Tab -> click NPC -> click Teleport
+    tr_c = WorldStateTracker()
+    fsm_c = FarmingFSM(cfg, tr_c, mode=BotMode.FULL)
+    fsm_c.resume(1.0, ensure_mouse_mode=False)
+    fsm_c.transition(BotState.TELEPORT_TO_SPOT, 10.0, "test_tele_early_visual")
+    # At (1078, 2627) -> dist = 12.0u <= 15.0u AND addon_keep_sign visible -> early visual arrival to FIND_SIGN!
+    sn_early = PerceptionSnapshot(
+        timestamp=10.2, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=1078, y=2627, confidence=0.99), minimap=MinimapReading(),
+        addon_keep_sign_bbox=(430, 291, 162, 31),
+    )
+    acts_arr = fsm_c.step(tr_c.update(sn_early))
+    assert fsm_c.respawn_travel._tele_phase == "FIND_SIGN"
+    assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and not a.hold for a in acts_arr)
+    # Next tick: Tab -> wait 0.20s -> left-click NPC (100ms hold) -> WAIT_MENU -> left-click Teleport (100ms hold) -> WAIT_LOAD
+    acts_tab = fsm_c.step(
+        tr_c.update(
+            PerceptionSnapshot(
+                timestamp=10.3, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=1078, y=2627, confidence=0.99), minimap=MinimapReading(),
+                addon_keep_sign_bbox=(430, 291, 162, 31),
+            )
+        )
+    )
+    assert any(isinstance(a, TapKeyIntent) and a.key == "tab" for a in acts_tab)
+    acts_npc = fsm_c.step(
+        tr_c.update(
+            PerceptionSnapshot(
+                timestamp=10.55, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=1078, y=2627, confidence=0.99), minimap=MinimapReading(),
+                addon_keep_sign_bbox=(430, 291, 162, 31),
+            )
+        )
+    )
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 and "click_addon_keep_npc" in a.reason for a in acts_npc)
+    assert fsm_c.respawn_travel._tele_phase == "WAIT_MENU"
+    acts_tp = fsm_c.step(
+        tr_c.update(
+            PerceptionSnapshot(
+                timestamp=10.8, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=1078, y=2627, confidence=0.99), minimap=MinimapReading(),
+                teleport_menu_bbox=(563, 155, 64, 43),
+            )
+        )
+    )
+    assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 and a.reason == "click_teleport_option" for a in acts_tp)
+    assert fsm_c.respawn_travel._tele_phase == "WAIT_LOAD"
+
+    # (d) Anti-spike minimap filter: blocks 1-frame 1065->1075 OCR glitch (<0.5s), allows >40u teleport jump!
+    tr_d = WorldStateTracker()
+    w0 = tr_d.update(_make_snap(1.0, 1065, 2627, fw=1024, fh=768))
+    assert w0.coords_smoothed is not None and int(round(w0.coords_smoothed.x)) == 1065
+    # Single-frame OCR spike 1065 -> 1075 in 0.10s -> REJECTED!
+    w_spike = tr_d.update(_make_snap(1.10, 1075, 2627, fw=1024, fh=768))
+    assert w_spike.coords_smoothed is not None and int(round(w_spike.coords_smoothed.x)) == 1065
+    # Back to 1066 -> accepted normally
+    w_ok = tr_d.update(_make_snap(1.20, 1066, 2627, fw=1024, fh=768))
+    assert w_ok.coords_smoothed is not None and int(round(w_ok.coords_smoothed.x)) == 1066
+    # Large teleport jump >40u (1066,2627 -> 1409,1773) with accept_teleport_jump() -> accepted immediately!
+    tr_d.accept_teleport_jump()
+    w_tele = tr_d.update(_make_snap(5.0, 1409, 1773, fw=1024, fh=768))
+    assert w_tele.coords_smoothed is not None and int(round(w_tele.coords_smoothed.x)) == 1409
+
+    # (e) 80m auto-repair triggers automatically without F7, survives F9 PAUSE, and resets to 80m after cycle completion
+    tr_e = WorldStateTracker()
+    fsm_e = FarmingFSM(cfg, tr_e, mode=BotMode.FULL)
+    fsm_e.resume(1.0, ensure_mouse_mode=False)
+    fsm_e.step(tr_e.update(_make_snap(1.0, 627, 1817, fw=1024, fh=768)))
+    fsm_e._active_farming_sec = 4799.5
+    fsm_e.pause(2.0, "test_f9_pause")
+    assert fsm_e._active_farming_sec == 4799.5  # NOT reset on PAUSE!
+    fsm_e.resume(10.0, ensure_mouse_mode=False)
+    assert fsm_e._active_farming_sec == 4799.5
+    # 1.0s of active farming ticks timer past 4800s -> auto-triggers REPAIR_RECALL without F7!
+    fsm_e.step(tr_e.update(_make_snap(10.0, 627, 1817, fw=1024, fh=768)))
+    fsm_e.step(tr_e.update(_make_snap(11.0, 627, 1817, fw=1024, fh=768)))
+    assert fsm_e.state == BotState.REPAIR_RECALL
+    # Once repair completes -> resets remaining minutes cleanly to 80.0!
+    fsm_e.transition(BotState.REPAIR_AT_NPC, 30.0, "test_rep_done")
+    fsm_e.respawn_travel._repair_phase = "WALK_TO_HUB"
+    fsm_e.step(tr_e.update(_make_snap(32.0, 1075, 2631, fw=1024, fh=768)))
+    assert fsm_e.state == BotState.TELEPORT_TO_SPOT
+    assert fsm_e.repairs_count == 1
+    assert fsm_e.repair_remaining_minutes is not None
+    assert abs(fsm_e.repair_remaining_minutes - 80.0) <= 0.05
