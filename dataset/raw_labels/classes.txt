@@ -1,4 +1,3 @@
 gold_rustler
 gold_bag
-dead_rustler
 player

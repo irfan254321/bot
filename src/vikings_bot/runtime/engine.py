@@ -408,6 +408,7 @@ class BotEngine:
                 need_repair_ui = self.fsm.state == BotState.REPAIR_AT_NPC
                 skip_field = self.fsm.state in (
                     BotState.ENSURE_MOUSE_MODE,
+                    BotState.ENSURE_KEYBOARD_MODE,
                     BotState.DEAD_RESPAWN,
                     BotState.REPAIR_RECALL,
                     BotState.REPAIR_AT_NPC,
@@ -420,6 +421,7 @@ class BotEngine:
                     BotState.LOOT,
                     BotState.RETURN_TO_CENTER,
                     BotState.ENSURE_MOUSE_MODE,
+                    BotState.ENSURE_KEYBOARD_MODE,
                 )
                 loot_rad_lim = (
                     float(
@@ -432,8 +434,18 @@ class BotEngine:
                     else None
                 )
                 cursor_rel_xy: tuple[int, int] | None = None
-                # One-shot interface mode check ONLY during ENSURE_MOUSE_MODE (never during active farming!)
-                need_imode_check = self.fsm.state == BotState.ENSURE_MOUSE_MODE
+                # Check interface mode during ENSURE_MOUSE_MODE / ENSURE_KEYBOARD_MODE, and throttled (0.5s) during Keyboard-Mode travel/repair/nav
+                # so accidental interface_mouse_banner.png is caught and restored to Keyboard Mode immediately.
+                in_kb_walk_state = self.fsm.state in (
+                    BotState.REPAIR_AT_NPC,
+                    BotState.TELEPORT_TO_SPOT,
+                    BotState.TRAVEL_TO_SPOT,
+                    BotState.NAVIGATE_TO_SPOT,
+                )
+                need_imode_check = self.fsm.state in (
+                    BotState.ENSURE_MOUSE_MODE,
+                    BotState.ENSURE_KEYBOARD_MODE,
+                ) or (in_kb_walk_state and (now - last_imode_check_ts) >= 0.5)
                 if need_imode_check:
                     last_imode_check_ts = now
                     cpos = Win32InputDriver.get_cursor_pos()

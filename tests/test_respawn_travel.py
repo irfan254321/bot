@@ -185,29 +185,71 @@ def test_travel_drinks_hp_pot_while_walking_to_spot():
     assert any(isinstance(a, (ClickScreenIntent, HoldKeyIntent)) for a in acts)
 
 
-def test_mouse_mode_auto_switches_to_kb_for_teleporter_walk():
+def test_travel_waypoints_100pct_keyboard_wasd_never_mouse_mode_or_ground_click():
+    """Verify town walk, post-teleport Ardun Keep (1409,1773) Tab cursor sync, travel_waypoints (1409,1773 -> 627,1817),
+    and NAVIGATE_TO_SPOT use 100% Keyboard Mode (WASD), NEVER ground clicks or blind Esc, and restore Keyboard Mode
+    if interface_mouse_banner accidentally appears."""
+    from vikings_bot.input.actions import DragCameraIntent
+
     cfg = load_config("config/default.yaml", route_override="gold_rustler_spot")
-    cfg.controls["mode"] = "mouse"
-    cfg.respawn_travel["mouse_only_travel"] = False
+    assert cfg.respawn_travel["mouse_only_travel"] is False
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
 
+    # 1. Town walk (1075,2631 -> 1066,2627): Keyboard Mode 'w', ZERO Esc, ZERO ground ClickScreenIntent!
     fsm.resume(1.0, ensure_mouse_mode=False)
-    acts = fsm.step(tracker.update(_snap(1.0, 1075, 2628)))
+    acts_town = fsm.step(tracker.update(_snap(1.0, 1075, 2631)))
     assert fsm.state == BotState.TELEPORT_TO_SPOT
-    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts)
-    assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and a.hold for a in acts)
+    assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and a.hold for a in acts_town)
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_town)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_town)
 
+    # 2. Land at Ardun Keep (1409, 1773) with free cursor still active -> closes cursor via Tab (NO Esc!)
+    fsm.respawn_travel._cursor_toggled_by_us = True
+    acts_land = []
     for dt in (6.0, 6.1, 6.2):
-        fsm.step(tracker.update(_snap(dt, 1409, 1779)))
+        sn = PerceptionSnapshot(
+            timestamp=dt, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+            coords=CoordReading(x=1409, y=1773, confidence=0.98), minimap=MinimapReading(),
+            interface_mode="mouse_cursor",
+        )
+        acts_land.extend(fsm.step(tracker.update(sn)))
     assert fsm.state == BotState.TRAVEL_TO_SPOT
-    acts_arr = []
+    assert any(isinstance(a, TapKeyIntent) and a.key == "tab" and a.reason == "close_cursor_after_tele_tab" for a in acts_land)
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_land)
+
+    # 3. Traverse full travel_waypoints (1409,1773 -> 627,1817): 100% Keyboard Mode (W/A/D + yaw), ZERO clicks/Esc/DragCamera!
+    travel_acts = []
     t = 7.0
     for wp in cfg.active_route.travel_waypoints:
-        acts_arr = fsm.step(tracker.update(_snap(t, int(wp.x), int(wp.y))))
-        t += 2.0
+        # Step midway toward each waypoint and then onto it
+        mid_x = int(wp.x) + 18 if wp.x < 1390 else int(wp.x)
+        travel_acts.extend(fsm.step(tracker.update(_snap(t, mid_x, int(wp.y)))))
+        t += 1.0
+        travel_acts.extend(fsm.step(tracker.update(_snap(t, int(wp.x), int(wp.y)))))
+        t += 1.0
     assert fsm.state == BotState.SEARCH_MOB
-    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "restore_mouse_mode_at_spot" for a in acts_arr)
+    assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and a.hold for a in travel_acts)
+    assert not any(isinstance(a, ClickScreenIntent) for a in travel_acts), f"Ground click emitted during travel: {travel_acts}"
+    assert not any(isinstance(a, DragCameraIntent) for a in travel_acts)
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in travel_acts)
+
+    # 4. Accidental interface_mouse_banner during TRAVEL_TO_SPOT or NAVIGATE_TO_SPOT -> presses Esc ONCE to restore Keyboard Mode!
+    fsm.transition(BotState.TRAVEL_TO_SPOT, 40.0, "test_mouse_banner_guard")
+    sn_mb = PerceptionSnapshot(
+        timestamp=40.5, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=1230, y=1765, confidence=0.98), minimap=MinimapReading(),
+        interface_mode="mouse_banner",
+    )
+    acts_guard = fsm.step(tracker.update(sn_mb))
+    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "restore_kb_from_mouse_banner" for a in acts_guard)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_guard)
+
+    # 5. NAVIGATE_TO_SPOT also walks strictly in Keyboard Mode (no ground clicks)
+    fsm.transition(BotState.NAVIGATE_TO_SPOT, 45.0, "test_nav_kb_only")
+    acts_nav = fsm.step(tracker.update(_snap(45.5, 700, 1817)))
+    assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and a.hold for a in acts_nav)
+    assert not any(isinstance(a, ClickScreenIntent) for a in acts_nav)
 
 
 @pytest.mark.skipif(not SCREENSHOTS_DIR.exists(), reason="Real Vikings Online screenshots not present")

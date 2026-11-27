@@ -182,7 +182,7 @@ def test_full_80m_auto_repair_cycle_with_weapon_swap_talk_guard_and_return_to_sp
     assert fsm.state == BotState.REPAIR_RECALL
     assert fsm.deaths_count == 0
 
-    acts_kill = fsm.step(tracker.update(_make_snap(5.8, 1195, 1568)))
+    acts_kill = fsm.step(tracker.update(_make_snap(5.9, 1195, 1568)))
     assert any(isinstance(a, TypeChatCommandIntent) and a.command == "/kill" for a in acts_kill)
     exe.execute_many(acts_kill, 5.8)
     assert "send_chat_command(/kill)" in drv.history
@@ -274,59 +274,70 @@ def test_full_80m_auto_repair_cycle_with_weapon_swap_talk_guard_and_return_to_sp
     assert abs(fsm.navigator.spot_center.y - 1568.0) <= 1.0
 
 
-def test_1024x768_pure_mouse_auto_repair_never_uses_wasd_or_esc() -> None:
+def test_1024x768_keyboard_mode_auto_repair_uses_wasd_and_tab_cursor_never_esc_or_ground_click() -> None:
     cfg = load_config("config/default.yaml")
-    cfg.controls["mode"] = "mouse"
-    cfg.controls["auto_restore_mouse_mode"] = True
-    cfg.respawn_travel["mouse_only_travel"] = True
+    assert cfg.respawn_travel["mouse_only_travel"] is False
     cfg.perception["hud_fixed_pixel_ui"] = True
     cfg.repair["close_dialog_with_esc"] = False
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
     fsm._mouse_mode_verified = True
-    fsm.step(tracker.update(_make_snap(1.0, 615, 1830, fw=1024, fh=768)))
+    fsm.step(tracker.update(_make_snap(1.0, 627, 1817, fw=1024, fh=768)))
 
     fsm.request_repair_now()
-    fsm.step(tracker.update(_make_snap(1.2, 615, 1830, fw=1024, fh=768)))
+    fsm.step(tracker.update(_make_snap(1.2, 627, 1817, fw=1024, fh=768)))
     assert fsm.state == BotState.REPAIR_RECALL
 
     all_intents = []
-    all_intents.extend(fsm.step(tracker.update(_make_snap(1.4, 615, 1830, fw=1024, fh=768))))
-    all_intents.extend(fsm.step(tracker.update(_make_snap(19.0, 1075, 2628, fw=1024, fh=768))))
+    walk_intents = []
+    all_intents.extend(fsm.step(tracker.update(_make_snap(1.4, 627, 1817, fw=1024, fh=768))))
+    all_intents.extend(fsm.step(tracker.update(_make_snap(19.0, 1075, 2631, fw=1024, fh=768))))
     assert fsm.state == BotState.REPAIR_AT_NPC
 
-    all_intents.extend(fsm.step(tracker.update(_make_snap(19.5, 1075, 2628, fw=1024, fh=768))))
-    all_intents.extend(fsm.step(tracker.update(_make_snap(21.0, 1094, 2643, fw=1024, fh=768))))
+    # Walking to merchant (1075,2631 -> 1094,2644): MUST use Keyboard WASD ('w'), NEVER ground clicks or Esc!
+    w_step = fsm.step(tracker.update(_make_snap(19.5, 1075, 2631, fw=1024, fh=768)))
+    walk_intents.extend(w_step)
+    all_intents.extend(w_step)
+    all_intents.extend(fsm.step(tracker.update(_make_snap(21.0, 1094, 2644, fw=1024, fh=768))))
+    # Show Tab cursor then click NPC -> Trade -> Repair All -> Yes -> Close [x] -> Hide Tab cursor
     all_intents.extend(
-        fsm.step(tracker.update(_make_snap(21.3, 1094, 2643, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
+        fsm.step(tracker.update(_make_snap(21.3, 1094, 2644, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
     )
     all_intents.extend(
-        fsm.step(tracker.update(_make_snap(21.7, 1094, 2643, fw=1024, fh=768, trade_menu_bbox=(510, 245, 58, 43))))
+        fsm.step(tracker.update(_make_snap(21.55, 1094, 2644, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
+    )
+    all_intents.extend(
+        fsm.step(tracker.update(_make_snap(21.9, 1094, 2644, fw=1024, fh=768, trade_menu_bbox=(510, 245, 58, 43))))
     )
     all_intents.extend(
         fsm.step(
             tracker.update(
                 _make_snap(
-                    22.1, 1094, 2643, fw=1024, fh=768, repair_all_bbox=(596, 532, 66, 25), inventory_tab_bbox=(694, 146, 105, 22)
+                    22.3, 1094, 2644, fw=1024, fh=768, repair_all_bbox=(596, 532, 66, 25), inventory_tab_bbox=(694, 146, 105, 22)
                 )
             )
         )
     )
     all_intents.extend(
-        fsm.step(tracker.update(_make_snap(22.5, 1094, 2643, fw=1024, fh=768, repair_yes_bbox=(510, 438, 55, 25))))
+        fsm.step(tracker.update(_make_snap(22.7, 1094, 2644, fw=1024, fh=768, repair_yes_bbox=(510, 438, 55, 25))))
     )
     all_intents.extend(
-        fsm.step(tracker.update(_make_snap(23.0, 1094, 2643, fw=1024, fh=768, repair_all_bbox=(596, 532, 66, 25))))
+        fsm.step(tracker.update(_make_snap(23.2, 1094, 2644, fw=1024, fh=768, repair_all_bbox=(596, 532, 66, 25))))
     )
     all_intents.extend(
-        fsm.step(tracker.update(_make_snap(23.5, 1094, 2643, fw=1024, fh=768, inventory_tab_bbox=(694, 146, 105, 22))))
+        fsm.step(tracker.update(_make_snap(23.7, 1094, 2644, fw=1024, fh=768, inventory_tab_bbox=(694, 146, 105, 22))))
     )
-    all_intents.extend(fsm.step(tracker.update(_make_snap(24.0, 1094, 2643, fw=1024, fh=768))))
+    all_intents.extend(fsm.step(tracker.update(_make_snap(24.2, 1094, 2644, fw=1024, fh=768))))
+    hub_walk = fsm.step(tracker.update(_make_snap(24.5, 1086, 2639, fw=1024, fh=768)))
+    walk_intents.extend(hub_walk)
+    all_intents.extend(hub_walk)
     all_intents.extend(fsm.step(tracker.update(_make_snap(25.5, 1075, 2631, fw=1024, fh=768))))
 
     assert fsm.state == BotState.TELEPORT_TO_SPOT
-    assert not any(isinstance(a, HoldKeyIntent) and a.hold and a.key in ("w", "a", "s", "d") for a in all_intents)
+    assert any(isinstance(a, HoldKeyIntent) and a.hold and a.key == "w" for a in walk_intents)
+    assert not any(isinstance(a, ClickScreenIntent) for a in walk_intents)
+    assert any(isinstance(a, TapKeyIntent) and a.key == "tab" for a in all_intents)
     assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in all_intents)
 
 
@@ -439,14 +450,16 @@ def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832
     fsm.step(tracker.update(_make_snap(3.5, 627, 1817, fw=1024, fh=768)))
     assert fsm.state == BotState.REPAIR_RECALL
 
-    acts_k = fsm.step(tracker.update(_make_snap(3.7, 627, 1817, fw=1024, fh=768)))
+    acts_k = fsm.step(tracker.update(_make_snap(3.8, 627, 1817, fw=1024, fh=768)))
     assert any(isinstance(a, TypeChatCommandIntent) and a.command == "/kill" for a in acts_k)
 
-    # Arrives in Green Wales (1075, 2631) -> walks to merchant (1094, 2644) -> 100ms clicks + Talk OK recovery + Yes!
+    # Arrives in Green Wales (1075, 2631) -> walks to merchant (1094, 2644) -> Tab cursor -> 100ms clicks + Talk OK recovery + Yes!
     fsm.step(tracker.update(_make_snap(21.0, 1075, 2631, fw=1024, fh=768)))
     assert fsm.state == BotState.REPAIR_AT_NPC
     fsm.step(tracker.update(_make_snap(23.0, 1094, 2644, fw=1024, fh=768)))
-    a_npc = fsm.step(tracker.update(_make_snap(23.3, 1094, 2644, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
+    a_tab = fsm.step(tracker.update(_make_snap(23.1, 1094, 2644, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
+    assert any(isinstance(a, TapKeyIntent) and a.key == "tab" for a in a_tab)
+    a_npc = fsm.step(tracker.update(_make_snap(23.35, 1094, 2644, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
     assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 for a in a_npc)
     # Accidental Talk OK recovery
     a_tok = fsm.step(tracker.update(_make_snap(23.5, 1094, 2644, fw=1024, fh=768, talk_ok_bbox=(480, 400, 55, 25))))
@@ -497,3 +510,134 @@ def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832
     )
     acts_w = fsm.step(w_back)
     assert any(isinstance(a, TypeChatCommandIntent) and a.command == "/setweather 11" for a in acts_w)
+
+
+def test_ensure_keyboard_mode_transitions_kill_freeze_and_no_esc_after_repair_yes() -> None:
+    """Verify:
+    (a) REPAIR_RECALL freezes character completely for 0.25s before /kill and NEVER sends clicks/moves/WASD/Esc during 16s countdown.
+    (b) REPAIR_RECALL -> city and F9 resume in Green Wales / Ardun Keep trigger ENSURE_KEYBOARD_MODE (2x Esc if mouse_banner, 1x Esc if keyboard_banner).
+    (c) step_repair_at_npc after clicking Yes NEVER sends Esc (even if close_dialog_with_esc=True).
+    (d) TRAVEL_TO_SPOT arrival at (627, 1817) triggers ENSURE_MOUSE_MODE before SEARCH_MOB.
+    """
+    from vikings_bot.input.actions import MoveMouseRelIntent
+
+    cfg = load_config("config/default.yaml")
+    cfg.perception["hud_fixed_pixel_ui"] = True
+
+    # --- (b1) F9 resume in Green Wales town -> redirects directly to ENSURE_KEYBOARD_MODE (2x Esc on mouse_banner) -> TELEPORT_TO_SPOT ---
+    tr_town = WorldStateTracker()
+    fsm_town = FarmingFSM(cfg, tr_town, mode=BotMode.FULL)
+    fsm_town.resume(1.0)  # default ensure_mouse_mode=None (real runtime)
+    assert fsm_town.state == BotState.ENSURE_MOUSE_MODE
+    a_probe1 = fsm_town.step(tr_town.update(_make_snap(1.0, 1066, 2627, fw=1024, fh=768)))
+    assert fsm_town.state == BotState.ENSURE_KEYBOARD_MODE
+    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "ensure_keyboard_mode_esc_1" for a in a_probe1)
+    # After 0.32s, banner shows mouse_banner (we were already in Keyboard Mode -> flipped to Mouse) -> sends 2nd Esc!
+    sn_mb = PerceptionSnapshot(
+        timestamp=1.35, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=1066, y=2627, confidence=0.99), minimap=MinimapReading(),
+        interface_mode="mouse_banner",
+    )
+    a_probe2 = fsm_town.step(tr_town.update(sn_mb))
+    assert fsm_town.state == BotState.ENSURE_KEYBOARD_MODE
+    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "ensure_keyboard_mode_esc_2" for a in a_probe2)
+    # After 0.28s -> enters TELEPORT_TO_SPOT!
+    fsm_town.step(tr_town.update(_make_snap(1.66, 1066, 2627, fw=1024, fh=768)))
+    assert fsm_town.state == BotState.TELEPORT_TO_SPOT
+
+    # --- (b2) F9 resume at Ardun Keep (1409, 1773) -> ENSURE_KEYBOARD_MODE (1x Esc on keyboard_banner) -> TRAVEL_TO_SPOT ---
+    tr_ak = WorldStateTracker()
+    fsm_ak = FarmingFSM(cfg, tr_ak, mode=BotMode.FULL)
+    fsm_ak.resume(1.0)
+    a_ak1 = fsm_ak.step(tr_ak.update(_make_snap(1.0, 1409, 1773, fw=1024, fh=768)))
+    assert fsm_ak.state == BotState.ENSURE_KEYBOARD_MODE
+    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "ensure_keyboard_mode_esc_1" for a in a_ak1)
+    sn_kb = PerceptionSnapshot(
+        timestamp=1.35, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=1409, y=1773, confidence=0.99), minimap=MinimapReading(),
+        interface_mode="keyboard_banner",
+    )
+    a_ak2 = fsm_ak.step(tr_ak.update(sn_kb))
+    assert a_ak2 == []
+    assert fsm_ak.state == BotState.TRAVEL_TO_SPOT
+
+    # --- (a) + (b3) + (c) + (d): Full cycle REPAIR_RECALL (frozen /kill) -> ENSURE_KEYBOARD_MODE -> REPAIR_AT_NPC (no Esc after Yes) -> TRAVEL_TO_SPOT -> ENSURE_MOUSE_MODE -> SEARCH_MOB ---
+    tr = WorldStateTracker()
+    fsm = FarmingFSM(cfg, tr, mode=BotMode.FULL)
+    fsm.respawn_travel.close_dialog_with_esc = True  # Even if legacy flag set, MUST NOT send Esc after Yes!
+    fsm.resume(1.0)
+    # Finish initial ENSURE_MOUSE_MODE at farming spot (627, 1817)
+    fsm.step(tr.update(_make_snap(1.0, 627, 1817, fw=1024, fh=768)))
+    fsm.step(
+        tr.update(
+            PerceptionSnapshot(
+                timestamp=1.35, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=627, y=1817, confidence=0.99), minimap=MinimapReading(),
+                interface_mode="mouse_banner",
+            )
+        )
+    )
+    assert fsm.state == BotState.SEARCH_MOB
+
+    # Trigger F7 Force Repair -> enters REPAIR_RECALL at t=2.0
+    fsm.request_repair_now()
+    fsm.step(tr.update(_make_snap(2.0, 627, 1817, fw=1024, fh=768)))
+    assert fsm.state == BotState.REPAIR_RECALL
+
+    # 0.10s after entry (< 0.25s settle): frozen, does NOT send /kill yet!
+    a_pre = fsm.step(tr.update(_make_snap(2.10, 627, 1817, fw=1024, fh=768)))
+    assert not any(isinstance(a, TypeChatCommandIntent) for a in a_pre)
+
+    # 0.30s after entry (>= 0.25s): sends /kill once, then stands completely still through 16s countdown
+    recall_acts = list(a_pre)
+    for ts in (2.30, 4.0, 8.0, 12.0, 16.0):
+        # Even if respawn_dialog_bbox flickers during countdown, NEVER click screen!
+        sn_cd = PerceptionSnapshot(
+            timestamp=ts, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+            coords=CoordReading(x=627, y=1817, confidence=0.99), minimap=MinimapReading(),
+            respawn_dialog_bbox=(480, 400, 60, 28) if ts == 8.0 else None,
+        )
+        recall_acts.extend(fsm.step(tr.update(sn_cd)))
+    assert any(isinstance(a, TypeChatCommandIntent) and a.command == "/kill" for a in recall_acts)
+    assert not any(isinstance(a, ClickScreenIntent) for a in recall_acts)
+    assert not any(isinstance(a, MoveMouseRelIntent) for a in recall_acts)
+    assert not any(isinstance(a, HoldKeyIntent) and a.hold for a in recall_acts)
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in recall_acts)
+
+    # Respawned in Green Wales (1075, 2631) -> MUST enter ENSURE_KEYBOARD_MODE first!
+    fsm.step(tr.update(_make_snap(19.0, 1075, 2631, fw=1024, fh=768)))
+    assert fsm.state == BotState.ENSURE_KEYBOARD_MODE
+    fsm.step(tr.update(_make_snap(19.05, 1075, 2631, fw=1024, fh=768)))  # sends Esc #1
+    fsm.step(
+        tr.update(
+            PerceptionSnapshot(
+                timestamp=19.40, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=1075, y=2631, confidence=0.99), minimap=MinimapReading(),
+                interface_mode="keyboard_banner",
+            )
+        )
+    )
+    assert fsm.state == BotState.REPAIR_AT_NPC
+
+    # (c) Clicking Yes in REPAIR_AT_NPC NEVER sends Esc!
+    fsm.respawn_travel._repair_phase = "CONFIRM_REPAIR"
+    a_yes = fsm.step(tr.update(_make_snap(22.0, 1094, 2644, fw=1024, fh=768, repair_yes_bbox=(516, 382, 55, 25))))
+    assert any(isinstance(a, ClickScreenIntent) and a.reason == "click_repair_yes_btn" for a in a_yes)
+    assert not any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in a_yes)
+
+    # (d) TRAVEL_TO_SPOT arrives at (627, 1817) -> MUST trigger ENSURE_MOUSE_MODE before SEARCH_MOB!
+    fsm.transition(BotState.TRAVEL_TO_SPOT, 30.0, "test_travel_arrival")
+    fsm.step(tr.update(_make_snap(31.0, 627, 1817, fw=1024, fh=768)))
+    assert fsm.state == BotState.ENSURE_MOUSE_MODE
+    a_m1 = fsm.step(tr.update(_make_snap(31.05, 627, 1817, fw=1024, fh=768)))
+    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and a.reason == "ensure_mouse_mode_esc_1" for a in a_m1)
+    fsm.step(
+        tr.update(
+            PerceptionSnapshot(
+                timestamp=31.40, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+                coords=CoordReading(x=627, y=1817, confidence=0.99), minimap=MinimapReading(),
+                interface_mode="mouse_banner",
+            )
+        )
+    )
+    assert fsm.state == BotState.SEARCH_MOB

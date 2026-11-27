@@ -64,7 +64,8 @@ class RespawnTravelController:
         self.travel_final_radius = float(rt.get("travel_final_radius", 12.0))
 
         self.control_mode = str(c.get("mode", "keyboard")).lower()
-        self.mouse_only_travel: bool = bool(rt.get("mouse_only_travel", False))
+        # All town/repair/teleport/travel walking is strictly 100% Keyboard Mode (WASD); mouse is ONLY toggled via Tab for NPC/UI clicks.
+        self.mouse_only_travel: bool = False
         self.camera_btn: str = str(c.get("camera_rotate_button", "middle"))
         self.player_center_norm = config.player_center_norm()
         self.playfield_roi = config.roi("playfield")
@@ -197,43 +198,25 @@ class RespawnTravelController:
             return best_idx + 1
         return best_idx
 
-    def _steer_mouse_click_toward(
+    def _check_accidental_mouse_mode_guard(
         self,
         world: WorldState,
-        target: Point2D,
-        target_name: str,
         now: float,
+        context: str,
     ) -> list[ActionIntent]:
-        """Pure Mouse-Click navigation toward a world coordinate (VMware absolute-pointer safe!)."""
-        coords = world.coords_smoothed
-        if coords is None or not self.tracker.is_ready("travel_mouse_click", now):
-            return []
-        dist = coords.distance_to(target)
-        bearing = world_bearing_deg(coords, target)
-        rel_angle = wrap_angle_deg(bearing - world.camera_heading_deg)
-
-        fw = world.snapshot.frame_width
-        fh = world.snapshot.frame_height
-        cx = fw * self.player_center_norm[0]
-        cy = fh * self.player_center_norm[1]
-        scale = 0.65 if dist <= 12.0 else 1.0
-        rx = fw * 0.165 * scale
-        ry = fh * 0.195 * scale
-        rad = math.radians(rel_angle)
-        dx = -math.sin(rad) * rx
-        dy = -math.cos(rad) * ry
-        tx = int(round(max(fw * 0.14, min(fw * 0.86, cx + dx))))
-        ty = int(round(max(fh * 0.22, min(fh * 0.72, cy + dy))))
-        self.tracker.set_cooldown("travel_mouse_click", now, 0.55)
-        return [
-            ClickScreenIntent(
-                x=tx,
-                y=ty,
-                button="left",
-                reason=f"vm_mouse_walk->{target_name} d={dist:.1f}",
-                ground_rel_angle_deg=rel_angle,
+        """If interface_mouse_banner is detected during Keyboard-Mode walking/town/travel, tap Esc once to return to Keyboard Mode."""
+        if world.snapshot.interface_mode == "mouse_banner" and self.tracker.is_ready("kb_guard_esc", now):
+            self.tracker.set_cooldown("kb_guard_esc", now, 1.0)
+            logger.warning(
+                "%s: interface_mouse_banner detected (accidental Mouse Mode) -> pressing %s once to restore Keyboard Mode",
+                context,
+                self.mode_toggle_key.upper(),
             )
-        ]
+            return [
+                *self.release_all_move_keys(f"{context}_restore_kb"),
+                TapKeyIntent(key=self.mode_toggle_key, hold_sec=0.05, reason="restore_kb_from_mouse_banner"),
+            ]
+        return []
 
     def _steer_keyboard_toward(
         self,
@@ -355,7 +338,7 @@ class RespawnTravelController:
         now: float,
         elapsed: float,
     ) -> tuple[list[ActionIntent], BotState | None, str]:
-        """Type '/kill' in chat and wait through the 16s countdown until teleported to town (1075,2628)."""
+        """Freeze character completely, wait 0.25s for AHK E-spam interlock, send '/kill', and stand still until in Green Wales."""
         intents = self.release_all_move_keys("repair_recall_wait")
         self.tracker.accept_teleport_jump()
 
@@ -364,30 +347,9 @@ class RespawnTravelController:
             self.reset_repair_npc_state(now)
             return (intents, BotState.REPAIR_AT_NPC, "arrived_in_town_for_repair")
 
-        # Fallback: if a mob killed us mid-countdown or respawn popup appeared, click respawn button / center!
-        if (world.is_dead or world.snapshot.respawn_dialog_bbox is not None) and elapsed >= 1.5 and self.tracker.is_ready("respawn_click", now):
-            if world.snapshot.respawn_dialog_bbox is not None:
-                rx, ry, rw, rh = world.snapshot.respawn_dialog_bbox
-                cx = rx + rw // 2
-                cy = ry + rh // 2
-            else:
-                cx = world.snapshot.frame_width // 2
-                cy = world.snapshot.frame_height // 2
-            self._dead_clicks_in_burst += 1
-            cd = 0.22 if self._dead_clicks_in_burst == 1 else 2.2
-            if self._dead_clicks_in_burst >= 2:
-                self._dead_clicks_in_burst = 0
-            self.tracker.set_cooldown("respawn_click", now, cd)
-            intents.append(
-                ClickScreenIntent(
-                    x=cx,
-                    y=cy,
-                    button="left",
-                    hold_sec=self.npc_click_hold_sec,
-                    no_jitter=True,
-                    reason="repair_dead_revive_click",
-                )
-            )
+        # Hard freeze: wait >= 0.25s after entering REPAIR_RECALL so AHK E-spam & prior actions settle cleanly.
+        # NEVER send ClickScreenIntent, MoveMouseRelIntent, WASD, or Esc during /kill countdown!
+        if elapsed < 0.25:
             return (intents, None, "")
 
         need_send = self._recall_cmd_sent_at is None or (
@@ -403,7 +365,7 @@ class RespawnTravelController:
                 )
             )
             logger.info(
-                "Auto-Repair Recall #%d: sending '%s' -> waiting ~%.0fs for town teleport...",
+                "Auto-Repair Recall #%d: sending '%s' -> standing still ~%.0fs for town teleport...",
                 self._recall_attempts,
                 self.suicide_command,
                 self.suicide_wait_sec,
@@ -465,14 +427,14 @@ class RespawnTravelController:
         if self._repair_phase in ("FIND_MERCHANT_SIGN", "WAIT_TRADE_MENU"):
             self._repair_talk_dismiss_attempts = 0
 
-        # Phase 1: Walk from town spawn (1075,2628) -> Beginner Armor Merchant (1094,2643)
+        # Accidental Mouse Mode guard: never allow Mouse Mode during Keyboard-Mode repair walk/interaction
+        guard_intents = self._check_accidental_mouse_mode_guard(world, now, "REPAIR_AT_NPC")
+        if guard_intents:
+            return (guard_intents, None, "")
+
+        # Phase 1: Walk from town spawn (1075,2631) -> Beginner Armor Merchant (1094,2644) strictly in Keyboard Mode (WASD)
         if self._repair_phase == "WALK_TO_MERCHANT":
             intents = []
-            if self.control_mode == "mouse" and not self.mouse_only_travel and not self._repair_mode_switched_to_kb:
-                self._repair_mode_switched_to_kb = True
-                intents.append(
-                    TapKeyIntent(key=self.mode_toggle_key, hold_sec=0.05, reason="switch_to_kb_for_repair")
-                )
             if coords is None:
                 return (intents, None, "")
             dist_m = coords.distance_to(self.merchant_stand)
@@ -487,29 +449,14 @@ class RespawnTravelController:
                 self.tracker.set_cooldown("repair_unstick", now, 0.8)
                 self.tracker.clear_stuck(reset_consecutive=True)
                 intents.extend(self.release_all_move_keys("repair_walk_unstick"))
-                if self.mouse_only_travel and self.control_mode == "mouse":
-                    intents.append(
-                        DragCameraIntent(
-                            dx=125,
-                            button=self.camera_btn,
-                            reason="vm_repair_unstick_drag",
-                            est_yaw_deg=-45.0,
-                            start_x=fw // 2,
-                            start_y=int(fh * 0.45),
-                        )
-                    )
-                else:
-                    intents.append(TapKeyIntent(key=self.strafe_left_key, hold_sec=0.35, reason="repair_sidestep"))
-                    intents.append(TapKeyIntent(key=self.jump_key, hold_sec=0.05, reason="repair_jump"))
+                intents.append(TapKeyIntent(key=self.strafe_left_key, hold_sec=0.35, reason="repair_sidestep"))
+                intents.append(TapKeyIntent(key=self.jump_key, hold_sec=0.05, reason="repair_jump"))
                 return (intents, None, "")
 
-            if self.mouse_only_travel and self.control_mode == "mouse":
-                intents.extend(self._steer_mouse_click_toward(world, self.merchant_stand, "armor_merchant", now))
-            else:
-                intents.extend(self._steer_keyboard_toward(world, self.merchant_stand, "armor_merchant", now))
+            intents.extend(self._steer_keyboard_toward(world, self.merchant_stand, "armor_merchant", now))
             return (intents, None, "")
 
-        # Phase 2: Find 'Beginner Armor Merchant' sign, unlock cursor if needed, and left-click NPC
+        # Phase 2: Find 'Beginner Armor Merchant' sign, toggle Tab cursor, and left-click NPC
         if self._repair_phase == "FIND_MERCHANT_SIGN":
             intents = self.release_all_move_keys("find_merchant_sign")
             if world.snapshot.repair_all_bbox is not None:
@@ -530,21 +477,18 @@ class RespawnTravelController:
                 if (fw * 0.12) <= sign_cx <= (fw * 0.88):
                     if not self.tracker.is_ready("repair_npc_click", now):
                         return (intents, None, "")
-                    if not (self.mouse_only_travel and self.control_mode == "mouse"):
-                        next_attempt = self._repair_click_attempts + 1
-                        toggle_key = self.cursor_toggle_key if next_attempt <= 2 else self.cursor_fallback_key
-                        if not self._repair_cursor_toggled:
-                            self._active_cursor_key = toggle_key
-                            self._repair_cursor_toggled = True
-                            self._repair_cursor_ready_at = now + 0.18
-                            intents.append(
-                                TapKeyIntent(key=toggle_key, hold_sec=0.05, reason=f"repair_show_cursor_{toggle_key}")
-                            )
-                            return (intents, None, "")
-                        if now < self._repair_cursor_ready_at:
-                            return (intents, None, "")
-                    else:
-                        next_attempt = self._repair_click_attempts + 1
+                    next_attempt = self._repair_click_attempts + 1
+                    toggle_key = self.cursor_toggle_key
+                    if not self._repair_cursor_toggled:
+                        self._active_cursor_key = toggle_key
+                        self._repair_cursor_toggled = True
+                        self._repair_cursor_ready_at = now + 0.18
+                        intents.append(
+                            TapKeyIntent(key=toggle_key, hold_sec=0.05, reason=f"repair_show_cursor_{toggle_key}")
+                        )
+                        return (intents, None, "")
+                    if now < self._repair_cursor_ready_at:
+                        return (intents, None, "")
 
                     self._repair_click_attempts = next_attempt
                     click_x = max(20, min(fw - 20, sign_cx))
@@ -566,7 +510,7 @@ class RespawnTravelController:
 
             if self._repair_sign_missing_since is None:
                 self._repair_sign_missing_since = now
-            if self._repair_cursor_toggled and not (self.mouse_only_travel and self.control_mode == "mouse"):
+            if self._repair_cursor_toggled:
                 if (now - self._repair_sign_missing_since) < 1.2:
                     return (intents, None, "")
                 intents.append(
@@ -574,30 +518,17 @@ class RespawnTravelController:
                 )
                 self._repair_cursor_toggled = False
             if self.tracker.is_ready("repair_scan_turn", now):
-                if self.mouse_only_travel and self.control_mode == "mouse":
-                    self.tracker.set_cooldown("repair_scan_turn", now, 0.55)
-                    intents.append(
-                        DragCameraIntent(
-                            dx=145,
-                            button=self.camera_btn,
-                            reason="vm_scan_for_merchant_sign",
-                            est_yaw_deg=-52.0,
-                            start_x=fw // 2,
-                            start_y=int(fh * 0.45),
-                        )
+                self.tracker.set_cooldown("repair_scan_turn", now, 0.24)
+                dx = 175
+                intents.append(
+                    MoveMouseRelIntent(
+                        dx=dx,
+                        reason="scan_for_merchant_sign",
+                        est_yaw_deg=-dx / max(1.0, self.yaw_px_per_deg),
+                        steps=5,
+                        step_delay=0.002,
                     )
-                else:
-                    self.tracker.set_cooldown("repair_scan_turn", now, 0.24)
-                    dx = 175
-                    intents.append(
-                        MoveMouseRelIntent(
-                            dx=dx,
-                            reason="scan_for_merchant_sign",
-                            est_yaw_deg=-dx / max(1.0, self.yaw_px_per_deg),
-                            steps=5,
-                            step_delay=0.002,
-                        )
-                    )
+                )
             return (intents, None, "")
 
         # Phase 3: Click 'Trade' option on the 'Talk / Trade' popup
@@ -690,14 +621,6 @@ class RespawnTravelController:
                         no_jitter=True,
                     )
                 )
-                if self.close_dialog_with_esc:
-                    intents.append(
-                        TapKeyIntent(
-                            key="esc",
-                            hold_sec=0.05,
-                            reason="close_merchant_dialog_esc",
-                        )
-                    )
                 logger.info("Confirmed Repair '[Yes]' at (%d, %d)!", ycx, ycy)
                 return (intents, None, "")
 
@@ -791,8 +714,8 @@ class RespawnTravelController:
                     )
                 return (intents, None, "")
 
-            # Both Shop and Inventory windows are closed! Restore Keyboard camera lock if we toggled cursor earlier.
-            if self._repair_cursor_toggled and not (self.mouse_only_travel and self.control_mode == "mouse"):
+            # Both Shop and Inventory windows are closed! Restore Keyboard camera lock via Tab if we toggled cursor earlier.
+            if self._repair_cursor_toggled:
                 intents.append(
                     TapKeyIntent(
                         key=self._active_cursor_key,
@@ -805,21 +728,16 @@ class RespawnTravelController:
             self._repair_phase_ts = now
             return (intents, None, "")
 
-        # Phase 7: Walk back via central plaza (1075,2631) so we have a clear straight line to Addon Keep NPC (1060,2626)
+        # Phase 7: Walk back via central plaza (1075,2631) in 100% Keyboard Mode (WASD)
         if self._repair_phase == "WALK_TO_HUB":
             intents = []
             if coords is None or coords.distance_to(self.town_hub) <= 7.0 or (now - self._repair_phase_ts) >= 8.0:
                 intents.extend(self.release_all_move_keys("repair_hub_reached"))
-                was_kb_switched = self._repair_mode_switched_to_kb
                 self.reset_teleport_state(now)
-                self._mode_switched_to_kb = was_kb_switched
-                logger.info("Equipment repair complete -> proceeding to Addon Keep Teleport (1060, 2626)!")
+                logger.info("Equipment repair complete -> proceeding to Addon Keep Teleport (1066, 2627)!")
                 return (intents, BotState.TELEPORT_TO_SPOT, "equipment_repaired_heading_to_teleport")
 
-            if self.mouse_only_travel and self.control_mode == "mouse":
-                intents.extend(self._steer_mouse_click_toward(world, self.town_hub, "town_hub", now))
-            else:
-                intents.extend(self._steer_keyboard_toward(world, self.town_hub, "town_hub", now))
+            intents.extend(self._steer_keyboard_toward(world, self.town_hub, "town_hub", now))
             return (intents, None, "")
 
         return ([], None, "")
@@ -829,35 +747,47 @@ class RespawnTravelController:
         world: WorldState,
         now: float,
     ) -> tuple[list[ActionIntent], BotState | None, str]:
-        """Walk from town spawn to Addon Keep Teleport NPC (1060,2626), click NPC -> Teleport, wait for Addon Keep."""
+        """Walk from town spawn to Addon Keep Teleport NPC (1066,2627) in Keyboard Mode, Tab-click NPC -> Teleport, wait for Addon Keep."""
         coords = world.coords_smoothed
         fw = world.snapshot.frame_width
         fh = world.snapshot.frame_height
         scale_y = fh / 1080.0
 
-        # Already landed at Addon Keep (1409, 1779)!
-        # Clicking 'Teleport' + loading Caernarvon AUTOMATICALLY closes the cursor & restores Keyboard Mode
-        # (verified on Video 3 t=6.6s & t=11.8s).
-        # - Normal Keyboard/Hybrid Mode: NEVER send an extra ESC here!
-        # - VM Pure Mouse-Only Travel (mouse_only_travel=True): send 1x ESC to show Mouse Mode cursor
-        #   before starting Pure Mouse-Click travel from Addon Keep -> spot!
+        # Already landed at Ardun Keep (1409, 1773)!
+        # Ensure we remain strictly in Keyboard Mode (WASD) with free cursor closed:
+        # - If interface_mouse_banner is detected (accidental Mouse Mode) -> tap Esc once to return to Keyboard Mode.
+        # - Else if free cursor is still active (mouse_cursor) -> tap Tab once to close it.
+        # - NEVER send Esc blindly!
         if self.is_near_addon_keep(coords):
             intents = self.release_all_move_keys("landed_addon_keep")
+            was_cursor_open = self._cursor_toggled_by_us
             self._cursor_toggled_by_us = False
             self._sign_missing_since = None
             self._talk_dismiss_attempts = 0
             self.reset_travel_state()
             self.tracker.travel_waypoint_index = 0
-            if self.mouse_only_travel and self.control_mode == "mouse":
+            if world.snapshot.interface_mode == "mouse_banner":
                 intents.append(
                     TapKeyIntent(
                         key=self.mode_toggle_key,
                         hold_sec=0.05,
-                        reason="vm_restore_mouse_cursor_after_tele",
+                        reason="restore_kb_from_mouse_banner",
                     )
                 )
-                self.tracker.set_cooldown("travel_mouse_click", now, 0.35)
+            elif was_cursor_open and world.snapshot.interface_mode == "mouse_cursor":
+                intents.append(
+                    TapKeyIntent(
+                        key=self.cursor_toggle_key,
+                        hold_sec=0.04,
+                        reason="close_cursor_after_tele_tab",
+                    )
+                )
             return (intents, BotState.TRAVEL_TO_SPOT, "teleported_to_addon_keep")
+
+        # Accidental Mouse Mode guard during town teleport sequence
+        guard_intents = self._check_accidental_mouse_mode_guard(world, now, "TELEPORT_TO_SPOT")
+        if guard_intents:
+            return (guard_intents, None, "")
 
         # Accidental 'Talk' NPC modal dialog guard ("Hi there! ... [ OK ]"):
         # Works across ALL teleport phases (including WAIT_LOAD so we NEVER sit frozen for 12s!).
@@ -902,17 +832,9 @@ class RespawnTravelController:
             return (intents, None, "")
         self._talk_dismiss_attempts = 0
 
-        # Phase 1: Walk close to Addon Keep Teleport NPC at (1060, 2626)
+        # Phase 1: Walk close to Addon Keep Teleport NPC at (1066, 2627) strictly in Keyboard Mode (WASD)
         if self._tele_phase == "WALK_TO_NPC":
             intents: list[ActionIntent] = []
-            # If user is running Mouse Mode WITHOUT mouse_only_travel, switch to Keyboard Mode (ESC) to walk cleanly.
-            # In VM Pure Mouse Mode (mouse_only_travel=True), stay 100% in Mouse Mode & click ground to NPC!
-            if self.control_mode == "mouse" and not self.mouse_only_travel and not self._mode_switched_to_kb:
-                self._mode_switched_to_kb = True
-                intents.append(
-                    TapKeyIntent(key=self.mode_toggle_key, hold_sec=0.05, reason="switch_to_kb_for_tele")
-                )
-
             if coords is None:
                 return (intents, None, "")
 
@@ -929,29 +851,14 @@ class RespawnTravelController:
                 self.tracker.set_cooldown("tele_unstick", now, 0.8)
                 self.tracker.clear_stuck(reset_consecutive=True)
                 intents.extend(self.release_all_move_keys("tele_walk_unstick"))
-                if self.mouse_only_travel and self.control_mode == "mouse":
-                    intents.append(
-                        DragCameraIntent(
-                            dx=125,
-                            button=self.camera_btn,
-                            reason="vm_tele_unstick_drag",
-                            est_yaw_deg=-45.0,
-                            start_x=fw // 2,
-                            start_y=int(fh * 0.45),
-                        )
-                    )
-                else:
-                    intents.append(TapKeyIntent(key=self.strafe_left_key, hold_sec=0.35, reason="tele_sidestep"))
-                    intents.append(TapKeyIntent(key=self.jump_key, hold_sec=0.05, reason="tele_jump"))
+                intents.append(TapKeyIntent(key=self.strafe_left_key, hold_sec=0.35, reason="tele_sidestep"))
+                intents.append(TapKeyIntent(key=self.jump_key, hold_sec=0.05, reason="tele_jump"))
                 return (intents, None, "")
 
-            if self.mouse_only_travel and self.control_mode == "mouse":
-                intents.extend(self._steer_mouse_click_toward(world, self.npc_stand, "addon_keep_npc", now))
-            else:
-                intents.extend(self._steer_keyboard_toward(world, self.npc_stand, "addon_keep_npc", now))
+            intents.extend(self._steer_keyboard_toward(world, self.npc_stand, "addon_keep_npc", now))
             return (intents, None, "")
 
-        # Phase 2: Locate 'Addon Keep Teleport' golden sign on screen, then unlock cursor & click NPC
+        # Phase 2: Locate 'Addon Keep Teleport' golden sign on screen, then toggle Tab cursor & click NPC
         if self._tele_phase == "FIND_SIGN":
             intents = self.release_all_move_keys("find_tele_sign")
             # If menu is ALREADY open on screen, jump straight to clicking 'Teleport'!
@@ -970,32 +877,19 @@ class RespawnTravelController:
                 if (fw * 0.14) <= sign_cx <= (fw * 0.86):
                     if not self.tracker.is_ready("tele_npc_click", now):
                         return (intents, None, "")
-                    # In VM Pure Mouse Mode, cursor is ALREADY visible — click NPC directly without pressing ESC!
-                    if not (self.mouse_only_travel and self.control_mode == "mouse"):
-                        # Step A: unlock free cursor first, wait 0.18s so RYL doesn't spin camera on mouse move!
-                        next_attempt = self._tele_click_attempts + 1
-                        toggle_key = (
-                            self.cursor_toggle_key if next_attempt <= 2 else self.cursor_fallback_key
+                    # Step A: unlock free cursor via Tab ONLY (never Esc!), wait 0.18s so RYL doesn't spin camera on mouse move!
+                    next_attempt = self._tele_click_attempts + 1
+                    toggle_key = self.cursor_toggle_key
+                    if not self._cursor_toggled_by_us:
+                        self._active_cursor_key = toggle_key
+                        self._cursor_toggled_by_us = True
+                        self._cursor_ready_at = now + 0.18
+                        intents.append(
+                            TapKeyIntent(key=toggle_key, hold_sec=0.05, reason=f"show_cursor_{toggle_key}")
                         )
-                        if not self._cursor_toggled_by_us:
-                            self._active_cursor_key = toggle_key
-                            self._cursor_toggled_by_us = True
-                            self._cursor_ready_at = now + 0.18
-                            intents.append(
-                                TapKeyIntent(key=toggle_key, hold_sec=0.05, reason=f"show_cursor_{toggle_key}")
-                            )
-                            return (intents, None, "")
-                        if next_attempt == 3 and toggle_key != self._active_cursor_key:
-                            self._active_cursor_key = toggle_key
-                            self._cursor_ready_at = now + 0.18
-                            intents.append(
-                                TapKeyIntent(key=toggle_key, hold_sec=0.05, reason=f"fallback_cursor_{toggle_key}")
-                            )
-                            return (intents, None, "")
-                        if now < self._cursor_ready_at:
-                            return (intents, None, "")
-                    else:
-                        next_attempt = self._tele_click_attempts + 1
+                        return (intents, None, "")
+                    if now < self._cursor_ready_at:
+                        return (intents, None, "")
 
                     # Step B: cursor is visible -> click NPC torso right beneath 'Addon Keep Teleport' sign!
                     self._tele_click_attempts = next_attempt
@@ -1016,10 +910,10 @@ class RespawnTravelController:
                     self._tele_phase_ts = now
                     return (intents, None, "")
 
-            # Sign not visible: debounce 1.2s so 1-frame flicker NEVER flip-flops Keyboard <-> Mouse Mode!
+            # Sign not visible: debounce 1.2s before hiding Tab cursor to scan
             if self._sign_missing_since is None:
                 self._sign_missing_since = now
-            if self._cursor_toggled_by_us and not (self.mouse_only_travel and self.control_mode == "mouse"):
+            if self._cursor_toggled_by_us:
                 if (now - self._sign_missing_since) < 1.2:
                     return (intents, None, "")
                 intents.append(
@@ -1027,30 +921,17 @@ class RespawnTravelController:
                 )
                 self._cursor_toggled_by_us = False
             if self.tracker.is_ready("tele_scan_turn", now):
-                if self.mouse_only_travel and self.control_mode == "mouse":
-                    self.tracker.set_cooldown("tele_scan_turn", now, 0.55)
-                    intents.append(
-                        DragCameraIntent(
-                            dx=145,
-                            button=self.camera_btn,
-                            reason="vm_scan_for_addon_keep_sign",
-                            est_yaw_deg=-52.0,
-                            start_x=fw // 2,
-                            start_y=int(fh * 0.45),
-                        )
+                self.tracker.set_cooldown("tele_scan_turn", now, 0.24)
+                dx = 175
+                intents.append(
+                    MoveMouseRelIntent(
+                        dx=dx,
+                        reason="scan_for_addon_keep_sign",
+                        est_yaw_deg=-dx / max(1.0, self.yaw_px_per_deg),
+                        steps=5,
+                        step_delay=0.002,
                     )
-                else:
-                    self.tracker.set_cooldown("tele_scan_turn", now, 0.24)
-                    dx = 175
-                    intents.append(
-                        MoveMouseRelIntent(
-                            dx=dx,
-                            reason="scan_for_addon_keep_sign",
-                            est_yaw_deg=-dx / max(1.0, self.yaw_px_per_deg),
-                            steps=5,
-                            step_delay=0.002,
-                        )
-                    )
+                )
             return (intents, None, "")
 
         # Phase 3: Wait for 'Talk / Teleport' menu popup and click 'Teleport' (bottom half of popup)
@@ -1100,33 +981,14 @@ class RespawnTravelController:
         return ([], None, "")
 
     def _build_arrival_intents(self, coords: Point2D, now: float, reason: str) -> list[ActionIntent]:
-        """Release travel keys and restore Mouse Mode (ESC) if travel ran in Keyboard Mode."""
+        """Release travel keys cleanly upon arriving at farming spot (never toggle Mouse Mode via Esc)."""
         intents = self.release_all_move_keys(reason)
-        if self.control_mode == "mouse" and not self.mouse_only_travel:
-            # TRAVEL_TO_SPOT ran in Keyboard Mode (W + yaw); restore Mouse Mode cursor (ESC) before clicking mobs!
-            intents.append(
-                TapKeyIntent(
-                    key=self.mode_toggle_key,
-                    hold_sec=0.05,
-                    reason="restore_mouse_mode_at_spot",
-                )
-            )
-            self._mode_switched_to_kb = False
-            # Give RYL 0.25s to unlock the Mouse Mode cursor before the first mob click fires
-            self.tracker.set_cooldown("human_post_loot", now, 0.25)
-            logger.info(
-                "Arrived at farming spot (%.0f, %.0f) -> restored Mouse Mode [%s], engaging mobs!",
-                coords.x,
-                coords.y,
-                self.mode_toggle_key.upper(),
-            )
-        else:
-            logger.info(
-                "Arrived at farming spot (%.0f, %.0f) -> starting %s farming!",
-                coords.x,
-                coords.y,
-                "VM Pure Mouse Mode" if (self.control_mode == "mouse") else "Keyboard Mode",
-            )
+        self._mode_switched_to_kb = False
+        logger.info(
+            "Arrived at farming spot (%.0f, %.0f) -> resuming farming!",
+            coords.x,
+            coords.y,
+        )
         return intents
 
     def step_travel_to_spot(
@@ -1137,7 +999,12 @@ class RespawnTravelController:
         spot_center: Point2D,
         farm_radius: float,
     ) -> tuple[list[ActionIntent], BotState | None, str]:
-        """Run smoothly along travel_waypoints from Addon Keep -> farming spot, ignoring mobs along the way."""
+        """Run smoothly along travel_waypoints from Ardun Keep (1409,1773) -> farming spot in 100% Keyboard Mode (WASD)."""
+        # Accidental Mouse Mode guard: if interface_mouse_banner is visible, press Esc once to return to Keyboard Mode!
+        guard_intents = self._check_accidental_mouse_mode_guard(world, now, "TRAVEL_TO_SPOT")
+        if guard_intents:
+            return (guard_intents, None, "")
+
         coords = world.coords_smoothed
         if coords is None:
             return ([], None, "")
@@ -1182,52 +1049,7 @@ class RespawnTravelController:
         self.tracker.travel_waypoint_index = idx
         active_wp = wps[idx]
 
-        # Pure Mouse Mode travel (VMware Edition): ground clicks + Middle-Mouse camera drag unstuck, zero WASD!
-        if self.mouse_only_travel and self.control_mode == "mouse":
-            if now < self._travel_unstuck_until:
-                return ([], None, "")
-
-            if world.is_stuck:
-                self._travel_unstuck_count += 1
-                side_sign = -1 if (self._travel_unstuck_count % 2 == 1) else 1
-                self._travel_unstuck_until = now + 0.70
-                self.tracker.clear_stuck(reset_consecutive=True)
-                fw = world.snapshot.frame_width
-                fh = world.snapshot.frame_height
-                cx = fw * self.player_center_norm[0]
-                cy = fh * self.player_center_norm[1]
-                side_x = int(round(max(fw * 0.16, min(fw * 0.84, cx + side_sign * fw * 0.22))))
-                side_y = int(round(max(fh * 0.24, min(fh * 0.68, cy - fh * 0.10))))
-                turn_dx = side_sign * 135
-                logger.info(
-                    "VM Mouse travel obstacle unstuck #%d (MMB drag + side click) toward %s",
-                    self._travel_unstuck_count,
-                    active_wp.name,
-                )
-                return (
-                    [
-                        DragCameraIntent(
-                            button=self.camera_btn,
-                            dx=turn_dx,
-                            dy=0,
-                            reason="vm_travel_unstuck_drag",
-                            est_yaw_deg=-turn_dx / max(1.0, self.yaw_px_per_deg),
-                        ),
-                        ClickScreenIntent(
-                            x=side_x,
-                            y=side_y,
-                            button="left",
-                            reason="vm_travel_unstuck_click",
-                        ),
-                    ],
-                    None,
-                    "",
-                )
-
-            intents_m = self._steer_mouse_click_toward(world, Point2D(active_wp.x, active_wp.y), active_wp.name, now)
-            return (intents_m, None, "")
-
-        # Fast diagonal boulder/tree/riverbank sidestep when stuck during travel (never pauses!)
+        # Fast diagonal boulder/tree/riverbank sidestep when stuck during travel (100% Keyboard Mode WASD + Space)
         if now < self._travel_unstuck_until:
             return (
                 [

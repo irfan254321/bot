@@ -132,11 +132,15 @@ class FarmingFSM:
         self._was_outside_city: bool = False
         self._last_false_death_log_ts: float = -999.0
 
-        # One-shot startup ENSURE_MOUSE_MODE state (runs ONLY once on start / F9 resume)
+        # One-shot startup ENSURE_MOUSE_MODE / ENSURE_KEYBOARD_MODE state
+        self._ensure_mode_enabled: bool = self.auto_restore_mouse_mode
         self._mouse_mode_verified: bool = False
         self._ensure_mouse_phase: str = "SEND_FIRST_ESC"
         self._ensure_mouse_until: float = 0.0
         self._post_ensure_state: BotState = BotState.SEARCH_MOB
+        self._ensure_kb_phase: str = "SEND_FIRST_ESC"
+        self._ensure_kb_until: float = 0.0
+        self._post_ensure_kb_state: BotState = BotState.TELEPORT_TO_SPOT
         self._mouse_restore_wait_until: float = 0.0
         self._post_drag_settle_until: float = 0.0
         self._sweeps_in_search: int = 0
@@ -335,6 +339,20 @@ class FarmingFSM:
             self.tracker.clear_target_lock()
         logger.info("FSM %s -> %s (%s)", old.value, new_state.value, reason)
 
+    def _enter_ensure_mouse_mode(self, next_state: BotState, now: float, reason: str) -> None:
+        self._mouse_mode_verified = False
+        self._ensure_mouse_phase = "SEND_FIRST_ESC"
+        self._ensure_mouse_until = 0.0
+        self._post_ensure_state = next_state
+        self.transition(BotState.ENSURE_MOUSE_MODE, now, reason)
+
+    def _enter_ensure_keyboard_mode(self, next_state: BotState, now: float, reason: str) -> None:
+        self._mouse_mode_verified = False
+        self._ensure_kb_phase = "SEND_FIRST_ESC"
+        self._ensure_kb_until = 0.0
+        self._post_ensure_kb_state = next_state
+        self.transition(BotState.ENSURE_KEYBOARD_MODE, now, reason)
+
     def resume(self, now: float, *, ensure_mouse_mode: bool | None = None) -> None:
         if self.state == BotState.EMERGENCY_STOP:
             return
@@ -358,12 +376,9 @@ class FarmingFSM:
             rsn = "resume_full"
 
         want_ensure = self.auto_restore_mouse_mode if ensure_mouse_mode is None else bool(ensure_mouse_mode)
+        self._ensure_mode_enabled = want_ensure
         if want_ensure and self.mode in (BotMode.FULL, BotMode.COMBAT, BotMode.LOOT):
-            self._mouse_mode_verified = False
-            self._ensure_mouse_phase = "SEND_FIRST_ESC"
-            self._ensure_mouse_until = 0.0
-            self._post_ensure_state = target_state
-            self.transition(BotState.ENSURE_MOUSE_MODE, now, f"{rsn}_ensure_mouse_mode")
+            self._enter_ensure_mouse_mode(target_state, now, f"{rsn}_ensure_mouse_mode")
             return
 
         self._mouse_mode_verified = True
@@ -529,6 +544,7 @@ class FarmingFSM:
 
         if self._last_step_ts is not None and self.state not in (
             BotState.ENSURE_MOUSE_MODE,
+            BotState.ENSURE_KEYBOARD_MODE,
             BotState.REPAIR_RECALL,
             BotState.REPAIR_AT_NPC,
         ):
@@ -536,9 +552,11 @@ class FarmingFSM:
             self._active_farming_sec += dt
         self._last_step_ts = now
 
-        # --- ONE-SHOT STARTUP ENSURE_MOUSE_MODE (runs ONLY once on start / F9 resume; zero ESC in farming loop!) ---
+        # --- ONE-SHOT MODE LOCK STATES (Mouse Mode for farming, Keyboard Mode for town/repair/teleport/travel) ---
         if self.state == BotState.ENSURE_MOUSE_MODE:
             return self._handle_ensure_mouse_mode(world, now)
+        if self.state == BotState.ENSURE_KEYBOARD_MODE:
+            return self._handle_ensure_keyboard_mode(world, now)
 
         # Track whether character was outside town so sudden city-warp corroborates genuine respawn
         if world.coords_smoothed is not None and not self.respawn_travel.is_in_city(world.coords_smoothed):
@@ -630,14 +648,27 @@ class FarmingFSM:
                     and self.respawn_travel.repair_enabled
                     and self._active_farming_sec >= (self.respawn_travel.repair_interval_sec * 0.85)
                 ):
-                    self.transition(BotState.REPAIR_AT_NPC, now, "respawned_in_town_opportunistic_repair")
+                    target_city = BotState.REPAIR_AT_NPC
+                    target_rsn = "respawned_in_town_opportunistic_repair"
                 else:
-                    self.transition(nxt, now, rsn)
+                    target_city = nxt
+                    target_rsn = rsn
+                if self._ensure_mode_enabled and target_city in (
+                    BotState.REPAIR_AT_NPC,
+                    BotState.TELEPORT_TO_SPOT,
+                    BotState.TRAVEL_TO_SPOT,
+                ):
+                    self._enter_ensure_keyboard_mode(target_city, now, f"{target_rsn}_ensure_kb")
+                else:
+                    self.transition(target_city, now, target_rsn)
         elif self.state == BotState.REPAIR_RECALL:
             rt_intents, nxt, rsn = self.respawn_travel.step_repair_recall(world, now, elapsed)
             intents.extend(rt_intents)
             if nxt is not None:
-                self.transition(nxt, now, rsn)
+                if self._ensure_mode_enabled and nxt == BotState.REPAIR_AT_NPC:
+                    self._enter_ensure_keyboard_mode(nxt, now, f"{rsn}_ensure_kb")
+                else:
+                    self.transition(nxt, now, rsn)
         elif self.state == BotState.REPAIR_AT_NPC:
             rt_intents, nxt, rsn = self.respawn_travel.step_repair_at_npc(world, now)
             intents.extend(rt_intents)
@@ -666,7 +697,12 @@ class FarmingFSM:
                 if nxt in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE):
                     self.navigator.set_dynamic_anchor(spot_c)
                     self._need_dynamic_anchor = False
-                self.transition(nxt, now, rsn)
+                    if self._ensure_mode_enabled:
+                        self._enter_ensure_mouse_mode(nxt, now, "arrived_spot_ensure_mouse_mode")
+                    else:
+                        self.transition(nxt, now, rsn)
+                else:
+                    self.transition(nxt, now, rsn)
         elif self.state == BotState.NAVIGATE_TO_SPOT:
             intents.extend(self._handle_navigate(world, now))
         elif self.state in (BotState.SEARCH_MOB, BotState.AT_SPOT_IDLE):
@@ -683,9 +719,40 @@ class FarmingFSM:
         return intents
 
     def _handle_ensure_mouse_mode(self, world: WorldState, now: float) -> list[ActionIntent]:
-        """One-shot startup Mouse Mode verification: ESC -> 0.32s -> check banner -> optional 2nd ESC -> 0.28s."""
+        """One-shot startup Mouse Mode verification: ESC -> 0.32s -> check banner -> optional 2nd ESC -> 0.28s.
+
+        If resuming in Green Wales town or near Ardun Keep, immediately redirects to ENSURE_KEYBOARD_MODE instead!
+        """
         esc_key = str(self.config.respawn_travel.get("mode_toggle_key", "esc"))
         if self._ensure_mouse_phase == "SEND_FIRST_ESC":
+            # Smart Resume intercept: NEVER run ENSURE_MOUSE_MODE if starting in town or Ardun Keep!
+            if (
+                self._just_resumed
+                and world.coords_smoothed is not None
+                and self.mode == BotMode.FULL
+                and self.respawn_travel.enabled
+            ):
+                if self.respawn_travel.is_in_city(world.coords_smoothed):
+                    self._just_resumed = False
+                    self._need_dynamic_anchor = False
+                    if self._force_repair_requested or (
+                        self.respawn_travel.repair_enabled
+                        and self._active_farming_sec >= self.respawn_travel.repair_interval_sec
+                    ):
+                        self._force_repair_requested = False
+                        self._enter_ensure_keyboard_mode(BotState.REPAIR_AT_NPC, now, "resumed_in_town_ensure_kb_repair")
+                    else:
+                        self._enter_ensure_keyboard_mode(BotState.TELEPORT_TO_SPOT, now, "resumed_in_town_ensure_kb_tele")
+                    return self._handle_ensure_keyboard_mode(world, now)
+                if self.respawn_travel.is_near_addon_keep(world.coords_smoothed):
+                    self._just_resumed = False
+                    self._need_dynamic_anchor = False
+                    self.tracker.travel_waypoint_index = self.respawn_travel.choose_starting_travel_index(
+                        world.coords_smoothed, self.navigator.route.travel_waypoints
+                    )
+                    self._enter_ensure_keyboard_mode(BotState.TRAVEL_TO_SPOT, now, "resumed_at_addon_keep_ensure_kb")
+                    return self._handle_ensure_keyboard_mode(world, now)
+
             self._ensure_mouse_phase = "WAIT_BANNER"
             self._ensure_mouse_until = now + 0.32
             logger.info("ENSURE_MOUSE_MODE: sending initial ESC probe and waiting 0.32s for INTERFACE TYPE banner")
@@ -708,6 +775,34 @@ class FarmingFSM:
             return []
         self._mouse_mode_verified = True
         self.transition(self._post_ensure_state, now, "mouse_mode_verified_after_esc_2")
+        return []
+
+    def _handle_ensure_keyboard_mode(self, world: WorldState, now: float) -> list[ActionIntent]:
+        """One-shot Keyboard Mode verification (inverse of ENSURE_MOUSE_MODE):
+        ESC -> 0.32s -> if mouse_banner then 2nd ESC -> 0.28s -> target town/repair/teleport/travel state.
+        """
+        esc_key = str(self.config.respawn_travel.get("mode_toggle_key", "esc"))
+        if self._ensure_kb_phase == "SEND_FIRST_ESC":
+            self._ensure_kb_phase = "WAIT_BANNER"
+            self._ensure_kb_until = now + 0.32
+            logger.info("ENSURE_KEYBOARD_MODE: sending initial ESC probe and waiting 0.32s for INTERFACE TYPE banner")
+            return [TapKeyIntent(key=esc_key, hold_sec=0.05, reason="ensure_keyboard_mode_esc_1")]
+
+        if self._ensure_kb_phase == "WAIT_BANNER":
+            if now < self._ensure_kb_until:
+                return []
+            imode = world.snapshot.interface_mode
+            if imode == "mouse_banner":
+                self._ensure_kb_phase = "WAIT_SECOND_ESC"
+                self._ensure_kb_until = now + 0.28
+                logger.info("ENSURE_KEYBOARD_MODE: banner shows Mouse -> pressing ESC 2nd time and waiting 0.28s")
+                return [TapKeyIntent(key=esc_key, hold_sec=0.05, reason="ensure_keyboard_mode_esc_2")]
+            self.transition(self._post_ensure_kb_state, now, f"keyboard_mode_verified({imode})")
+            return []
+
+        if now < self._ensure_kb_until:
+            return []
+        self.transition(self._post_ensure_kb_state, now, "keyboard_mode_verified_after_esc_2")
         return []
 
     def _handle_navigate(self, world: WorldState, now: float) -> list[ActionIntent]:
@@ -744,7 +839,7 @@ class FarmingFSM:
         if self.navigator.is_arrived(world.coords_smoothed):
             if self.mode == BotMode.NAVIGATE:
                 self.navigator.advance_waypoint()
-                return self.navigator.step_to_waypoint(world, now)
+                return self.navigator.step_to_waypoint_keyboard(world, now)
             self.transition(BotState.SEARCH_MOB, now, "arrived_at_spot")
             return self.release_move_keys("arrived_at_spot")
 
@@ -758,7 +853,17 @@ class FarmingFSM:
                 self.transition(BotState.SEARCH_MOB, now, "arrived_within_spot_center_12u")
                 return self.release_move_keys("arrived_within_spot_center_12u")
 
-        return self.navigator.step_to_waypoint(world, now)
+        # Accidental Mouse Mode guard during navigation: if interface_mouse_banner is visible, press Esc once to return to Keyboard Mode!
+        if world.snapshot.interface_mode == "mouse_banner" and self.tracker.is_ready("kb_guard_esc", now):
+            self.tracker.set_cooldown("kb_guard_esc", now, 1.0)
+            esc_key = str(self.config.respawn_travel.get("mode_toggle_key", "esc"))
+            logger.warning("NAVIGATE_TO_SPOT: interface_mouse_banner detected -> pressing %s once to restore Keyboard Mode", esc_key.upper())
+            return [
+                *self.release_move_keys("nav_restore_kb_mode"),
+                TapKeyIntent(key=esc_key, hold_sec=0.05, reason="restore_kb_from_mouse_banner"),
+            ]
+
+        return self.navigator.step_to_waypoint_keyboard(world, now)
 
     def _handle_search(self, world: WorldState, now: float) -> list[ActionIntent]:
         fw = max(1, world.snapshot.frame_width)

@@ -222,7 +222,7 @@ farming:
 respawn_travel:
   enabled: true
   repeat_forever: true
-  mouse_only_travel: true
+  mouse_only_travel: false
   city_spawn: [1075.0, 2631.0]
   city_radius: 55.0
   npc_stand_coord: [1066.0, 2627.0]

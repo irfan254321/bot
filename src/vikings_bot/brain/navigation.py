@@ -157,7 +157,8 @@ class MouseModeNavigator:
         ty = int(round(max(py1 + 40, min(py2 - 30, cy + dy))))
         return (tx, ty)
 
-    def step_to_waypoint(self, state: WorldState, now: float) -> list[ActionIntent]:
+    def step_to_waypoint_keyboard(self, state: WorldState, now: float) -> list[ActionIntent]:
+        """Pure 100% Keyboard Mode (WASD + Keyboard Mode camera yaw) waypoint steering. Zero ground clicks."""
         if state.coords_smoothed is None:
             return []
 
@@ -165,55 +166,64 @@ class MouseModeNavigator:
         dist = state.coords_smoothed.distance_to(target)
         if dist <= self.route.arrival_radius:
             self.tracker.notify_movement_stopped()
-            if self.control_mode == "keyboard":
-                return [HoldKeyIntent(key=self.forward_key, hold=False, reason="arrived_waypoint")]
-            return []
+            return [HoldKeyIntent(key=self.forward_key, hold=False, reason="arrived_waypoint")]
 
         bearing = world_bearing_deg(state.coords_smoothed, target)
         rel_angle = wrap_angle_deg(bearing - state.camera_heading_deg)
 
-        if self.control_mode == "keyboard":
-            intents: list[ActionIntent] = []
-            # If compass heading is NOT yet calibrated via real coordinate movement, walk STRAIGHT
-            # (without turning) for ~2 units so closed-loop delta snaps to the exact true world heading!
-            if state.heading_source != "delta":
-                intents.append(
-                    HoldKeyIntent(
-                        key=self.forward_key,
-                        hold=True,
-                        reason=f"calibrate_heading->{self.current_waypoint.name} d={dist:.1f}",
-                        move_rel_angle_deg=0.0,
-                    )
+        intents: list[ActionIntent] = []
+        if state.heading_source != "delta":
+            intents.append(
+                HoldKeyIntent(
+                    key=self.forward_key,
+                    hold=True,
+                    reason=f"calibrate_heading->{self.current_waypoint.name} d={dist:.1f}",
+                    move_rel_angle_deg=0.0,
                 )
-                return intents
-
-            # Turn camera smoothly toward waypoint: +rel_angle = target on LEFT -> negative mouse dx
-            if abs(rel_angle) > 12.0 and self.tracker.is_ready("kb_nav_turn", now):
-                raw_dx = int(round(-rel_angle * self.yaw_px_per_deg * 0.55))
-                dx = max(-self.max_turn_px, min(self.max_turn_px, raw_dx))
-                if abs(dx) >= 4:
-                    est_yaw = -dx / max(1.0, self.yaw_px_per_deg)
-                    self.tracker.set_cooldown("kb_nav_turn", now, 0.14)
-                    intents.append(
-                        MoveMouseRelIntent(
-                            dx=dx,
-                            reason=f"nav_yaw->{self.current_waypoint.name} err={rel_angle:.0f}",
-                            est_yaw_deg=est_yaw,
-                        )
-                    )
-            # Only hold W when actually facing within 45 deg of the spot so we NEVER walk further away!
-            if abs(rel_angle) <= 45.0:
-                intents.append(
-                    HoldKeyIntent(
-                        key=self.forward_key,
-                        hold=True,
-                        reason=f"walk->{self.current_waypoint.name} d={dist:.1f}",
-                        move_rel_angle_deg=0.0,
-                    )
-                )
-            else:
-                intents.append(HoldKeyIntent(key=self.forward_key, hold=False, reason="turn_toward_spot_first"))
+            )
             return intents
+
+        if abs(rel_angle) > 12.0 and self.tracker.is_ready("kb_nav_turn", now):
+            raw_dx = int(round(-rel_angle * self.yaw_px_per_deg * 0.55))
+            dx = max(-self.max_turn_px, min(self.max_turn_px, raw_dx))
+            if abs(dx) >= 4:
+                est_yaw = -dx / max(1.0, self.yaw_px_per_deg)
+                self.tracker.set_cooldown("kb_nav_turn", now, 0.14)
+                intents.append(
+                    MoveMouseRelIntent(
+                        dx=dx,
+                        reason=f"nav_yaw->{self.current_waypoint.name} err={rel_angle:.0f}",
+                        est_yaw_deg=est_yaw,
+                    )
+                )
+        if abs(rel_angle) <= 45.0:
+            intents.append(
+                HoldKeyIntent(
+                    key=self.forward_key,
+                    hold=True,
+                    reason=f"walk->{self.current_waypoint.name} d={dist:.1f}",
+                    move_rel_angle_deg=0.0,
+                )
+            )
+        else:
+            intents.append(HoldKeyIntent(key=self.forward_key, hold=False, reason="turn_toward_spot_first"))
+        return intents
+
+    def step_to_waypoint(self, state: WorldState, now: float) -> list[ActionIntent]:
+        if state.coords_smoothed is None:
+            return []
+
+        if self.control_mode == "keyboard":
+            return self.step_to_waypoint_keyboard(state, now)
+
+        target = self.current_target_point
+        dist = state.coords_smoothed.distance_to(target)
+        if dist <= self.route.arrival_radius:
+            self.tracker.notify_movement_stopped()
+            return []
+
+        bearing = world_bearing_deg(state.coords_smoothed, target)
+        rel_angle = wrap_angle_deg(bearing - state.camera_heading_deg)
 
         # Mouse Mode ground click navigation: crisp 0.65s stride spacing (avoids sluggish 0.95s stops
         # while keeping closed-loop heading calibration smooth without rapid back-and-forth clicks!)
