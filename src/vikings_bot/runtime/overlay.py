@@ -90,15 +90,6 @@ class DebugOverlay:
                     pl_lbl = f"player {world.snapshot.other_player_confs[idx]:.2f}"
                     cv2.putText(canvas, pl_lbl, (pb[0], max(16, pb[1] - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (80, 120, 255), 1)
 
-            for idx, (cx1, cy1, cx2, cy2) in enumerate(world.snapshot.dead_corpses):
-                cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), (240, 120, 200), 2)
-                cp_lbl = (
-                    f"dead_rustler {world.snapshot.dead_corpse_confs[idx]:.2f}"
-                    if idx < len(world.snapshot.dead_corpse_confs)
-                    else "DEAD / MAYAT"
-                )
-                cv2.putText(canvas, cp_lbl, (cx1, max(16, cy1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 160, 220), 1)
-
             for idx, bag in enumerate(world.loot):
                 lx, ly, lw, lh = bag.bbox
                 cv2.rectangle(canvas, (lx, ly), (lx + lw, ly + lh), (0, 215, 255), 2)

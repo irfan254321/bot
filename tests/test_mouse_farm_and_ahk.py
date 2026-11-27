@@ -147,17 +147,17 @@ def test_mouse_mode_single_click_engage_zero_spam_until_kill_then_loot_and_mmb_s
     acts_l2 = fsm.step(tracker.update(_snap(4.5, mobs=(), loot=(close_bag,))))
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_l2)
 
-    # 6. Bags cleared (min 2.0s + 1.2s consecutive empty in LOOT) -> RETURN_TO_CENTER -> arrives (594,1832) -> SEARCH_MOB -> MMB sweep!
+    # 6. Bags cleared (min 2.0s + 1.2s consecutive empty in LOOT) -> RETURN_TO_CENTER -> arrives (627,1817) -> SEARCH_MOB -> MMB sweep!
     fsm.step(tracker.update(_snap(5.0, mobs=(), loot=())))
     assert fsm.state == BotState.LOOT  # elapsed 1.3s < 2.0s
     fsm.step(tracker.update(_snap(6.0, mobs=(), loot=())))
     assert fsm.state == BotState.LOOT  # empty 1.0s < 1.2s
     fsm.step(tracker.update(_snap(6.6, mobs=(), loot=())))
     assert fsm.state == BotState.RETURN_TO_CENTER
-    fsm.step(tracker.update(_snap(6.8, x=594, y=1832, mobs=(), loot=())))
+    fsm.step(tracker.update(_snap(6.8, x=627, y=1817, mobs=(), loot=())))
     assert fsm.state == BotState.SEARCH_MOB
 
-    acts_sweep = fsm.step(tracker.update(_snap(7.0, x=594, y=1832, mobs=(), loot=())))
+    acts_sweep = fsm.step(tracker.update(_snap(7.0, x=627, y=1817, mobs=(), loot=())))
     assert any(isinstance(a, DragCameraIntent) and a.button == "middle" and a.dy == 0 for a in acts_sweep)
 
 
@@ -365,26 +365,26 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
 
-    # 1. Alive at farming spot (610, 1841) with high HP (5099/5700 = 89.5%)
-    fsm.step(tracker.update(_snap(1.0, x=610, y=1841, fw=1024, fh=768, hp=0.895)))
+    # 1. Alive at farming spot (627, 1817) with high HP (5099/5700 = 89.5%)
+    fsm.step(tracker.update(_snap(1.0, x=627, y=1817, fw=1024, fh=768, hp=0.895)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 2. Glitch frames: 1..10 consecutive 0% HP straight from 89.5% with NO respawn dialog & NO town warp -> BLOCKED!
     for i in range(10):
-        w = tracker.update(_snap(1.1 + i * 0.05, x=610, y=1841, fw=1024, fh=768, hp=0.0))
+        w = tracker.update(_snap(1.1 + i * 0.05, x=627, y=1817, fw=1024, fh=768, hp=0.0))
         fsm.step(w)
         assert w.is_dead is False
         assert fsm.state == BotState.SEARCH_MOB
         assert fsm.deaths_count == 0
 
     # 3. Recover high HP, then REAL death via prior HP drop < 35% (28%) -> requires >= 5 consecutive 0% frames
-    fsm.step(tracker.update(_snap(2.0, x=610, y=1841, fw=1024, fh=768, hp=0.88)))
-    fsm.step(tracker.update(_snap(2.2, x=610, y=1841, fw=1024, fh=768, hp=0.28)))
+    fsm.step(tracker.update(_snap(2.0, x=627, y=1817, fw=1024, fh=768, hp=0.88)))
+    fsm.step(tracker.update(_snap(2.2, x=627, y=1817, fw=1024, fh=768, hp=0.28)))
     for i in range(4):
-        w = tracker.update(_snap(2.3 + i * 0.05, x=610, y=1841, fw=1024, fh=768, hp=0.0))
+        w = tracker.update(_snap(2.3 + i * 0.05, x=627, y=1817, fw=1024, fh=768, hp=0.0))
         fsm.step(w)
         assert fsm.state == BotState.SEARCH_MOB, f"Triggered death too early on frame {i + 1}/5"
-    w5 = tracker.update(_snap(2.55, x=610, y=1841, fw=1024, fh=768, hp=0.0))
+    w5 = tracker.update(_snap(2.55, x=627, y=1817, fw=1024, fh=768, hp=0.0))
     fsm.step(w5)
     assert w5.is_dead is True
     assert fsm.state == BotState.DEAD_RESPAWN
@@ -394,16 +394,16 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
     tracker2 = WorldStateTracker(death_zero_hp_frames=5)
     fsm2 = FarmingFSM(cfg, tracker2, mode=BotMode.FULL)
     fsm2.resume(10.0, ensure_mouse_mode=False)
-    fsm2.step(tracker2.update(_snap(10.0, x=610, y=1841, fw=1024, fh=768, hp=0.90)))
+    fsm2.step(tracker2.update(_snap(10.0, x=627, y=1817, fw=1024, fh=768, hp=0.90)))
     for i in range(4):
         fsm2.step(
             tracker2.update(
-                _snap(10.1 + i * 0.05, x=610, y=1841, fw=1024, fh=768, hp=0.0, respawn_dialog_bbox=(480, 410, 55, 25))
+                _snap(10.1 + i * 0.05, x=627, y=1817, fw=1024, fh=768, hp=0.0, respawn_dialog_bbox=(480, 410, 55, 25))
             )
         )
         assert fsm2.state == BotState.SEARCH_MOB
     fsm2.step(
-        tracker2.update(_snap(10.35, x=610, y=1841, fw=1024, fh=768, hp=0.0, respawn_dialog_bbox=(480, 410, 55, 25)))
+        tracker2.update(_snap(10.35, x=627, y=1817, fw=1024, fh=768, hp=0.0, respawn_dialog_bbox=(480, 410, 55, 25)))
     )
     assert fsm2.state == BotState.DEAD_RESPAWN
     assert fsm2.deaths_count == 1
@@ -412,7 +412,7 @@ def test_anti_false_death_guard_requires_5_frames_and_low_hp_or_respawn_or_town_
     tracker3 = WorldStateTracker(death_zero_hp_frames=5)
     fsm3 = FarmingFSM(cfg, tracker3, mode=BotMode.FULL)
     fsm3.resume(20.0, ensure_mouse_mode=False)
-    fsm3.step(tracker3.update(_snap(20.0, x=610, y=1841, fw=1024, fh=768, hp=0.90)))
+    fsm3.step(tracker3.update(_snap(20.0, x=627, y=1817, fw=1024, fh=768, hp=0.90)))
     for i in range(5):
         # 3+ consistent town frames accepted as real teleport jump by WorldStateTracker
         fsm3.step(tracker3.update(_snap(20.2 + i * 0.05, x=1075, y=2628, fw=1024, fh=768, hp=0.0)))
@@ -704,7 +704,7 @@ def test_combat_wait_hard_locks_mouse_and_post_kill_10s_close_loot_window():
     cfg = _load_legacy_mouse_loot_cfg()
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
-    assert int(cfg.farming["loot_close_radius_px"]) == 310
+    assert int(cfg.farming["loot_close_radius_px"]) == 320
 
     # (a) Pipeline with skip_all_object_detectors=True (COMBAT_WAIT):
     #     disables GoldRustlerDetector, GoldBagDetector, and CorpseDetector, while reading Target HP!
@@ -951,8 +951,8 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
 
     cfg = _load_legacy_mouse_loot_cfg()
     cfg.perception["hud_fixed_pixel_ui"] = True
-    assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
-    assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 5.0
+    assert float(cfg.farming["combat_no_hit_abort_sec"]) == 4.5
+    assert float(cfg.farming["combat_hit_confirm_timeout_sec"]) == 4.5
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
     assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
     assert float(cfg.farming["post_kill_loot_window_sec"]) == 10.0
@@ -993,20 +993,20 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     mobs_self = pipe.mobs.detect(FramePacket(image_bgr=bgr_self, timestamp=2.0))
     assert len(mobs_self) == 1 and abs(mobs_self[0].click_x - 260) <= 4
 
-    # 3. Stage 1 Miss (no hit_damage_visible & no HP drop for 6.5s) -> blacklists 15s & returns to SEARCH_MOB!
+    # 3. Stage 1 Miss (no hit_damage_visible & no HP drop for 4.5s) -> blacklists 15s & returns to SEARCH_MOB!
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
     grass_mob = _mob(cx=310, cy=320, dist=190.0, has_hp=False)
-    fsm.step(tracker.update(_snap(1.0, x=615, y=1830, fw=1024, fh=768, mobs=(grass_mob,))))
+    fsm.step(tracker.update(_snap(1.0, x=627, y=1817, fw=1024, fh=768, mobs=(grass_mob,))))
     assert fsm.state == BotState.COMBAT_WAIT
-    # Character walks briefly (coords change) but never sees hit_damage_visible or HP drop for 6.5s!
-    fsm.step(tracker.update(_snap(4.5, x=617, y=1831, fw=1024, fh=768, mobs=())))
+    # Character walks briefly (coords change) but never sees hit_damage_visible or HP drop for 4.5s!
+    fsm.step(tracker.update(_snap(4.0, x=629, y=1818, fw=1024, fh=768, mobs=())))
     assert fsm.state == BotState.COMBAT_WAIT
-    fsm.step(tracker.update(_snap(7.6, x=618, y=1831, fw=1024, fh=768, mobs=())))
+    fsm.step(tracker.update(_snap(5.6, x=630, y=1818, fw=1024, fh=768, mobs=())))
     assert fsm.state == BotState.SEARCH_MOB
     # Blacklisted for 15s: clicking same grass coord at t=12.0 is skipped!
-    acts_bl = fsm.step(tracker.update(_snap(12.0, x=618, y=1831, fw=1024, fh=768, mobs=(grass_mob,))))
+    acts_bl = fsm.step(tracker.update(_snap(12.0, x=630, y=1818, fw=1024, fh=768, mobs=(grass_mob,))))
     assert fsm.state == BotState.SEARCH_MOB and not any(isinstance(a, ClickScreenIntent) for a in acts_bl)
 
     # 4. Stage 2 Hit-Confirmed Combat -> 2.5s post-last-hit idle -> MANDATORY 8.0s LOOT -> SEARCH_MOB!
@@ -1036,7 +1036,7 @@ def test_hit_confirmed_combat_mandatory_7s_loot_self_zone_and_nav_guard():
     assert any(isinstance(a, TapKeyIntent) and a.key == "e" for a in acts_loot_e)
     fsm.step(tracker.update(_snap(28.8, fw=1024, fh=768)))
     assert fsm.state == BotState.RETURN_TO_CENTER
-    fsm.step(tracker.update(_snap(29.0, x=594, y=1832, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(29.0, x=627, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. NAVIGATE_TO_SPOT guard: when spot_dist <= 25u and len(mobs) >= 1, stays in SEARCH_MOB & engages mob!
@@ -1080,7 +1080,7 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
     assert fsm.state == BotState.COMBAT_WAIT
 
     for step_i in range(1, 6):
-        ts = 1.0 + step_i * 0.9  # t=1.9, 2.8, 3.7, 4.6, 5.5 (first hit lands at t=4.6s < 5.0s abort!)
+        ts = 1.0 + step_i * 0.9  # t=1.9, 2.8, 3.7, 4.6, 5.5 (first hit lands at t=3.7s < 4.5s abort!)
         w_chase = tracker.update(
             PerceptionSnapshot(
                 timestamp=ts,
@@ -1088,11 +1088,11 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
                 frame_height=768,
                 hp_ratio=1.0,
                 mp_ratio=1.0,
-                coords=CoordReading(x=615 + step_i * 5, y=1830, confidence=0.98),
+                coords=CoordReading(x=627 + step_i * 7, y=1817, confidence=0.98),
                 minimap=MinimapReading(),
                 combat_target_hp_visible=True,
                 combat_target_hp_ratio=1.0,
-                local_hit_damage_visible=(step_i >= 4),  # first local hit lands at t=4.6s!
+                local_hit_damage_visible=(step_i >= 3),  # first local hit lands at t=3.7s (< 4.5s)!
             )
         )
         assert fsm.step(w_chase) == []
@@ -1109,7 +1109,7 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
                 frame_height=768,
                 hp_ratio=1.0,
                 mp_ratio=1.0,
-                coords=CoordReading(x=645, y=1830, confidence=0.98),
+                coords=CoordReading(x=665, y=1817, confidence=0.98),
                 minimap=MinimapReading(),
                 combat_target_hp_visible=True,
                 combat_target_hp_ratio=0.99,
@@ -1120,18 +1120,18 @@ def test_combat_wait_survives_5s_chase_and_stagnant_hp_then_mandatory_8s_loot_an
         assert fsm.state == BotState.COMBAT_WAIT
 
     # 4. 2.5s after last hit stops (t=23.1) -> MANDATORY BotState.LOOT (3-step GOLD==0 fallback sweep) -> RETURN_TO_CENTER -> SEARCH_MOB!
-    fsm.step(tracker.update(_snap(23.1, x=645, y=1830, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(23.1, x=665, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(24.0, x=645, y=1830, fw=1024, fh=768)))  # Stage 0: kill_pos
+    fsm.step(tracker.update(_snap(24.0, x=665, y=1817, fw=1024, fh=768)))  # Stage 0: kill_pos
     assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(24.8, x=645, y=1830, fw=1024, fh=768)))  # Stage 1: (-85, 0)
+    fsm.step(tracker.update(_snap(24.8, x=665, y=1817, fw=1024, fh=768)))  # Stage 1: (-85, 0)
     assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(25.6, x=645, y=1830, fw=1024, fh=768)))  # Stage 2: (+85, 0)
+    fsm.step(tracker.update(_snap(25.6, x=665, y=1817, fw=1024, fh=768)))  # Stage 2: (+85, 0)
     assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(26.4, x=645, y=1830, fw=1024, fh=768)))  # Stage 3: final rescan
-    fsm.step(tracker.update(_snap(26.6, x=645, y=1830, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(26.4, x=665, y=1817, fw=1024, fh=768)))  # Stage 3: final rescan
+    fsm.step(tracker.update(_snap(26.6, x=665, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.RETURN_TO_CENTER
-    fsm.step(tracker.update(_snap(26.0, x=594, y=1832, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(27.0, x=627, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
     # 5. At drift=72u (outside 55u farm_radius, <=85u) with 2 visible mobs -> attacks mob instead of drifting/patrolling!
@@ -1468,11 +1468,11 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
     assert cfg.farming["background_e_spam"] is True
     assert cfg.farming["disable_gold_bag_detector"] is False
     assert cfg.farming["loot_mouse_click_enabled"] is True
-    assert float(cfg.farming["post_kill_loot_window_sec"]) == 7.5
-    assert float(cfg.farming["combat_no_hit_abort_sec"]) == 5.0
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 8.0
+    assert float(cfg.farming["combat_no_hit_abort_sec"]) == 4.5
     assert float(cfg.farming["combat_confirmed_max_sec"]) == 35.0
     assert float(cfg.farming["combat_post_last_hit_idle_sec"]) == 2.5
-    assert int(cfg.farming["spot_x"]) == 594 and int(cfg.farming["spot_y"]) == 1832
+    assert int(cfg.farming["spot_x"]) == 627 and int(cfg.farming["spot_y"]) == 1817
     assert float(cfg.farming["spot_center_arrival_radius"]) == 12.0
     assert float(cfg.farming["return_center_timeout_sec"]) == 6.0
 
@@ -1529,7 +1529,7 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
 
     # Stage 1 -> 2: Engage mob
     m1 = _mob(cx=720, cy=320, dist=200.0, has_hp=False)
-    acts_eng = fsm.step(tracker.update(_snap(2.0, x=620, y=1840, fw=1024, fh=768, mobs=(m1,))))
+    acts_eng = fsm.step(tracker.update(_snap(2.0, x=665, y=1817, fw=1024, fh=768, mobs=(m1,))))
     assert fsm.state == BotState.COMBAT_WAIT
     assert any(isinstance(a, ClickScreenIntent) and a.x == 720 and a.y == 320 for a in acts_eng)
 
@@ -1537,54 +1537,61 @@ def test_full_5_stage_cycle_combat_loot_10s_click_e_spam_return_to_center_594_18
     w_hit = tracker.update(
         PerceptionSnapshot(
             timestamp=3.5, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
-            coords=CoordReading(x=630, y=1845, confidence=0.98), minimap=MinimapReading(),
+            coords=CoordReading(x=665, y=1817, confidence=0.98), minimap=MinimapReading(),
             local_hit_damage_visible=True,
         )
     )
     assert fsm.step(w_hit) == [] and fsm.state == BotState.COMBAT_WAIT
-    assert fsm.step(tracker.update(_snap(6.1, x=630, y=1845, fw=1024, fh=768))) == []
+    assert fsm.step(tracker.update(_snap(6.1, x=665, y=1817, fw=1024, fh=768))) == []
     assert fsm.state == BotState.LOOT
 
-    # Stage 3: LOOT clicks gold bag directly, stays >=2.5s min, then exits to RETURN_TO_CENTER once empty >= 1.2s
+    # Stage 3: LOOT clicks gold bag directly (with 100ms hold + 120ms E-pause), stays >=2.5s min, then exits to RETURN_TO_CENTER once empty >= 1.2s
     bag1 = _bag(cx=640, cy=400, dist=130.0)
-    acts_l1 = fsm.step(tracker.update(_snap(6.5, x=630, y=1845, fw=1024, fh=768, loot=(bag1,))))
-    assert any(isinstance(a, ClickScreenIntent) and a.x == 640 and a.y == 400 and a.button == "left" for a in acts_l1)
-    fsm.step(tracker.update(_snap(7.2, x=630, y=1845, fw=1024, fh=768, loot=())))
+    acts_l1 = fsm.step(tracker.update(_snap(6.5, x=665, y=1817, fw=1024, fh=768, loot=(bag1,))))
+    assert any(
+        isinstance(a, ClickScreenIntent)
+        and a.x == 640
+        and a.y == 400
+        and a.button == "left"
+        and abs(a.hold_sec - 0.10) < 1e-4
+        and abs(a.pause_e_spam_sec - 0.12) < 1e-4
+        for a in acts_l1
+    )
+    fsm.step(tracker.update(_snap(7.2, x=665, y=1817, fw=1024, fh=768, loot=())))
     assert fsm.state == BotState.LOOT  # elapsed 1.1s < 2.5s
-    fsm.step(tracker.update(_snap(8.5, x=630, y=1845, fw=1024, fh=768, loot=())))
+    fsm.step(tracker.update(_snap(8.5, x=665, y=1817, fw=1024, fh=768, loot=())))
     assert fsm.state == BotState.LOOT  # elapsed 2.4s < 2.5s mandatory min window
-    fsm.step(tracker.update(_snap(8.7, x=630, y=1845, fw=1024, fh=768, loot=())))
+    fsm.step(tracker.update(_snap(8.7, x=665, y=1817, fw=1024, fh=768, loot=())))
     assert fsm.state == BotState.RETURN_TO_CENTER
 
-    # Stage 4: RETURN_TO_CENTER walks toward (594, 1832) while far (dist=38u > 12u), then transitions to SEARCH_MOB within <= 12u!
-    acts_walk = fsm.step(tracker.update(_snap(9.2, x=630, y=1845, fw=1024, fh=768)))
+    # Stage 4: RETURN_TO_CENTER walks toward (627, 1817) while far (dist=38u > 12u), then transitions to SEARCH_MOB within <= 12u!
+    acts_walk = fsm.step(tracker.update(_snap(9.2, x=665, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.RETURN_TO_CENTER
     assert any(isinstance(a, ClickScreenIntent) and "return->spot_center" in a.reason for a in acts_walk)
-    fsm.step(tracker.update(_snap(10.5, x=603, y=1837, fw=1024, fh=768)))  # dist = 10.3 <= 12.0
+    fsm.step(tracker.update(_snap(10.5, x=633, y=1819, fw=1024, fh=768)))  # dist = 6.3 <= 12.0
     assert fsm.state == BotState.SEARCH_MOB
 
     # Verify RETURN_TO_CENTER 6.0s timeout also returns cleanly to SEARCH_MOB
     fsm.transition(BotState.RETURN_TO_CENTER, 20.0, "test_rtc_timeout")
-    fsm.step(tracker.update(_snap(26.2, x=630, y=1845, fw=1024, fh=768)))
+    fsm.step(tracker.update(_snap(26.2, x=665, y=1817, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
 
 
 def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_overlay():
-    """Verify Yolo11nOnnxDetector with mock ONNX session (1, 8, 8400):
-    - Letterbox 1024x768 -> 640x640, NMS (conf=0.45, iou=0.45), coordinate un-mapping
-    - Spatial filters: SELF box (472..552, 350..432), HUD/chat (x>=442, y>=518, minimap, HP/MP, skill bar)
-    - Class 3 dead_rustler ignored as attack target (overlay-only dead_corpses)
-    - Anti-KS <= 240px from class 2 player & external_combat_zones rejects gold_rustler & gold_bag
+    """Verify 3-class Yolo11nOnnxDetector with mock ONNX session (1, 7, 3549) at 416x416:
+    - Letterbox 1024x768 -> 416x416, NMS (conf=0.45, iou=0.45), coordinate un-mapping
+    - Spatial filters: SELF box (472..552, 350..432), right HUD (x>=935), chat HUD (x>=442, y>=518)
+    - Anti-KS: player_conf>=0.65, ignore player <90px from SELF, require 2 consecutive frames
     - Hard-gate: ZERO YOLO inference calls during COMBAT_WAIT and RETURN_TO_CENTER
     - Fallback to OpenCV-Gold when ONNX model file is missing
-    - Overlay displays YOLO class labels + confidence scores
+    - Overlay displays 3-class YOLO labels + confidence scores (no dead_rustler)
     """
+    import cv2
     import numpy as np
     from vikings_bot.capture.screen import FramePacket
     from vikings_bot.debug_overlay import build_overlay_frame_data, draw_overlay_scene
     from vikings_bot.perception.pipeline import PerceptionPipeline
     from vikings_bot.perception.yolo_detector import (
-        CLS_DEAD_RUSTLER,
         CLS_GOLD_BAG,
         CLS_GOLD_RUSTLER,
         CLS_PLAYER,
@@ -1596,12 +1603,17 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     cfg = load_config("config/default.yaml")
     assert cfg.perception["yolo_enabled"] is True
     assert cfg.perception["yolo_model_path"] == "models/yolo11n_ryl.onnx"
-    assert int(cfg.perception["yolo_imgsz"]) == 640
+    assert int(cfg.perception["yolo_imgsz"]) == 416
     assert float(cfg.perception["yolo_conf_threshold"]) == 0.45
+    assert float(cfg.perception["player_conf_threshold"]) == 0.65
     assert float(cfg.perception["gold_bag_conf_threshold"]) == 0.20
     assert cfg.perception["loot_tiled_enabled"] is True
     assert float(cfg.perception["loot_tiled_gold_bag_conf_threshold"]) == 0.20
-    assert float(cfg.perception["dead_rustler_conf_threshold"]) == 0.35
+    assert int(cfg.perception["loot_bag_max_size_px"]) == 65
+    assert cfg.perception["loot_color_filter_enabled"] is True
+    assert int(cfg.perception["anti_ks_player_self_ignore_radius_px"]) == 90
+    assert int(cfg.perception["anti_ks_player_confirm_frames"]) == 2
+    assert "dead_rustler_conf_threshold" not in cfg.perception
     # Test single-frame path here; 3-crop tiled path is verified in test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase
     cfg.perception["loot_tiled_enabled"] = False
     assert float(cfg.perception["yolo_click_y_ratio"]) == 0.68
@@ -1609,31 +1621,32 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert int(cfg.perception["yolo_intra_op_threads"]) == 2
     assert float(cfg.perception["paused_yolo_preview_hz"]) == 2.5
     assert cfg.perception["anti_ks_use_hsv_damage"] is False
-    assert float(cfg.perception["anti_ks_player_min_conf"]) == 0.50
+    assert float(cfg.perception["anti_ks_player_min_conf"]) == 0.65
     assert float(cfg.farming["combat_min_lock_hold_sec"]) == 2.0
     assert float(cfg.farming["engage_click_hold_sec"]) == 0.12
     assert cfg.farming["engage_skill_key"] == "1"
     assert float(cfg.farming["return_center_min_drift_units"]) == 35.0
     assert float(cfg.farming["loot_min_window_sec"]) == 2.5
 
-    # Helper: map original 1024x768 xywh -> 640x640 letterbox xywh
-    # Draw bright orange HSV-damage-like patch at (755, 285) right next to safe gold_rustler -> MUST NOT cause KS:DMG!
-    import cv2
-
+    # Paint warm golden-orange patches at valid gold_bag coordinates + bright orange HSV patch near safe mob
     blank = np.full((768, 1024, 3), 40, dtype=np.uint8)
     blank[275:295, 750:764] = cv2.cvtColor(np.full((20, 14, 3), (20, 220, 230), dtype=np.uint8), cv2.COLOR_HSV2BGR)
-    blob_chk, r_lb, pad_x, pad_y = letterbox_bgr(blank, new_shape=640)
-    assert blob_chk.shape == (1, 3, 640, 640)
+    gold_px = cv2.cvtColor(np.full((24, 24, 3), (20, 180, 195), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    for gx, gy in ((630, 380), (660, 390), (600, 250)):
+        blank[gy - 12 : gy + 12, gx - 12 : gx + 12] = gold_px
+
+    blob_chk, r_lb, pad_x, pad_y = letterbox_bgr(blank, new_shape=416)
+    assert blob_chk.shape == (1, 3, 416, 416)
     assert blob_chk.dtype == np.float32
     assert 0.0 <= float(blob_chk.min()) <= float(blob_chk.max()) <= 1.0
 
     def _to_lb(ox: float, oy: float, ow: float, oh: float) -> tuple[float, float, float, float]:
         return (ox * r_lb + pad_x, oy * r_lb + pad_y, ow * r_lb, oh * r_lb)
 
-    # Build (1, 8, 8400) mock output tensor
-    tensor = np.zeros((1, 8, 8400), dtype=np.float32)
+    # Build 3-class (1, 7, 3549) mock output tensor
+    tensor = np.zeros((1, 7, 3549), dtype=np.float32)
     entries = [
-        # 0: Safe gold_rustler at (760, 290) (far from player at 200, 300 -> dist=560 > 240; orange HSV patch ignored!)
+        # 0: Safe gold_rustler at (760, 290) (far from player at 200, 300 -> dist=560 > 240)
         (CLS_GOLD_RUSTLER, 0.88, 760, 290, 72, 92),
         # 1: Duplicate overlapping gold_rustler at (764, 292) lower conf -> suppressed by NMS!
         (CLS_GOLD_RUSTLER, 0.62, 764, 292, 70, 90),
@@ -1643,23 +1656,25 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
         (CLS_GOLD_RUSTLER, 0.91, 510, 390, 60, 70),
         # 4: gold_rustler inside chat HUD (600, 620) -> filtered out!
         (CLS_GOLD_RUSTLER, 0.93, 600, 620, 64, 80),
-        # 5: gold_rustler near high-conf player (280, 310, dist=80.6 <= 240) -> Anti-KS contested!
+        # 5: gold_rustler inside right HUD (965, 370, x >= 935) -> filtered out!
+        (CLS_GOLD_RUSTLER, 0.95, 965, 370, 50, 70),
+        # 6: gold_rustler near high-conf player (280, 310, dist=80.6 <= 240) -> Anti-KS contested on frame 2!
         (CLS_GOLD_RUSTLER, 0.84, 280, 310, 68, 86),
-        # 6: High-conf player at (200, 300) (conf=0.82 >= 0.50 -> active Anti-KS!)
+        # 7: High-conf player at (200, 300) (conf=0.82 >= 0.65 -> active Anti-KS after 2 consecutive frames!)
         (CLS_PLAYER, 0.82, 200, 300, 56, 88),
-        # 7: Low-conf player at (860, 300) (conf=0.47 < 0.50, dist=100<=240 -> MUST NOT trigger Anti-KS on safe gold_rustler at 760,290!)
-        (CLS_PLAYER, 0.47, 860, 300, 50, 80),
-        # 8: dead_rustler at (620, 340) with conf=0.38 (>= 0.35 dead_rustler_conf_threshold) -> overlay dead_corpses only!
-        (CLS_DEAD_RUSTLER, 0.38, 620, 340, 82, 48),
-        # 9: Safe gold_bag at (630, 380) (conf=0.90)
+        # 8: Self-misclassified player at (520, 390) (< 90px from 512,384) -> IGNORED!
+        (CLS_PLAYER, 0.92, 520, 390, 52, 84),
+        # 9: Sub-threshold player at (860, 300) (conf=0.58 < 0.65) -> MUST NOT trigger Anti-KS!
+        (CLS_PLAYER, 0.58, 860, 300, 50, 80),
+        # 10: Safe gold_bag at (630, 380) (conf=0.90)
         (CLS_GOLD_BAG, 0.90, 630, 380, 22, 20),
-        # 10: Small gold_bag at (660, 390) with conf=0.27 (>= 0.25 gold_bag_conf_threshold, < 0.45!) -> MUST BE DETECTED!
+        # 11: Small gold_bag at (660, 390) with conf=0.27 (>= 0.20) -> MUST BE DETECTED!
         (CLS_GOLD_BAG, 0.27, 660, 390, 14, 14),
-        # 11: Far gold_bag at (900, 200) (dist from 512,384 = 429 > 310) -> rejected in LOOT!
+        # 12: Far gold_bag at (900, 200) (dist from 512,384 = 429 > 320) -> rejected in LOOT!
         (CLS_GOLD_BAG, 0.87, 900, 200, 20, 18),
-        # 12: Anti-KS gold_bag near high-conf player at (250, 350, dist to player=70.7 <= 240) -> rejected!
+        # 13: Anti-KS gold_bag near high-conf player at (250, 350, dist to player=70.7 <= 240) -> rejected!
         (CLS_GOLD_BAG, 0.85, 250, 350, 20, 18),
-        # 13: gold_bag near external_combat_zone at (600, 250) (far from player, dist=403>240) -> NOT rejected because anti_ks_use_hsv_damage=False!
+        # 14: gold_bag near external_combat_zone at (600, 250) -> NOT rejected (anti_ks_use_hsv_damage=False)!
         (CLS_GOLD_BAG, 0.86, 600, 250, 20, 18),
     ]
     for idx, (cid, conf, ox, oy, ow, oh) in enumerate(entries):
@@ -1676,7 +1691,7 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
             self.shape = shape
 
     class _MockOrtSession:
-        def __init__(self, out_arr: np.ndarray, imgsz: int = 640) -> None:
+        def __init__(self, out_arr: np.ndarray, imgsz: int = 416) -> None:
             self.out_arr = out_arr
             self.imgsz = imgsz
             self.calls = 0
@@ -1692,34 +1707,46 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
             assert "images" in feed_dict and feed_dict["images"].shape == (1, 3, self.imgsz, self.imgsz)
             return [self.out_arr]
 
-    mock_sess = _MockOrtSession(tensor)
+    mock_sess = _MockOrtSession(tensor, imgsz=416)
     pipe = PerceptionPipeline(cfg, yolo_session_override=mock_sess)
     assert pipe.active_backend_desc == "YOLO11n-ONNX"
 
     pkt = FramePacket(image_bgr=blank, timestamp=1.0)
 
-    # 1. SCAN_SPOT (SEARCH_MOB): 1 safe gold_rustler, 1 contested (near player), 1 player, 1 dead_rustler, 0 loot
+    # 1a. Frame 1 in SCAN_SPOT: player seen once (< 2 confirm frames) -> Anti-KS not yet triggered (2 mobs visible, right-HUD excluded)
+    snap_f1 = pipe.analyze(pkt, current_state=BotState.SEARCH_MOB, check_interface_mode=False)
+    assert len(snap_f1.mobs) == 2 and len(snap_f1.contested_mobs) == 0
+    assert all(m.click_x < 935 for m in snap_f1.mobs)
+
+    # 1b. Frame 2 in SCAN_SPOT: 2nd consecutive frame with player at (200, 300) -> Anti-KS active!
     snap_scan = pipe.analyze(
         pkt,
         current_state=BotState.SEARCH_MOB,
         check_interface_mode=False,
         external_combat_zones=((415.0, 255.0),),
     )
-    assert mock_sess.calls == 1
+    assert mock_sess.calls == 2
     assert snap_scan.detector_backend == "YOLO11n-ONNX"
     assert len(snap_scan.mobs) == 1
     assert abs(snap_scan.mobs[0].click_x - 760) <= 3
-    # Verify hitbox click_y = y1 + 0.68 * (y2 - y1)
     mb = snap_scan.mobs[0].body_bbox
     expected_cy = int(round(mb[1] + 0.68 * (mb[3] - mb[1])))
     assert abs(snap_scan.mobs[0].click_y - expected_cy) <= 1
     assert snap_scan.mobs[0].class_name == "gold_rustler"
+    assert abs(snap_scan.mobs[0].confidence - 0.88) < 1e-4
+    assert len(snap_scan.contested_mobs) == 1 and "KS:PLAYER" in snap_scan.contested_mobs[0].contest_reason
+    assert all("KS:DMG" not in m.contest_reason for m in snap_scan.contested_mobs)
+    assert snap_scan.external_damage_points == ()
+    assert len(snap_scan.other_players) == 1
+    assert len(snap_scan.other_player_boxes) == 1  # self-clone (<90px) & 0.58 (<0.65) excluded
+    assert snap_scan.dead_corpses == ()
+    assert snap_scan.loot == ()
 
-    # 1b. PAUSED preview runs YOLO for gold_rustler/player/dead_rustler (loot stays OFF)
+    # 1c. PAUSED preview runs YOLO for gold_rustler/player (loot stays OFF)
     snap_paused = pipe.analyze(pkt, current_state=BotState.PAUSED, check_interface_mode=False)
     assert len(snap_paused.mobs) == 1 and snap_paused.loot == ()
 
-    # 1c. ENGAGE_MOB sends 120ms click-hold + confirm click + skill '1'
+    # 1d. ENGAGE_MOB sends 120ms click-hold + confirm click + skill '1'
     tracker_e = WorldStateTracker()
     fsm_e = FarmingFSM(cfg, tracker_e, mode=BotMode.FULL)
     fsm_e.farm.auto_daylight_weather = False
@@ -1729,14 +1756,6 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert fsm_e.state == BotState.COMBAT_WAIT
     assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.12) < 1e-4 for a in acts_eng_e)
     assert any(isinstance(a, TapKeyIntent) and a.key == "1" for a in acts_eng_e)
-    assert abs(snap_scan.mobs[0].confidence - 0.88) < 1e-4
-    assert len(snap_scan.contested_mobs) == 1 and "KS:PLAYER" in snap_scan.contested_mobs[0].contest_reason
-    assert all("KS:DMG" not in m.contest_reason for m in snap_scan.contested_mobs)
-    assert snap_scan.external_damage_points == ()
-    assert len(snap_scan.other_players) == 1
-    assert len(snap_scan.other_player_boxes) == 2
-    assert len(snap_scan.dead_corpses) == 1
-    assert snap_scan.loot == ()
 
     # 2. COMBAT_WAIT & RETURN_TO_CENTER: HARD-GATE -> ZERO YOLO inference calls!
     calls_before_gate = mock_sess.calls
@@ -1746,8 +1765,7 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert snap_cw.mobs == () and snap_cw.loot == () and snap_cw.dead_corpses == ()
     assert snap_rtc.mobs == () and snap_rtc.loot == () and snap_rtc.dead_corpses == ()
 
-    # 3. LOOT (<= 310px): 3 safe gold_bags (0.90 at 630,380; small 0.35 at 660,390; 0.86 at 600,250);
-    #    far (>310px) & player-KS (<=240px from conf>=0.50 player) bags rejected; 0 mobs
+    # 3. LOOT (<= 320px): 3 safe gold_bags (0.90 at 630,380; 0.27 at 660,390; 0.86 at 600,250)
     snap_loot = pipe.analyze(
         pkt,
         current_state=BotState.LOOT,
@@ -1761,43 +1779,53 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     assert any(abs(b.click_x - 660) <= 3 and b.class_name == "gold_bag" and abs(b.score - 0.27) < 1e-4 for b in snap_loot.loot)
     assert any(abs(b.click_x - 600) <= 3 and b.class_name == "gold_bag" for b in snap_loot.loot)
 
-    # 3b. Dynamic 416x416 ONNX input shape auto-sync (no hardcoded 640!)
-    tensor_416 = np.zeros((1, 8, 3549), dtype=np.float32)
-    mock_416 = _MockOrtSession(tensor_416, imgsz=416)
-    det_416 = Yolo11nOnnxDetector(cfg, session_override=mock_416)
-    assert det_416.imgsz_h == 416 and det_416.imgsz_w == 416
-    det_416.detect(blank)
-    assert mock_416.calls == 1
+    # 3b. Dynamic 640x640 ONNX input shape auto-sync also supported
+    tensor_640 = np.zeros((1, 7, 8400), dtype=np.float32)
+    mock_640 = _MockOrtSession(tensor_640, imgsz=640)
+    det_640 = Yolo11nOnnxDetector(cfg, session_override=mock_640)
+    assert det_640.imgsz_h == 640 and det_640.imgsz_w == 640
+    det_640.detect(blank)
+    assert mock_640.calls == 1
 
-    # 3c. Mandatory LOOT with GOLD=0 runs 3-step fallback sweep (corpse -> -85 -> +85 -> rescan) then exits to SEARCH_MOB when <=35u!
+    # 3c. Mandatory LOOT with GOLD=0 uses last_kill_screen_xy -> -85 -> +85 -> rescan then exits to SEARCH_MOB when <=35u!
     tracker_l = WorldStateTracker()
     fsm_l = FarmingFSM(cfg, tracker_l, mode=BotMode.FULL)
     fsm_l.resume(1.0, ensure_mouse_mode=False)
+    tracker_l._last_kill_pos = (620, 340)
+    fsm_l._combat_click_xy = (620, 340)
     fsm_l.transition(BotState.LOOT, 10.0, "post_kill_zero_gold")
     w_dead = tracker_l.update(
         PerceptionSnapshot(
             timestamp=10.1, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
-            coords=CoordReading(x=598, y=1835, confidence=0.98), minimap=MinimapReading(),
-            loot=(), dead_corpses=((579, 316, 661, 364),),
+            coords=CoordReading(x=632, y=1819, confidence=0.98), minimap=MinimapReading(),
+            loot=(),
         )
     )
     acts_s0 = fsm_l.step(w_dead)
     assert fsm_l.state == BotState.LOOT
-    assert any(isinstance(a, ClickScreenIntent) and a.x == 620 and a.y == 340 and "dead_rustler" in a.reason for a in acts_s0)
+    assert any(
+        isinstance(a, ClickScreenIntent)
+        and a.x == 620
+        and a.y == 340
+        and "kill_pos" in a.reason
+        and abs(a.hold_sec - 0.10) < 1e-4
+        and abs(a.pause_e_spam_sec - 0.12) < 1e-4
+        for a in acts_s0
+    )
     # 0.75s later -> Stage 1: (-85, 0) from (512, 384) = (427, 384)
-    acts_s1 = fsm_l.step(tracker_l.update(_snap(10.9, x=598, y=1835, fw=1024, fh=768, loot=())))
+    acts_s1 = fsm_l.step(tracker_l.update(_snap(10.9, x=632, y=1819, fw=1024, fh=768, loot=())))
     assert fsm_l.state == BotState.LOOT
     assert any(isinstance(a, ClickScreenIntent) and a.x == 427 and a.y == 384 and "sweep_left" in a.reason for a in acts_s1)
     # 0.75s later -> Stage 2: (+85, 0) from (512, 384) = (597, 384)
-    acts_s2 = fsm_l.step(tracker_l.update(_snap(11.7, x=598, y=1835, fw=1024, fh=768, loot=())))
+    acts_s2 = fsm_l.step(tracker_l.update(_snap(11.7, x=632, y=1819, fw=1024, fh=768, loot=())))
     assert fsm_l.state == BotState.LOOT
     assert any(isinstance(a, ClickScreenIntent) and a.x == 597 and a.y == 384 and "sweep_right" in a.reason for a in acts_s2)
-    # 0.75s later -> Stage 3 rescan completes -> exits straight to SEARCH_MOB (dist=5u <= 35u)!
-    fsm_l.step(tracker_l.update(_snap(12.5, x=598, y=1835, fw=1024, fh=768, loot=())))
-    fsm_l.step(tracker_l.update(_snap(12.7, x=598, y=1835, fw=1024, fh=768, loot=())))
+    # 0.75s later -> Stage 3 rescan completes -> exits straight to SEARCH_MOB (dist=5.4u <= 35u)!
+    fsm_l.step(tracker_l.update(_snap(12.5, x=632, y=1819, fw=1024, fh=768, loot=())))
+    fsm_l.step(tracker_l.update(_snap(12.7, x=632, y=1819, fw=1024, fh=768, loot=())))
     assert fsm_l.state == BotState.SEARCH_MOB
 
-    # 4. Overlay displays YOLO class names + confidence scores
+    # 4. Overlay displays 3-class YOLO labels + confidence scores (no dead_rustler)
     tracker = WorldStateTracker()
     world_scan = tracker.update(snap_scan)
     ov_data = build_overlay_frame_data(
@@ -1829,7 +1857,7 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
     draw_overlay_scene(_FakeCanvas(), ov_data)
     assert any("gold_rustler 0.88" in t for t in drawn_texts), f"Missing gold_rustler conf label: {drawn_texts}"
     assert any("player 0.82" in t for t in drawn_texts), f"Missing player conf label: {drawn_texts}"
-    assert any("dead_rustler 0.38" in t for t in drawn_texts), f"Missing dead_rustler conf label: {drawn_texts}"
+    assert not any("dead_rustler" in t for t in drawn_texts)
 
     cv_ov = DebugOverlay(cfg).render(pkt, world_scan, BotState.SEARCH_MOB)
     assert cv_ov.shape == (768, 1024, 3)
@@ -1844,15 +1872,15 @@ def test_yolo11n_onnx_detector_mock_session_filters_hard_gates_fallback_and_over
 
 
 def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
-    """Verify 3-crop 512x512 overlapping tiled LOOT detection (y=140..652), full-frame coordinate mapping,
-    class-wise NMS (iou=0.45), conf=0.22, SELF/HUD/Anti-KS filtering, overlay rendering, and FSM chase
-    (8.0s max, 24x24 grid, 1.4s move timeout, 0.8s empty exit, dead_rustler 1x click)."""
+    """Verify 3-crop 512x512 overlapping tiled LOOT detection (y=140..652), 3-class (1, 7, 3549) at 416x416,
+    class-wise NMS (iou=0.45), conf=0.20, max box size 65x65px, white-item HSV rejection, 2-frame Anti-KS,
+    120ms E-pause + 100ms hold, and FSM chase (8.0s max, 24x24 grid, 1.2s move timeout, 0.8s empty exit)."""
+    import cv2
     import numpy as np
     from vikings_bot.capture.screen import FramePacket
     from vikings_bot.debug_overlay import build_overlay_frame_data, draw_overlay_scene
     from vikings_bot.perception.pipeline import PerceptionPipeline
     from vikings_bot.perception.yolo_detector import (
-        CLS_DEAD_RUSTLER,
         CLS_GOLD_BAG,
         CLS_PLAYER,
         letterbox_bgr,
@@ -1861,20 +1889,20 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
     cfg = load_config("config/default.yaml")
     assert cfg.perception["loot_tiled_enabled"] is True
     assert float(cfg.perception["loot_tiled_gold_bag_conf_threshold"]) == 0.20
-    assert float(cfg.farming["post_kill_loot_window_sec"]) == 7.5
+    assert float(cfg.farming["post_kill_loot_window_sec"]) == 8.0
     assert int(cfg.farming["loot_attempt_grid_px"]) == 24
     assert float(cfg.farming["loot_empty_exit_sec"]) == 0.8
     assert float(cfg.farming["loot_target_move_timeout_sec"]) == 1.2
     assert float(cfg.farming["loot_fallback_step_interval_sec"]) == 0.75
     assert int(cfg.farming["loot_fallback_sweep_offset_px"]) == 85
 
-    # 512x512 tile -> 640x640 letterbox ratio = 640 / 512 = 1.25, pad = 0
+    # 512x512 tile -> 416x416 letterbox ratio = 416 / 512 = 0.8125, pad = 0
     tile_dummy = np.zeros((512, 512, 3), dtype=np.uint8)
-    _b, r_tile, px_tile, py_tile = letterbox_bgr(tile_dummy, new_shape=640)
-    assert abs(r_tile - 1.25) < 1e-4 and px_tile == 0.0 and py_tile == 0.0
+    _b, r_tile, px_tile, py_tile = letterbox_bgr(tile_dummy, new_shape=416)
+    assert abs(r_tile - 0.8125) < 1e-4 and px_tile == 0.0 and py_tile == 0.0
 
     def _tile_tensor(items: list[tuple[int, float, float, float, float, float]]) -> np.ndarray:
-        arr = np.zeros((1, 8, 8400), dtype=np.float32)
+        arr = np.zeros((1, 7, 3549), dtype=np.float32)
         for i, (cid, conf, tx, ty, tw, th) in enumerate(items):
             arr[0, 0, i] = tx * r_tile + px_tile
             arr[0, 1, i] = ty * r_tile + py_tile
@@ -1884,9 +1912,9 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
         return arr
 
     # Tile 0 (Left: x=0..512, y=140..652):
-    #   - Overlapping gold_bag at full (430, 360) -> tile (430, 220), conf=0.60 (dist to player 150,340 = 281 > 240)
-    #   - Player at full (150, 340) -> tile (150, 200), conf=0.85
-    #   - Anti-KS gold_bag near player at full (210, 350) -> tile (210, 210), conf=0.80 (dist to player=61 <= 240 -> rejected!)
+    #   - Overlapping gold_bag at full (430, 360) -> tile (430, 220), conf=0.60
+    #   - Player at full (150, 340) -> tile (150, 200), conf=0.85 (>= 0.65)
+    #   - Anti-KS gold_bag near player at full (210, 350) -> tile (210, 210), conf=0.80 (rejected on 2nd frame!)
     t_left = _tile_tensor(
         [
             (CLS_GOLD_BAG, 0.60, 430, 220, 20, 18),
@@ -1895,20 +1923,22 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
         ]
     )
     # Tile 1 (Center: x=256..768, y=140..652):
-    #   - Same overlapping gold_bag at full (432, 360) -> tile (176, 220), conf=0.88 (higher conf -> wins NMS!)
-    #   - SELF gold_bag at full (512, 390) -> tile (256, 250), conf=0.92 (rejected by SELF box!)
-    #   - HUD chat gold_bag at full (600, 580) -> tile (344, 440), conf=0.91 (rejected by HUD/chat!)
-    #   - dead_rustler at full (620, 340) -> tile (364, 200), conf=0.42
+    #   - Same overlapping gold_bag at full (432, 360) -> tile (176, 220), conf=0.88 (wins NMS!)
+    #   - SELF gold_bag at full (512, 390) -> rejected by SELF box!
+    #   - HUD chat gold_bag at full (600, 580) -> rejected by HUD/chat!
+    #   - Oversized gold_bag (74x74 > 65px) at full (670, 340) -> tile (414, 200) -> REJECTED!
+    #   - White/silver non-gold item at full (720, 340) -> tile (464, 200) -> REJECTED by warm color filter!
     t_center = _tile_tensor(
         [
             (CLS_GOLD_BAG, 0.88, 176, 220, 20, 18),
             (CLS_GOLD_BAG, 0.92, 256, 250, 18, 18),
             (CLS_GOLD_BAG, 0.91, 344, 440, 20, 18),
-            (CLS_DEAD_RUSTLER, 0.42, 364, 200, 76, 48),
+            (CLS_GOLD_BAG, 0.90, 414, 200, 74, 74),
+            (CLS_GOLD_BAG, 0.86, 464, 200, 20, 18),
         ]
     )
     # Tile 2 (Right: x=512..1024, y=140..652):
-    #   - Desynced far-right gold_bag at full (880, 380) -> tile (368, 240), conf=0.21 (>= 0.20 threshold -> MUST BE DETECTED!)
+    #   - Desynced far-right gold_bag at full (880, 380) -> tile (368, 240), conf=0.21 (>= 0.20 -> MUST BE DETECTED!)
     t_right = _tile_tensor([(CLS_GOLD_BAG, 0.21, 368, 240, 16, 16)])
 
     class _Io:
@@ -1922,13 +1952,13 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
             self.calls = 0
 
         def get_inputs(self):
-            return [_Io("images", [1, 3, 640, 640])]
+            return [_Io("images", [1, 3, 416, 416])]
 
         def get_outputs(self):
-            return [_Io("output0", [1, 8, 8400])]
+            return [_Io("output0", [1, 7, 3549])]
 
         def run(self, _out_names, feed_dict):
-            assert feed_dict["images"].shape == (1, 3, 640, 640)
+            assert feed_dict["images"].shape == (1, 3, 416, 416)
             out = self.outputs[self.calls % 3]
             self.calls += 1
             return [out]
@@ -1936,17 +1966,22 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
     sess = _TiledMockSession()
     pipe = PerceptionPipeline(cfg, yolo_session_override=sess)
     blank = np.full((768, 1024, 3), 40, dtype=np.uint8)
+    gold_px = cv2.cvtColor(np.full((24, 24, 3), (20, 180, 195), dtype=np.uint8), cv2.COLOR_HSV2BGR)
+    for gx, gy in ((432, 360), (210, 350), (670, 340), (880, 380)):
+        blank[gy - 12 : gy + 12, gx - 12 : gx + 12] = gold_px
+    # Bright white/silver item at (720, 340) -> low saturation, must be rejected!
+    blank[330:350, 710:730] = (242, 242, 242)
     pkt = FramePacket(image_bgr=blank, timestamp=1.0)
 
+    # Call 1 (player frame 1) + Call 2 (player confirmed for 2 consecutive frames -> Anti-KS rejects (210, 350)!)
+    pipe.analyze(pkt, current_state=BotState.LOOT, check_interface_mode=False)
     snap_loot = pipe.analyze(pkt, current_state=BotState.LOOT, check_interface_mode=False)
-    assert sess.calls == 3, f"Expected exactly 3 tiled ONNX calls in LOOT, got {sess.calls}"
+    assert sess.calls == 6, f"Expected 3 tiled ONNX calls per LOOT frame (6 total), got {sess.calls}"
     assert snap_loot.mobs == ()
-    assert len(snap_loot.loot) == 2, f"Expected 2 merged unique gold_bags (NMS + SELF/HUD/Anti-KS), got {snap_loot.loot}"
-    # Bag #1: merged overlap at ~(432, 360) with winning conf=0.88 (closest to 512,384)
+    assert snap_loot.dead_corpses == ()
+    assert len(snap_loot.loot) == 2, f"Expected 2 unique valid gold_bags (NMS + 65px + warm color + Anti-KS), got {snap_loot.loot}"
     assert abs(snap_loot.loot[0].click_x - 432) <= 3 and abs(snap_loot.loot[0].score - 0.88) < 1e-4
-    # Bag #2: desynced far-right at ~(880, 380) with conf=0.21 (>= 0.20)
     assert abs(snap_loot.loot[1].click_x - 880) <= 3 and abs(snap_loot.loot[1].score - 0.21) < 1e-4
-    assert len(snap_loot.dead_corpses) == 1
 
     # Verify overlay renders tiled gold_bag boxes + conf scores during LOOT
     tracker = WorldStateTracker()
@@ -1971,14 +2006,20 @@ def test_yolo11n_detect_loot_tiled_3_crops_merge_nms_and_fsm_chase():
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
     fsm.resume(1.0, ensure_mouse_mode=False)
     fsm.transition(BotState.LOOT, 10.0, "test_tiled_chase")
-    # Tick 1: clicks nearest bag (432, 360)
-    acts1 = fsm.step(tracker.update(_snap(10.1, x=640, y=1840, fw=1024, fh=768, loot=snap_loot.loot)))
-    assert any(isinstance(a, ClickScreenIntent) and abs(a.x - 432) <= 3 for a in acts1)
+    # Tick 1: clicks nearest bag (432, 360) with 100ms hold + 120ms E-pause
+    acts1 = fsm.step(tracker.update(_snap(10.1, x=668, y=1817, fw=1024, fh=768, loot=snap_loot.loot)))
+    assert any(
+        isinstance(a, ClickScreenIntent)
+        and abs(a.x - 432) <= 3
+        and abs(a.hold_sec - 0.10) < 1e-4
+        and abs(a.pause_e_spam_sec - 0.12) < 1e-4
+        for a in acts1
+    )
     # After 1.2s moving toward (432, 360) -> grid force-marked visited -> immediately clicks next bag (880, 380)!
-    acts2 = fsm.step(tracker.update(_snap(11.4, x=640, y=1840, fw=1024, fh=768, loot=snap_loot.loot)))
+    acts2 = fsm.step(tracker.update(_snap(11.4, x=668, y=1817, fw=1024, fh=768, loot=snap_loot.loot)))
     assert any(isinstance(a, ClickScreenIntent) and abs(a.x - 880) <= 3 for a in acts2)
-    # Bags cleared for >=0.8s (past 2.5s min) -> exits to RETURN_TO_CENTER (dist=46.7 > 35u)!
-    fsm.step(tracker.update(_snap(12.2, x=640, y=1840, fw=1024, fh=768, loot=())))
+    # Bags cleared for >=0.8s (past 2.5s min) -> exits to RETURN_TO_CENTER (dist=41.0 > 35u)!
+    fsm.step(tracker.update(_snap(12.2, x=668, y=1817, fw=1024, fh=768, loot=())))
     assert fsm.state == BotState.LOOT
-    fsm.step(tracker.update(_snap(13.1, x=640, y=1840, fw=1024, fh=768, loot=())))
+    fsm.step(tracker.update(_snap(13.1, x=668, y=1817, fw=1024, fh=768, loot=())))
     assert fsm.state == BotState.RETURN_TO_CENTER

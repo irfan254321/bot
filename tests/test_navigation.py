@@ -91,7 +91,7 @@ def test_navigator_steps_toward_spot_and_detects_arrival():
     assert len(m_intents) == 1 and isinstance(m_intents[0], ClickScreenIntent)
     assert not nav_m.is_arrived(ws_m.coords_smoothed)
 
-    ws_near_m = tracker_m.update(_make_snapshot(2.0, 616, 1832))
+    ws_near_m = tracker_m.update(_make_snapshot(2.0, 626, 1818))
     assert nav_m.is_arrived(ws_near_m.coords_smoothed)
     assert nav_m.step_to_waypoint(ws_near_m, 2.0) == []
 
@@ -103,7 +103,7 @@ def test_navigator_steps_toward_spot_and_detects_arrival():
     ws_far = tracker.update(_make_snapshot(1.0, 580, 1795))
     intents = nav.step_to_waypoint(ws_far, 1.0)
     assert any(isinstance(i, (HoldKeyIntent, MoveMouseRelIntent)) for i in intents)
-    ws_near = tracker.update(_make_snapshot(2.0, 616, 1832))
+    ws_near = tracker.update(_make_snapshot(2.0, 626, 1818))
     arr_intents = nav.step_to_waypoint(ws_near, 2.0)
     assert all(isinstance(i, HoldKeyIntent) and not i.hold for i in arr_intents)
 

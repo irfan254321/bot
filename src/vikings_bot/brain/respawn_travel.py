@@ -45,17 +45,17 @@ class RespawnTravelController:
         self.city_spawn = Point2D(float(cs[0]), float(cs[1]))
         self.city_radius = float(rt.get("city_radius", 55.0))
 
-        npc = rt.get("npc_stand_coord", [1060.0, 2626.0])
+        npc = rt.get("addon_teleport_coord", rt.get("npc_stand_coord", [1066.0, 2627.0]))
         self.npc_stand = Point2D(float(npc[0]), float(npc[1]))
-        self.npc_arrival_radius = float(rt.get("npc_arrival_radius", 6.0))
+        self.npc_arrival_radius = float(rt.get("npc_arrival_radius", 4.5))
 
-        ak = rt.get("addon_keep_landing", [1409.0, 1779.0])
+        ak = rt.get("addon_keep_landing", [1409.0, 1773.0])
         self.addon_keep_landing = Point2D(float(ak[0]), float(ak[1]))
         self.addon_keep_radius = float(rt.get("addon_keep_radius", 75.0))
 
         self.npc_body_offset_y_px = float(rt.get("npc_body_offset_y_px", 38.0))
-        self.cursor_toggle_key = str(rt.get("cursor_toggle_key", "esc"))
-        self.cursor_fallback_key = str(rt.get("cursor_fallback_key", "tab"))
+        self.cursor_toggle_key = str(rt.get("cursor_toggle_key", "tab"))
+        self.cursor_fallback_key = str(rt.get("cursor_fallback_key", "esc"))
         self.mode_toggle_key = str(rt.get("mode_toggle_key", "esc"))
         self.respawn_auto_wait_sec = float(rt.get("respawn_auto_wait_sec", 1.5))
         self.respawn_fallback_key = str(rt.get("respawn_fallback_key", "space"))
@@ -103,8 +103,9 @@ class RespawnTravelController:
         self.suicide_wait_sec: float = float(rep.get("suicide_wait_sec", 18.0))
         self.suicide_retry_sec: float = float(rep.get("suicide_retry_sec", 22.0))
         self.npc_click_hold_sec: float = max(0.04, float(rep.get("npc_click_hold_sec", 0.10)))
-        self.close_dialog_with_esc: bool = bool(rep.get("close_dialog_with_esc", True))
-        ms_c = rep.get("merchant_stand_coord", [1094.0, 2643.0])
+        self.close_dialog_with_esc: bool = bool(rep.get("close_dialog_with_esc", False))
+        self.use_tab_cursor: bool = bool(rep.get("use_tab_cursor", True))
+        ms_c = rep.get("merchant_stand_coord", [1094.0, 2644.0])
         self.merchant_stand = Point2D(float(ms_c[0]), float(ms_c[1]))
         self.merchant_arrival_radius: float = float(rep.get("merchant_arrival_radius", 4.5))
         hub_c = rep.get("town_hub_waypoint", [1075.0, 2631.0])
@@ -171,6 +172,8 @@ class RespawnTravelController:
     def is_in_city(self, coords: Point2D | None) -> bool:
         if coords is None:
             return False
+        if coords.x >= 1000.0 and coords.y >= 2500.0:
+            return True
         return coords.distance_to(self.city_spawn) <= self.city_radius
 
     def is_near_addon_keep(self, coords: Point2D | None) -> bool:
@@ -698,6 +701,15 @@ class RespawnTravelController:
                 logger.info("Confirmed Repair '[Yes]' at (%d, %d)!", ycx, ycy)
                 return (intents, None, "")
 
+            # Branch 2: 'No equipment to repair.' message/dialog -> equipment already 100% repaired!
+            if world.snapshot.no_equipment_repair_bbox is not None:
+                self._repair_phase = "CLOSE_SHOP_INV"
+                self._repair_phase_ts = now
+                self._close_ui_attempts = 0
+                self.tracker.set_cooldown("repair_close_ui", now, 0.35)
+                logger.info("'No equipment to repair.' detected -> treating repair as complete & closing shop")
+                return (intents, None, "")
+
             if talk_ok is not None:
                 ox, oy, ow, oh = talk_ok
                 self._repair_phase = "CLOSE_SHOP_INV"
@@ -709,6 +721,7 @@ class RespawnTravelController:
                         x=ox + ow // 2,
                         y=oy + oh // 2,
                         button="left",
+                        hold_sec=self.npc_click_hold_sec,
                         reason="click_no_repair_needed_ok",
                         no_jitter=True,
                     )
@@ -994,7 +1007,9 @@ class RespawnTravelController:
                             x=click_x,
                             y=click_y,
                             button="left",
+                            hold_sec=self.npc_click_hold_sec,
                             reason=f"click_addon_keep_npc#{self._tele_click_attempts}",
+                            no_jitter=True,
                         )
                     )
                     self._tele_phase = "WAIT_MENU"
@@ -1056,6 +1071,7 @@ class RespawnTravelController:
                         x=tele_x,
                         y=tele_y,
                         button="left",
+                        hold_sec=self.npc_click_hold_sec,
                         reason="click_teleport_option",
                         no_jitter=True,
                     )

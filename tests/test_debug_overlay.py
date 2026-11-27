@@ -229,7 +229,7 @@ def test_build_overlay_frame_data_and_draw_banner_and_self_layers() -> None:
     assert "VIS: 4.2ms" in joined
     assert "POS: (1075,2631)" in joined
     assert "D:1 R:2" in joined
-    assert "Overlay [F6]: ON" in joined
+    assert "[F7]:Rep [F6]:OV" in joined
     assert "SELF" in joined
 
 

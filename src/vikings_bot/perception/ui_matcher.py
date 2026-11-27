@@ -26,6 +26,7 @@ class UiTemplateMatcher:
         self.trade_menu_thresh = float(rep.get("trade_menu_threshold", 0.62))
         self.repair_btn_thresh = float(rep.get("repair_btn_threshold", 0.72))
         self.repair_yes_thresh = float(rep.get("repair_yes_threshold", 0.72))
+        self.no_equip_repair_thresh = float(rep.get("no_equipment_repair_threshold", 0.70))
         self.inventory_tab_thresh = float(rep.get("inventory_tab_threshold", 0.74))
         self.hud_fixed_pixel_ui = bool(config.perception.get("hud_fixed_pixel_ui", False))
         p_roi = config.perception.get("interface_mode_roi", [0.12, 0.05, 0.88, 0.22])
@@ -60,6 +61,9 @@ class UiTemplateMatcher:
         repair_yes_path = config.resolve_path(
             str(rep.get("repair_yes_template", "assets/ui_templates/repair_yes_btn.png"))
         )
+        no_equip_path = config.resolve_path(
+            str(rep.get("no_equipment_repair_template", "assets/ui_templates/no_equipment_repair.png"))
+        )
         inv_tab_path = config.resolve_path(
             str(rep.get("inventory_tab_template", "assets/ui_templates/inventory_tab.png"))
         )
@@ -80,6 +84,11 @@ class UiTemplateMatcher:
         self.repair_yes_tmpl: np.ndarray | None = (
             cv2.imread(str(repair_yes_path), cv2.IMREAD_COLOR) if repair_yes_path.exists() else None
         )
+        self.no_equip_repair_tmpl: np.ndarray | None = (
+            cv2.imread(str(no_equip_path), cv2.IMREAD_COLOR) if no_equip_path.exists() else None
+        )
+        if self.no_equip_repair_tmpl is None:
+            logger.warning("Optional UI template 'no_equipment_repair' not found at %s (will rely on OK/timeout)", no_equip_path)
         self.inv_tab_tmpl: np.ndarray | None = (
             cv2.imread(str(inv_tab_path), cv2.IMREAD_COLOR) if inv_tab_path.exists() else None
         )
@@ -311,6 +320,19 @@ class UiTemplateMatcher:
             return None
         return (fx, fy, tw, th)
 
+    def find_no_equipment_repair(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
+        """Locate the 'No equipment to repair.' message/dialog after clicking 'Repair All'."""
+        if self.no_equip_repair_tmpl is None:
+            return None
+        return self._match_in_roi(
+            frame,
+            self.no_equip_repair_tmpl,
+            None,
+            roi_norm=(0.20, 0.25, 0.82, 0.78),
+            threshold=self.no_equip_repair_thresh,
+            template_name="no_equipment_repair",
+        )
+
     def find_inventory_tab(self, frame: FramePacket) -> tuple[int, int, int, int] | None:
         """Locate the 'Inventory | Skill' header tab of the open Inventory window."""
         return self._match_in_roi(
@@ -319,6 +341,7 @@ class UiTemplateMatcher:
             None,
             roi_norm=(0.45, 0.04, 1.00, 0.45),
             threshold=self.inventory_tab_thresh,
+            template_name="inventory_tab",
         )
 
     def find_npc_talk_dialog(self, frame: FramePacket) -> tuple[int, int, int, int] | None:

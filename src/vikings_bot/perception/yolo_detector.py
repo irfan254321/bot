@@ -1,4 +1,4 @@
-"""CPU-only YOLO11n ONNX Runtime detector for Vikings Bot v2 (4 classes: gold_rustler, gold_bag, player, dead_rustler)."""
+"""CPU-only YOLO11n ONNX Runtime detector for Vikings Bot v2 (3 classes: gold_rustler, gold_bag, player)."""
 
 from __future__ import annotations
 
@@ -19,13 +19,11 @@ logger = logging.getLogger(__name__)
 CLS_GOLD_RUSTLER = 0
 CLS_GOLD_BAG = 1
 CLS_PLAYER = 2
-CLS_DEAD_RUSTLER = 3
 
 YOLO_CLASS_NAMES: dict[int, str] = {
     CLS_GOLD_RUSTLER: "gold_rustler",
     CLS_GOLD_BAG: "gold_bag",
     CLS_PLAYER: "player",
-    CLS_DEAD_RUSTLER: "dead_rustler",
 }
 
 
@@ -49,7 +47,7 @@ class YoloRawDetection:
 
 @dataclass(frozen=True)
 class YoloDetectionResult:
-    """Structured perception output mapped from YOLO11n detections."""
+    """Structured perception output mapped from 3-class YOLO11n detections."""
 
     mobs: tuple[MobTarget, ...] = ()
     contested_mobs: tuple[MobTarget, ...] = ()
@@ -57,14 +55,12 @@ class YoloDetectionResult:
     other_players: tuple[tuple[int, int], ...] = ()
     other_player_boxes: tuple[tuple[int, int, int, int], ...] = ()
     other_player_confs: tuple[float, ...] = ()
-    dead_corpses: tuple[tuple[int, int, int, int], ...] = ()
-    dead_corpse_confs: tuple[float, ...] = ()
     raw_detections: tuple[YoloRawDetection, ...] = ()
 
 
 def letterbox_bgr(
     image_bgr: np.ndarray,
-    new_shape: int | tuple[int, int] = 640,
+    new_shape: int | tuple[int, int] = 416,
     pad_color: tuple[int, int, int] = (114, 114, 114),
 ) -> tuple[np.ndarray, float, float, float]:
     """Letterbox BGR image to (1, 3, target_h, target_w) RGB float32 in [0, 1].
@@ -154,9 +150,12 @@ def is_in_self_box(cx: float, cy: float, frame_w: int, frame_h: int) -> bool:
 
 
 def is_in_hud_or_chat(cx: float, cy: float, frame_w: int, frame_h: int) -> bool:
-    """Return True if (cx, cy) lies inside RYL HUD or chat regions (scaled from 1024x768)."""
+    """Return True if (cx, cy) lies inside RYL HUD, right faction HUD (x>=935), or chat regions (scaled from 1024x768)."""
     sx = float(frame_w) / 1024.0
     sy = float(frame_h) / 768.0
+    # Right HUD (Ak'Kan / Human counter) & extreme right edge freeze guard (x>=935 at 1024x768)
+    if cx >= 935.0 * sx:
+        return True
     # Bottom-right chat log + tabs (x>=442, y>=518 at 1024x768)
     if cx >= 442.0 * sx and cy >= 518.0 * sy:
         return True
@@ -172,14 +171,39 @@ def is_in_hud_or_chat(cx: float, cy: float, frame_w: int, frame_h: int) -> bool:
     # Bottom-left HP/MP/EA panel
     if cx <= 238.0 * sx and cy >= 676.0 * sy:
         return True
-    # Right faction counter (Ak'Kan / Human)
-    if cx >= 945.0 * sx and 370.0 * sy <= cy <= 410.0 * sy:
-        return True
     return False
 
 
+def is_warm_gold_drop_roi(image_bgr: np.ndarray, bbox: tuple[int, int, int, int]) -> bool:
+    """Lightweight HSV color filter rejecting white/silver/gray drops; accepts warm red/orange/golden-yellow pouches."""
+    fh, fw = image_bgr.shape[:2]
+    x1 = max(0, min(fw - 1, int(bbox[0])))
+    y1 = max(0, min(fh - 1, int(bbox[1])))
+    x2 = max(x1 + 1, min(fw, int(bbox[2])))
+    y2 = max(y1 + 1, min(fh, int(bbox[3])))
+    roi = image_bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return False
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    h = hsv[:, :, 0]
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+    # Warm red / orange / golden-yellow pixels (gold bags & dark-brown/orange pouches)
+    warm = ((h <= 36) | (h >= 168)) & (s >= 70) & (v >= 65)
+    # Bright low-saturation white/silver pixels (white junk items / armor drops)
+    white_silver = (s <= 55) & (v >= 155)
+    warm_cnt = int(warm.sum())
+    white_cnt = int(white_silver.sum())
+    total = max(1, roi.shape[0] * roi.shape[1])
+    if warm_cnt < 3 and (warm_cnt / float(total)) < 0.03:
+        return False
+    if white_cnt > warm_cnt * 3 and (white_cnt / float(total)) >= 0.25:
+        return False
+    return True
+
+
 class Yolo11nOnnxDetector:
-    """Lightweight CPU-only YOLO11n ONNX Runtime detector (imgsz=640, 4 classes, intra_op_num_threads=2)."""
+    """Lightweight CPU-only 3-class YOLO11n ONNX Runtime detector (gold_rustler, gold_bag, player; intra_op_num_threads=2)."""
 
     def __init__(
         self,
@@ -189,27 +213,38 @@ class Yolo11nOnnxDetector:
     ) -> None:
         p = config.perception
         self.model_path: str = str(p.get("yolo_model_path", "models/yolo11n_ryl.onnx"))
-        self.imgsz: int = max(160, int(p.get("yolo_imgsz", 640)))
+        self.imgsz: int = max(160, int(p.get("yolo_imgsz", 416)))
         self.imgsz_h: int = self.imgsz
         self.imgsz_w: int = self.imgsz
         self.conf_threshold: float = float(p.get("yolo_conf_threshold", 0.45))
+        self.player_conf_threshold: float = float(
+            p.get("player_conf_threshold", p.get("anti_ks_player_min_conf", 0.65))
+        )
         self.gold_bag_conf_threshold: float = float(p.get("gold_bag_conf_threshold", 0.20))
         self.loot_tiled_gold_bag_conf_threshold: float = float(
             p.get("loot_tiled_gold_bag_conf_threshold", self.gold_bag_conf_threshold)
         )
-        self.dead_rustler_conf_threshold: float = float(p.get("dead_rustler_conf_threshold", 0.35))
+        self.loot_bag_max_size_px: float = float(p.get("loot_bag_max_size_px", 65.0))
+        self.loot_color_filter_enabled: bool = bool(p.get("loot_color_filter_enabled", True))
         self.iou_threshold: float = float(p.get("yolo_iou_threshold", 0.45))
         self.intra_op_threads: int = max(1, int(p.get("yolo_intra_op_threads", 2)))
         self.anti_ks_enabled: bool = bool(p.get("anti_ks_enabled", True))
         self.anti_ks_use_hsv_damage: bool = bool(p.get("anti_ks_use_hsv_damage", False))
-        self.anti_ks_player_min_conf: float = float(p.get("anti_ks_player_min_conf", 0.50))
+        self.anti_ks_player_min_conf: float = float(
+            p.get("anti_ks_player_min_conf", self.player_conf_threshold)
+        )
         self.anti_ks_player_radius_px: float = float(p.get("anti_ks_player_radius_px", 240.0))
+        self.anti_ks_player_self_ignore_radius_px: float = float(
+            p.get("anti_ks_player_self_ignore_radius_px", 90.0)
+        )
+        self.anti_ks_player_confirm_frames: int = max(1, int(p.get("anti_ks_player_confirm_frames", 2)))
         self.anti_ks_damage_zone_radius_px: float = float(
             p.get("anti_ks_damage_zone_radius_px", self.anti_ks_player_radius_px)
         )
-        # Click lower-chest / torso of gold_rustler bbox: y1 + 0.68 * (y2 - y1) so clicks never miss in top gap
+        # Click lower-chest / torso of gold_rustler bbox: y1 + 0.68 * (y2 - y1)
         self.click_y_top_ratio: float = float(p.get("yolo_click_y_ratio", 0.68))
 
+        self._player_consec_frames: int = 0
         self._session: Any | None = None
         self._input_name: str = "images"
         self._output_name: str = "output0"
@@ -266,11 +301,13 @@ class Yolo11nOnnxDetector:
             )
             self._resolve_io_names(self._session)
             logger.info(
-                "Yolo11nOnnxDetector loaded %s (imgsz=%d, conf=%.2f, iou=%.2f, threads=%d, provider=CPUExecutionProvider)",
+                "Yolo11nOnnxDetector loaded %s (imgsz=%dx%d, classes=3, conf=%.2f, player_conf=%.2f, bag_conf=%.2f, threads=%d)",
                 model_file,
-                self.imgsz,
+                self.imgsz_w,
+                self.imgsz_h,
                 self.conf_threshold,
-                self.iou_threshold,
+                self.player_conf_threshold,
+                self.gold_bag_conf_threshold,
                 self.intra_op_threads,
             )
         except Exception as exc:
@@ -296,7 +333,7 @@ class Yolo11nOnnxDetector:
         frame_h: int | None = None,
         gold_bag_conf_override: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Run ONNX on a single crop and return pre-NMS (boxes_xyxy, scores, class_ids) in full-frame pixels."""
+        """Run 3-class ONNX on a single crop and return pre-NMS (boxes_xyxy, scores, class_ids) in full-frame pixels."""
         empty_b = np.zeros((0, 4), dtype=np.float32)
         empty_s = np.zeros((0,), dtype=np.float32)
         empty_c = np.zeros((0,), dtype=np.int64)
@@ -317,29 +354,27 @@ class Yolo11nOnnxDetector:
         if raw.ndim != 2:
             return (empty_b, empty_s, empty_c)
 
-        if raw.shape[0] == 8 and raw.shape[1] != 8:
-            preds = raw.T
-        elif raw.shape[1] == 8:
-            preds = raw
-        elif raw.shape[0] < raw.shape[1] and raw.shape[0] >= 5:
+        # Standard 3-class YOLO11n export is (7, N) = [cx, cy, w, h, cls0, cls1, cls2];
+        # also tolerates legacy (8, N) by reading only the 3 active class channels 4..6.
+        if raw.shape[0] < raw.shape[1] and raw.shape[0] >= 7:
             preds = raw.T
         else:
             preds = raw
 
-        if preds.shape[1] < 5:
+        n_cls = len(YOLO_CLASS_NAMES)
+        if preds.shape[1] < 4 + n_cls:
             return (empty_b, empty_s, empty_c)
 
-        cls_scores = preds[:, 4 : 4 + len(YOLO_CLASS_NAMES)]
+        cls_scores = preds[:, 4 : 4 + n_cls]
         class_ids = np.argmax(cls_scores, axis=1)
         confs = cls_scores[np.arange(preds.shape[0]), class_ids]
 
         gb_th = self.gold_bag_conf_threshold if gold_bag_conf_override is None else float(gold_bag_conf_override)
         cls_thresholds = np.array(
             [
-                self.conf_threshold,  # 0: gold_rustler
-                gb_th,  # 1: gold_bag
-                self.conf_threshold,  # 2: player
-                self.dead_rustler_conf_threshold,  # 3: dead_rustler
+                self.conf_threshold,  # 0: gold_rustler (0.45)
+                gb_th,  # 1: gold_bag (0.20)
+                self.player_conf_threshold,  # 2: player (0.65)
             ],
             dtype=np.float32,
         )
@@ -372,9 +407,14 @@ class Yolo11nOnnxDetector:
         fw: int,
         fh: int,
     ) -> list[YoloRawDetection]:
-        """Apply class-wise NMS (iou_threshold=0.45) and mandatory SELF + HUD/chat exclusions."""
+        """Apply class-wise NMS (iou_threshold=0.45) and mandatory SELF, HUD/chat, and player <90px exclusions."""
         if boxes_xyxy.shape[0] == 0:
             return []
+        sx = float(fw) / 1024.0
+        self_cx = float(fw) * 0.5
+        self_cy = float(fh) * 0.5
+        player_self_r = self.anti_ks_player_self_ignore_radius_px * sx
+
         detections: list[YoloRawDetection] = []
         for cid in range(len(YOLO_CLASS_NAMES)):
             cls_mask = class_ids == cid
@@ -394,6 +434,9 @@ class Yolo11nOnnxDetector:
                     continue
                 if is_in_hud_or_chat(bcx, bcy, fw, fh):
                     continue
+                # Ignore class 2 'player' if center is < 90px from SELF center (512, 384)
+                if cid == CLS_PLAYER and math.hypot(bcx - self_cx, bcy - self_cy) < player_self_r:
+                    continue
                 detections.append(
                     YoloRawDetection(
                         class_id=cid,
@@ -405,7 +448,7 @@ class Yolo11nOnnxDetector:
         return detections
 
     def infer_raw(self, image_bgr: np.ndarray) -> list[YoloRawDetection]:
-        """Run full-frame YOLO11n ONNX inference, decode + NMS, un-letterbox, and filter SELF + HUD/chat."""
+        """Run full-frame 3-class YOLO11n ONNX inference, decode + NMS, un-letterbox, and filter SELF + HUD/chat."""
         if self._session is None or image_bgr.size == 0:
             return []
         fh, fw = image_bgr.shape[:2]
@@ -419,14 +462,9 @@ class Yolo11nOnnxDetector:
         external_combat_zones: Sequence[tuple[float, float]] = (),
         loot_radius_limit_px: float | None = None,
     ) -> YoloDetectionResult:
-        """Tiled 3-crop high-res (512x512 overlapping) YOLO11n inference exclusively for BotState.LOOT.
+        """Tiled 3-crop high-res (512x512 overlapping) 3-class YOLO11n inference exclusively for BotState.LOOT.
 
-        Crops playable ground y=140..652 (at 1024x768, scaled) into 3 overlapping 512x512 tiles:
-          1. Left:   x=0..512,   y=140..652
-          2. Center: x=256..768, y=140..652
-          3. Right:  x=512..1024,y=140..652
-        Runs ONNX on all 3 tiles with gold_bag_conf_threshold=0.22, maps back to full frame,
-        merges with class-wise NMS (iou=0.45), and applies SELF, HUD/chat, and Anti-KS player<=240px filters.
+        Filters out oversized boxes (>65x65px at 1024x768) and white/silver item drops via lightweight HSV check.
         """
         if self._session is None or image_bgr.size == 0:
             return YoloDetectionResult()
@@ -474,10 +512,12 @@ class Yolo11nOnnxDetector:
             raw_dets,
             fw,
             fh,
+            image_bgr=image_bgr,
             include_mobs=False,
             include_loot=True,
             external_combat_zones=external_combat_zones,
             loot_radius_limit_px=loot_radius_limit_px,
+            enforce_loot_size_and_color=True,
         )
 
     def detect(
@@ -489,7 +529,7 @@ class Yolo11nOnnxDetector:
         external_combat_zones: Sequence[tuple[float, float]] = (),
         loot_radius_limit_px: float | None = None,
     ) -> YoloDetectionResult:
-        """Run full-frame YOLO11n inference and map detections to MobTarget, LootDrop, Players, and Dead Corpses."""
+        """Run full-frame 3-class YOLO11n inference and map detections to MobTarget, LootDrop, and Players."""
         if self._session is None or image_bgr.size == 0:
             return YoloDetectionResult()
         fh, fw = image_bgr.shape[:2]
@@ -498,10 +538,12 @@ class Yolo11nOnnxDetector:
             raw_dets,
             fw,
             fh,
+            image_bgr=image_bgr,
             include_mobs=include_mobs,
             include_loot=include_loot,
             external_combat_zones=external_combat_zones,
             loot_radius_limit_px=loot_radius_limit_px,
+            enforce_loot_size_and_color=False,
         )
 
     def _build_detection_result(
@@ -510,36 +552,40 @@ class Yolo11nOnnxDetector:
         fw: int,
         fh: int,
         *,
+        image_bgr: np.ndarray | None = None,
         include_mobs: bool = True,
         include_loot: bool = True,
         external_combat_zones: Sequence[tuple[float, float]] = (),
         loot_radius_limit_px: float | None = None,
+        enforce_loot_size_and_color: bool = False,
     ) -> YoloDetectionResult:
-
         scale_1024 = float(fw) / 1024.0
+        scale_y = float(fh) / 768.0
         center_x = float(fw) * 0.5
         center_y = float(fh) * 0.5
         ks_radius = max(self.anti_ks_player_radius_px, self.anti_ks_damage_zone_radius_px) * scale_1024
         player_ks_r = self.anti_ks_player_radius_px * scale_1024
+        max_bag_w = self.loot_bag_max_size_px * scale_1024
+        max_bag_h = self.loot_bag_max_size_px * scale_y
 
-        other_players: list[tuple[int, int]] = []
+        raw_players: list[tuple[int, int]] = []
         other_player_boxes: list[tuple[int, int, int, int]] = []
         other_player_confs: list[float] = []
-        ks_players: list[tuple[int, int]] = []
-        dead_corpses: list[tuple[int, int, int, int]] = []
-        dead_corpse_confs: list[float] = []
 
         for det in raw_dets:
             if det.class_id == CLS_PLAYER:
                 other_player_boxes.append(det.bbox)
                 other_player_confs.append(det.confidence)
                 if det.confidence >= self.anti_ks_player_min_conf:
-                    other_players.append((det.cx, det.cy))
-                    ks_players.append((det.cx, det.cy))
-            elif det.class_id == CLS_DEAD_RUSTLER:
-                # Ignored as attack target; kept strictly for debug overlay visualization
-                dead_corpses.append(det.bbox)
-                dead_corpse_confs.append(det.confidence)
+                    raw_players.append((det.cx, det.cy))
+
+        # Require >= 2 consecutive frames with a valid player before activating Anti-KS block
+        if raw_players:
+            self._player_consec_frames += 1
+        else:
+            self._player_consec_frames = 0
+        player_confirmed = self._player_consec_frames >= self.anti_ks_player_confirm_frames
+        ks_players = raw_players if player_confirmed else []
 
         def _ks_reason(px: float, py: float) -> str:
             if not self.anti_ks_enabled:
@@ -599,6 +645,15 @@ class Yolo11nOnnxDetector:
                 x1, y1, x2, y2 = det.bbox
                 bw = max(1, x2 - x1)
                 bh = max(1, y2 - y1)
+                if enforce_loot_size_and_color:
+                    if float(bw) > max_bag_w or float(bh) > max_bag_h:
+                        continue
+                    if (
+                        self.loot_color_filter_enabled
+                        and image_bgr is not None
+                        and not is_warm_gold_drop_roi(image_bgr, det.bbox)
+                    ):
+                        continue
                 cx = det.cx
                 cy = det.cy
                 dist = math.hypot(float(cx) - center_x, float(cy) - center_y)
@@ -625,10 +680,8 @@ class Yolo11nOnnxDetector:
             mobs=tuple(mobs),
             contested_mobs=tuple(contested_mobs),
             loot=tuple(loot),
-            other_players=tuple(other_players),
+            other_players=tuple(ks_players),
             other_player_boxes=tuple(other_player_boxes),
             other_player_confs=tuple(other_player_confs),
-            dead_corpses=tuple(dead_corpses),
-            dead_corpse_confs=tuple(dead_corpse_confs),
             raw_detections=tuple(raw_dets),
         )

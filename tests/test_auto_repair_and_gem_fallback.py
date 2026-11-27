@@ -196,8 +196,8 @@ def test_full_80m_auto_repair_cycle_with_weapon_swap_talk_guard_and_return_to_sp
     assert fsm.respawn_travel._repair_phase == "FIND_MERCHANT_SIGN"
 
     ms_box = (872, 472, 190, 27)
-    acts_esc = fsm.step(tracker.update(_make_snap(25.2, 1094, 2643, merchant_sign_bbox=ms_box)))
-    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_esc)
+    acts_tab = fsm.step(tracker.update(_make_snap(25.2, 1094, 2643, merchant_sign_bbox=ms_box)))
+    assert any(isinstance(a, TapKeyIntent) and a.key == "tab" for a in acts_tab)
     acts_npc = fsm.step(tracker.update(_make_snap(25.5, 1094, 2643, merchant_sign_bbox=ms_box)))
     assert any(isinstance(a, ClickScreenIntent) and a.button == "left" for a in acts_npc)
     assert fsm.respawn_travel._repair_phase == "WAIT_TRADE_MENU"
@@ -254,7 +254,7 @@ def test_full_80m_auto_repair_cycle_with_weapon_swap_talk_guard_and_return_to_sp
     )
 
     acts_done = fsm.step(tracker.update(_make_snap(29.9, 1094, 2643)))
-    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and "hide_cursor_after_repair" in a.reason for a in acts_done)
+    assert any(isinstance(a, TapKeyIntent) and a.key == "tab" and "hide_cursor_after_repair" in a.reason for a in acts_done)
     assert fsm.respawn_travel._repair_phase == "WALK_TO_HUB"
 
     fsm.step(tracker.update(_make_snap(31.5, 1075, 2631)))
@@ -383,14 +383,17 @@ def test_gems_new_spot_1195_1568_switches_to_old_spot_1092_1115_only_after_2_rea
 
 def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832_return() -> None:
     """Verify F7 Force Repair hotkey, 210ms AHK /kill interlock, 100ms NPC/UI click-hold,
-    Esc close after repair_yes, UI template miss score logging, and return route to (594, 1832) + /setweather 11."""
+    both popup branches ('Yes' and 'No equipment to repair.') + Talk OK recovery, Tab cursor,
+    city auto-detect on F9, Addon Keep Teleport (1066, 2627) -> Ardun Keep (1409, 1773) -> (627, 1817) + /setweather 11."""
     from vikings_bot.runtime.safety import SafetyMonitor
 
     cfg = load_config("config/default.yaml")
     cfg.perception["hud_fixed_pixel_ui"] = True
     assert str(cfg.safety.get("force_repair_key")).upper() == "F7"
     assert float(cfg.repair.get("npc_click_hold_sec", 0.0)) == 0.10
-    assert bool(cfg.repair.get("close_dialog_with_esc", False)) is True
+    assert bool(cfg.repair.get("close_dialog_with_esc", True)) is False
+    assert str(cfg.respawn_travel.get("cursor_toggle_key")).lower() == "tab"
+    assert cfg.farming["anchor_spot_on_resume"] is False
 
     # 1. AHK v2 bridge hard interlock (>=210ms sleep on CHAT_CMD, 40ms settle before CLICK)
     ahk_src = Path("ahk/vikings_input_bridge.ahk").read_text(encoding="utf-8")
@@ -403,18 +406,26 @@ def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832
     chk = sm.check(None, is_running_active=True)
     assert chk.force_repair_requested is True
 
-    # 3. UI template matcher records best match scores on miss for easy VM calibration
+    # 3. UI template matcher records best match scores on miss & handles optional missing PNG gracefully
     um = UiTemplateMatcher(cfg)
     blank = FramePacket(image_bgr=np.full((768, 1024, 3), 50, dtype=np.uint8), timestamp=10.0)
     assert um.find_merchant_sign(blank) is None
     assert "merchant_sign" in um.last_match_scores
+    assert um.find_no_equipment_repair(blank) is None
 
-    # 4. Full F7 Force Repair -> /kill -> REPAIR_AT_NPC (100ms clicks + Esc) -> TELEPORT -> TRAVEL -> (594, 1832) + /setweather 11
+    # 4. City auto-detect on F9 (x>=1000, y>=2500) -> leaves town directly instead of SCAN_SPOT
+    tr_city = WorldStateTracker()
+    fsm_city = FarmingFSM(cfg, tr_city, mode=BotMode.FULL)
+    fsm_city.resume(1.0, ensure_mouse_mode=False)
+    fsm_city.step(tr_city.update(_make_snap(1.0, 1066, 2627, fw=1024, fh=768)))
+    assert fsm_city.state == BotState.TELEPORT_TO_SPOT
+
+    # 5. Full F7 Force Repair -> /kill -> REPAIR_AT_NPC (100ms clicks, Yes branch + Talk OK recovery) -> Ardun Keep -> (627, 1817)
     tracker = WorldStateTracker()
     fsm = FarmingFSM(cfg, tracker, mode=BotMode.FULL)
-    assert (fsm.configured_spot_center.x, fsm.configured_spot_center.y) == (594.0, 1832.0)
+    assert (fsm.configured_spot_center.x, fsm.configured_spot_center.y) == (627.0, 1817.0)
     fsm.resume(1.0, ensure_mouse_mode=False)
-    fsm.step(tracker.update(_make_snap(1.0, 594, 1832, fw=1024, fh=768)))
+    fsm.step(tracker.update(_make_snap(1.0, 627, 1817, fw=1024, fh=768)))
     # Pause does NOT reset active farming timer
     fsm._active_farming_sec = 1234.0
     fsm.pause(2.0, "test_pause")
@@ -425,48 +436,62 @@ def test_f7_force_repair_hotkey_100ms_clicks_esc_close_and_gold_rustler_594_1832
     # F7 Force Repair -> repair_rem_min == 0 -> enters REPAIR_RECALL immediately!
     fsm.request_repair_now()
     assert fsm.repair_remaining_minutes == 0.0
-    fsm.step(tracker.update(_make_snap(3.5, 594, 1832, fw=1024, fh=768)))
+    fsm.step(tracker.update(_make_snap(3.5, 627, 1817, fw=1024, fh=768)))
     assert fsm.state == BotState.REPAIR_RECALL
 
-    acts_k = fsm.step(tracker.update(_make_snap(3.7, 594, 1832, fw=1024, fh=768)))
+    acts_k = fsm.step(tracker.update(_make_snap(3.7, 627, 1817, fw=1024, fh=768)))
     assert any(isinstance(a, TypeChatCommandIntent) and a.command == "/kill" for a in acts_k)
 
-    # Arrives in town -> walks to merchant -> 100ms clicks on NPC, Trade, Repair All, Yes + Esc close!
+    # Arrives in Green Wales (1075, 2631) -> walks to merchant (1094, 2644) -> 100ms clicks + Talk OK recovery + Yes!
     fsm.step(tracker.update(_make_snap(21.0, 1075, 2631, fw=1024, fh=768)))
     assert fsm.state == BotState.REPAIR_AT_NPC
-    fsm.step(tracker.update(_make_snap(23.0, 1094, 2643, fw=1024, fh=768)))
-    a_npc = fsm.step(tracker.update(_make_snap(23.3, 1094, 2643, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
+    fsm.step(tracker.update(_make_snap(23.0, 1094, 2644, fw=1024, fh=768)))
+    a_npc = fsm.step(tracker.update(_make_snap(23.3, 1094, 2644, fw=1024, fh=768, merchant_sign_bbox=(420, 360, 190, 27))))
     assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 for a in a_npc)
-    a_tr = fsm.step(tracker.update(_make_snap(23.7, 1094, 2643, fw=1024, fh=768, trade_menu_bbox=(510, 245, 58, 43))))
+    # Accidental Talk OK recovery
+    a_tok = fsm.step(tracker.update(_make_snap(23.5, 1094, 2644, fw=1024, fh=768, talk_ok_bbox=(480, 400, 55, 25))))
+    assert any(isinstance(a, ClickScreenIntent) and "click_merchant_talk_ok" in a.reason for a in a_tok)
+    # Trade -> Repair All -> Yes
+    a_tr = fsm.step(tracker.update(_make_snap(23.9, 1094, 2644, fw=1024, fh=768, trade_menu_bbox=(510, 245, 58, 43))))
+    if not any(isinstance(a, ClickScreenIntent) for a in a_tr):
+        a_tr = fsm.step(tracker.update(_make_snap(24.0, 1094, 2644, fw=1024, fh=768, trade_menu_bbox=(510, 245, 58, 43))))
     assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 for a in a_tr)
-    a_ra = fsm.step(tracker.update(_make_snap(24.1, 1094, 2643, fw=1024, fh=768, repair_all_bbox=(596, 532, 66, 25))))
+    a_ra = fsm.step(tracker.update(_make_snap(24.4, 1094, 2644, fw=1024, fh=768, repair_all_bbox=(596, 532, 66, 25))))
     assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 for a in a_ra)
-    a_yes = fsm.step(tracker.update(_make_snap(24.5, 1094, 2643, fw=1024, fh=768, repair_yes_bbox=(510, 438, 55, 25))))
+    a_yes = fsm.step(tracker.update(_make_snap(24.8, 1094, 2644, fw=1024, fh=768, repair_yes_bbox=(510, 438, 55, 25))))
     assert any(isinstance(a, ClickScreenIntent) and abs(a.hold_sec - 0.10) < 1e-4 and "click_repair_yes_btn" in a.reason for a in a_yes)
-    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" and "close_merchant_dialog_esc" in a.reason for a in a_yes)
+
+    # Branch 2 verification: 'No equipment to repair.' in CONFIRM_REPAIR immediately advances to CLOSE_SHOP_INV!
+    fsm.respawn_travel._repair_phase = "CONFIRM_REPAIR"
+    snap_no_eq = PerceptionSnapshot(
+        timestamp=25.0, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
+        coords=CoordReading(x=1094, y=2644, confidence=0.99), minimap=MinimapReading(),
+        no_equipment_repair_bbox=(420, 360, 180, 28),
+    )
+    fsm.step(tracker.update(snap_no_eq))
+    assert fsm.respawn_travel._repair_phase == "CLOSE_SHOP_INV"
 
     # Dialog closed -> walks to hub (1075, 2631) -> TELEPORT_TO_SPOT -> resets 80m timer!
-    fsm.step(tracker.update(_make_snap(25.0, 1094, 2643, fw=1024, fh=768)))
-    fsm.step(tracker.update(_make_snap(26.5, 1075, 2631, fw=1024, fh=768)))
+    fsm.step(tracker.update(_make_snap(25.5, 1094, 2644, fw=1024, fh=768)))
+    fsm.step(tracker.update(_make_snap(27.0, 1075, 2631, fw=1024, fh=768)))
     assert fsm.state == BotState.TELEPORT_TO_SPOT
     assert fsm.repairs_count == 1 and fsm._active_farming_sec == 0.0
 
-    # Teleports to Addon Keep (1409, 1779) -> TRAVEL_TO_SPOT -> traverses travel_waypoints -> arrives (594, 1832)!
-    fsm.step(tracker.update(_make_snap(32.0, 1409, 1779, fw=1024, fh=768)))
+    # Teleports to Ardun Keep (1409, 1773) -> TRAVEL_TO_SPOT -> traverses travel_waypoints -> arrives (627, 1817)!
+    fsm.step(tracker.update(_make_snap(32.0, 1409, 1773, fw=1024, fh=768)))
     assert fsm.state == BotState.TRAVEL_TO_SPOT
     ts = 33.0
     for wp in cfg.active_route.travel_waypoints:
         fsm.step(tracker.update(_make_snap(ts, int(wp.x), int(wp.y), fw=1024, fh=768)))
         ts += 1.5
-    fsm.step(tracker.update(_make_snap(ts + 1.0, 594, 1832, fw=1024, fh=768)))
     assert fsm.state == BotState.SEARCH_MOB
-    assert (fsm.navigator.spot_center.x, fsm.navigator.spot_center.y) == (594.0, 1832.0)
+    assert (fsm.navigator.spot_center.x, fsm.navigator.spot_center.y) == (627.0, 1817.0)
 
-    # First SEARCH_MOB tick back at (594, 1832) sends /setweather 11!
+    # First SEARCH_MOB tick back at (627, 1817) sends /setweather 11!
     w_back = tracker.update(
         PerceptionSnapshot(
             timestamp=ts + 2.0, frame_width=1024, frame_height=768, hp_ratio=1.0, mp_ratio=1.0,
-            coords=CoordReading(x=594, y=1832, confidence=0.99), minimap=MinimapReading(),
+            coords=CoordReading(x=627, y=1817, confidence=0.99), minimap=MinimapReading(),
             playfield_luma=90.0,
         )
     )

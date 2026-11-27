@@ -31,21 +31,25 @@ perception:
   coord_max_jump: 120.0
   coord_min_confidence: 0.58
 
-  # YOLO11n ONNX Runtime CPU detector (4 classes: 0=gold_rustler, 1=gold_bag, 2=player, 3=dead_rustler)
+  # YOLO11n ONNX Runtime CPU detector (3 classes: 0=gold_rustler, 1=gold_bag, 2=player)
   yolo_enabled: true
   yolo_model_path: "models/yolo11n_ryl.onnx"
-  yolo_imgsz: 640
+  yolo_imgsz: 416
   yolo_conf_threshold: 0.45
+  player_conf_threshold: 0.65
   gold_bag_conf_threshold: 0.20
   loot_tiled_enabled: true
   loot_tiled_gold_bag_conf_threshold: 0.20
-  dead_rustler_conf_threshold: 0.35
+  loot_bag_max_size_px: 65
+  loot_color_filter_enabled: true
   yolo_click_y_ratio: 0.68
   yolo_iou_threshold: 0.45
   yolo_intra_op_threads: 2
   paused_yolo_preview_hz: 2.5
   anti_ks_use_hsv_damage: false
-  anti_ks_player_min_conf: 0.50
+  anti_ks_player_min_conf: 0.65
+  anti_ks_player_self_ignore_radius_px: 90
+  anti_ks_player_confirm_frames: 2
 
   # Pure OpenCV Gold Rustler nameplate + HP bar + Combat-Status Anti-KS (fallback when ONNX unavailable)
   anti_ks_enabled: true
@@ -139,16 +143,17 @@ controls:
 farming:
   tick_hz: 20.0
   waypoints_file: "config/waypoints.yaml"
-  anchor_spot_on_resume: true
+  anchor_spot_on_resume: false
   engage_dist_px: 560
+  mob_max_engage_dist_px: 560
   mob_min_y_ratio: 0.14
   combat_miss_timeout_sec: 2.4
   combat_min_lock_hold_sec: 2.0
   engage_click_hold_sec: 0.12
   engage_double_click: true
   engage_skill_key: "1"
-  combat_no_hit_abort_sec: 5.0
-  combat_hit_confirm_timeout_sec: 5.0
+  combat_no_hit_abort_sec: 4.5
+  combat_hit_confirm_timeout_sec: 4.5
   combat_confirmed_max_sec: 35.0
   combat_post_last_hit_idle_sec: 2.5
   combat_blind_timeout_sec: 10.0
@@ -158,18 +163,20 @@ farming:
   background_e_spam: true
   disable_gold_bag_detector: false
   loot_mouse_click_enabled: true
+  loot_click_hold_sec: 0.10
+  loot_click_pause_e_sec: 0.12
   loot_e_close_dist_px: 85.0
   loot_e_interval_sec: 0.30
   loot_click_interval_sec: 0.30
   loot_max_local_dist_px: 650.0
-  loot_close_radius_px: 310
-  loot_entry_close_dist_px: 310.0
+  loot_close_radius_px: 320
+  loot_entry_close_dist_px: 320.0
   loot_entry_kill_window_sec: 4.0
   loot_dead_point_sweep: true
   loot_fallback_step_interval_sec: 0.75
   loot_fallback_sweep_offset_px: 85
   mandatory_loot_duration_sec: 2.5
-  post_kill_loot_window_sec: 7.5
+  post_kill_loot_window_sec: 8.0
   loot_min_window_sec: 2.5
   loot_empty_exit_sec: 0.8
   loot_target_move_timeout_sec: 1.2
@@ -177,10 +184,10 @@ farming:
   loot_max_attempts_per_bag: 2
   loot_attempt_grid_px: 24
   loot_visited_grid_ttl_sec: 15.0
-  loot_max_total_sec: 7.5
-  # Conditional post-LOOT Return-to-Center: only when drifted >35u from (594, 1832) or no mobs after 1x sweep
-  spot_x: 594
-  spot_y: 1832
+  loot_max_total_sec: 8.0
+  # Static gold_rustler_spot center (627, 1817); RETURN_TO_CENTER only if >35u drift or MOB==0
+  spot_x: 627
+  spot_y: 1817
   spot_center_arrival_radius: 12.0
   return_center_min_drift_units: 35.0
   return_center_timeout_sec: 6.0
@@ -218,9 +225,10 @@ respawn_travel:
   mouse_only_travel: true
   city_spawn: [1075.0, 2631.0]
   city_radius: 55.0
-  npc_stand_coord: [1060.0, 2626.0]
-  npc_arrival_radius: 4.0
-  addon_keep_landing: [1409.0, 1779.0]
+  npc_stand_coord: [1066.0, 2627.0]
+  addon_teleport_coord: [1066.0, 2627.0]
+  npc_arrival_radius: 4.5
+  addon_keep_landing: [1409.0, 1773.0]
   addon_keep_radius: 75.0
   addon_keep_sign_template: "assets/ui_templates/addon_keep_sign.png"
   teleport_menu_template: "assets/ui_templates/teleport_menu.png"
@@ -229,8 +237,8 @@ respawn_travel:
   menu_match_threshold: 0.62
   npc_talk_ok_threshold: 0.72
   npc_body_offset_y_px: 38
-  cursor_toggle_key: "esc"
-  cursor_fallback_key: "tab"
+  cursor_toggle_key: "tab"
+  cursor_fallback_key: "esc"
   mode_toggle_key: "esc"
   respawn_auto_wait_sec: 1.5
   respawn_fallback_key: "space"
@@ -246,19 +254,22 @@ repair:
   suicide_wait_sec: 18.0
   suicide_retry_sec: 22.0
   npc_click_hold_sec: 0.10
-  close_dialog_with_esc: true
-  merchant_stand_coord: [1094.0, 2643.0]
+  close_dialog_with_esc: false
+  use_tab_cursor: true
+  merchant_stand_coord: [1094.0, 2644.0]
   merchant_arrival_radius: 4.5
   town_hub_waypoint: [1075.0, 2631.0]
   merchant_sign_template: "assets/ui_templates/merchant_sign.png"
   trade_menu_template: "assets/ui_templates/trade_menu.png"
   repair_all_template: "assets/ui_templates/repair_all_btn.png"
   repair_yes_template: "assets/ui_templates/repair_yes_btn.png"
+  no_equipment_repair_template: "assets/ui_templates/no_equipment_repair.png"
   inventory_tab_template: "assets/ui_templates/inventory_tab.png"
   merchant_sign_threshold: 0.76
   trade_menu_threshold: 0.62
   repair_btn_threshold: 0.72
   repair_yes_threshold: 0.72
+  no_equipment_repair_threshold: 0.70
   inventory_tab_threshold: 0.74
 
 safety:

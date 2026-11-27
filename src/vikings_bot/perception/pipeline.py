@@ -386,8 +386,8 @@ class PerceptionPipeline:
                     other_players = yres.other_players
                     other_player_boxes = yres.other_player_boxes
                     other_player_confs = yres.other_player_confs
-                    dead_corpses = yres.dead_corpses
-                    dead_corpse_confs = yres.dead_corpse_confs
+                    dead_corpses = ()
+                    dead_corpse_confs = ()
                 t_yolo_ms = (time.perf_counter() - t_m) * 1000.0
                 timings["yolo"] = t_yolo_ms
                 timings["gold_mobs"] = t_yolo_ms if run_mob_detector else 0.0
@@ -446,6 +446,7 @@ class PerceptionPipeline:
         trade_menu_bbox = None
         repair_all_bbox = None
         repair_yes_bbox = None
+        no_equipment_repair_bbox = None
         inventory_tab_bbox = None
         respawn_dialog_bbox = None
 
@@ -462,6 +463,7 @@ class PerceptionPipeline:
             trade_menu_bbox = self.ui_matcher.find_trade_menu(frame)
             repair_all_bbox = self.ui_matcher.find_repair_all_btn(frame)
             repair_yes_bbox = self.ui_matcher.find_repair_yes_btn(frame)
+            no_equipment_repair_bbox = self.ui_matcher.find_no_equipment_repair(frame)
             inventory_tab_bbox = self.ui_matcher.find_inventory_tab(frame)
             if talk_ok_bbox is None:
                 talk_ok_bbox = self.ui_matcher.find_npc_talk_dialog(frame)
@@ -519,6 +521,7 @@ class PerceptionPipeline:
             trade_menu_bbox=trade_menu_bbox,
             repair_all_bbox=repair_all_bbox,
             repair_yes_bbox=repair_yes_bbox,
+            no_equipment_repair_bbox=no_equipment_repair_bbox,
             inventory_tab_bbox=inventory_tab_bbox,
             respawn_dialog_bbox=respawn_dialog_bbox,
             detector_backend=self.active_backend_desc,

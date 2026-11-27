@@ -304,6 +304,26 @@ class AhkInputDriver(InputDriver):
             (lambda: self._fallback.mouse_click(x, y, button=btn, hold_sec=hold_sec)) if self._fallback is not None else None,
         )
 
+    def mouse_click_with_e_pause(
+        self,
+        x: int,
+        y: int,
+        button: str = "left",
+        hold_sec: float = 0.10,
+        pause_sec: float = 0.12,
+    ) -> None:
+        """Pause background AHK E-spam for pause_sec (120ms), execute 100ms click-hold, then resume E-spam."""
+        was_spamming = self._e_spam_enabled
+        if was_spamming:
+            self.set_e_spam(False)
+            if self._transport_override is None and pause_sec > 0.0:
+                time.sleep(pause_sec)
+        try:
+            self.mouse_click(x, y, button=button, hold_sec=hold_sec)
+        finally:
+            if was_spamming:
+                self.set_e_spam(True)
+
     def combo_key_mouse_click(
         self,
         key: str = "space",

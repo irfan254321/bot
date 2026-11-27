@@ -42,6 +42,8 @@ class MouseFarmController:
         )
         self.background_e_spam: bool = bool(f.get("background_e_spam", True))
         self.loot_mouse_click_enabled: bool = bool(f.get("loot_mouse_click_enabled", True))
+        self.loot_click_hold_sec: float = max(0.04, float(f.get("loot_click_hold_sec", 0.10)))
+        self.loot_click_pause_e_sec: float = max(0.0, float(f.get("loot_click_pause_e_sec", 0.12)))
         self.anti_ks_min_untouched_hp_ratio: float = float(
             config.perception.get("anti_ks_min_untouched_hp_ratio", 0.94)
         )
@@ -248,6 +250,9 @@ class MouseFarmController:
                 continue
             if mob.dist_to_player_px > max_dist:
                 continue
+            # Never click extreme right edge (x > 955 at 1024x768, Ak'Kan/Human HUD freeze guard!)
+            if float(mob.click_x) > 955.0 * (float(fw) / 1024.0):
+                continue
             if float(mob.click_y) > rear_y_cut:
                 if rear_fallback is None:
                     rear_fallback = mob
@@ -374,6 +379,8 @@ class MouseFarmController:
                     x=int(bag.click_x),
                     y=int(bag.click_y),
                     button="left",
+                    hold_sec=self.loot_click_hold_sec,
+                    pause_e_spam_sec=self.loot_click_pause_e_sec,
                     reason=f"loot_click_bag({bag.click_x},{bag.click_y})",
                     no_jitter=True,
                 )

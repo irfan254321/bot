@@ -126,6 +126,7 @@ class PerceptionSnapshot:
     trade_menu_bbox: tuple[int, int, int, int] | None = None
     repair_all_bbox: tuple[int, int, int, int] | None = None
     repair_yes_bbox: tuple[int, int, int, int] | None = None
+    no_equipment_repair_bbox: tuple[int, int, int, int] | None = None
     inventory_tab_bbox: tuple[int, int, int, int] | None = None
     respawn_dialog_bbox: tuple[int, int, int, int] | None = None
     detector_backend: str = "OpenCV-Gold"

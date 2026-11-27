@@ -7,57 +7,51 @@ routes:
     farm_radius: 55.0
     arrival_radius: 7.0
     loop: true
-    # Calibrated from Video 4 (19-39-18.mp4): Addon Keep (1409,1779) -> Gold Rustler (624,1818)
+    # Obstacle-free Ardun Keep (1409,1773) -> Gold Rustler Spot (627,1817)
     travel_waypoints:
-      - name: addon_west_1
-        x: 1356.0
-        y: 1774.0
-      - name: addon_west_2
-        x: 1234.0
-        y: 1760.0
-      - name: addon_west_3
-        x: 1113.0
-        y: 1747.0
-      - name: addon_west_4
-        x: 992.0
-        y: 1733.0
-      - name: addon_west_5
-        x: 871.0
-        y: 1720.0
-      - name: addon_west_6
-        x: 810.0
-        y: 1723.0
-      - name: river_east_bank
-        x: 750.0
-        y: 1734.0
-      - name: river_west_bank
-        x: 690.0
-        y: 1746.0
+      - name: ardun_gate
+        x: 1409.0
+        y: 1773.0
+      - name: ardun_west_1
+        x: 1363.0
+        y: 1777.0
+      - name: ardun_west_2
+        x: 1230.0
+        y: 1765.0
+      - name: ardun_west_3
+        x: 1115.0
+        y: 1756.0
+      - name: ardun_west_4
+        x: 1003.0
+        y: 1748.0
+      - name: river_crossing
+        x: 870.0
+        y: 1770.0
+      - name: west_plains
+        x: 741.0
+        y: 1795.0
       - name: gold_approach
-        x: 639.0
-        y: 1768.0
-      - name: gold_spot_entry
-        x: 624.0
-        y: 1818.0
+        x: 675.0
+        y: 1808.0
       - name: gold_spot_center
-        x: 594.0
-        y: 1832.0
+        x: 627.0
+        y: 1817.0
     waypoints:
       - name: spot_center
-        x: 615.0
-        y: 1830.0
+        x: 627.0
+        y: 1817.0
       - name: spot_north_east
-        x: 629.0
-        y: 1844.0
+        x: 641.0
+        y: 1831.0
       - name: spot_south_east
-        x: 629.0
-        y: 1816.0
+        x: 641.0
+        y: 1803.0
       - name: spot_south_west
-        x: 601.0
-        y: 1816.0
+        x: 613.0
+        y: 1803.0
       - name: spot_north_west
-        x: 601.0
-        y: 1844.0
+        x: 613.0
+        y: 1831.0
 
   gem_rustler_spot:
     farm_radius: 55.0

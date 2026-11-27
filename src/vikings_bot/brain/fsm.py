@@ -43,13 +43,13 @@ class FarmingFSM:
         p = config.perception
 
         self.recovery_duration_sec = float(f.get("recovery_duration_sec", 1.4))
-        self.anchor_spot_on_resume = bool(f.get("anchor_spot_on_resume", True))
+        self.anchor_spot_on_resume = bool(f.get("anchor_spot_on_resume", False))
         self.fallback_route_name: str | None = str(f.get("fallback_route_name") or "").strip() or None
         self.fallback_after_deaths: int = max(0, int(f.get("fallback_after_deaths", 0)))
         self.max_sweeps_before_patrol: int = max(1, int(f.get("max_sweeps_before_patrol", 4)))
         self.combat_miss_timeout_sec: float = float(f.get("combat_miss_timeout_sec", 2.4))
         self.combat_min_lock_hold_sec: float = max(0.0, float(f.get("combat_min_lock_hold_sec", 2.0)))
-        self.combat_no_hit_abort_sec: float = float(f.get("combat_no_hit_abort_sec", 5.0))
+        self.combat_no_hit_abort_sec: float = float(f.get("combat_no_hit_abort_sec", 4.5))
         self.combat_hit_confirm_timeout_sec: float = float(
             f.get("combat_hit_confirm_timeout_sec", self.combat_no_hit_abort_sec)
         )
@@ -57,14 +57,16 @@ class FarmingFSM:
         self.combat_post_last_hit_idle_sec: float = float(
             f.get("combat_post_last_hit_idle_sec", 2.5)
         )
-        self.spot_center_x: float = float(f.get("spot_x", 594.0))
-        self.spot_center_y: float = float(f.get("spot_y", 1832.0))
+        self.spot_center_x: float = float(f.get("spot_x", 627.0))
+        self.spot_center_y: float = float(f.get("spot_y", 1817.0))
         self.spot_center_arrival_radius: float = max(2.0, float(f.get("spot_center_arrival_radius", 12.0)))
         self.return_center_min_drift_units: float = max(
             self.spot_center_arrival_radius, float(f.get("return_center_min_drift_units", 35.0))
         )
         self.return_center_timeout_sec: float = max(1.0, float(f.get("return_center_timeout_sec", 6.0)))
         self.loot_dead_point_sweep: bool = bool(f.get("loot_dead_point_sweep", True))
+        self.loot_click_hold_sec: float = max(0.04, float(f.get("loot_click_hold_sec", 0.10)))
+        self.loot_click_pause_e_sec: float = max(0.0, float(f.get("loot_click_pause_e_sec", 0.12)))
         self.combat_ghost_lock_sec: float = float(f.get("combat_ghost_lock_sec", 1.5))
         self.combat_ghost_blacklist_sec: float = float(f.get("combat_ghost_blacklist_sec", 15.0))
         self.combat_blind_timeout_sec: float = float(f.get("combat_blind_timeout_sec", 10.0))
@@ -352,7 +354,7 @@ class FarmingFSM:
             rsn = "resume_combat"
         else:
             self._need_dynamic_anchor = self.anchor_spot_on_resume
-            target_state = BotState.SEARCH_MOB if self.anchor_spot_on_resume else BotState.NAVIGATE_TO_SPOT
+            target_state = BotState.SEARCH_MOB
             rsn = "resume_full"
 
         want_ensure = self.auto_restore_mouse_mode if ensure_mouse_mode is None else bool(ensure_mouse_mode)
@@ -565,7 +567,14 @@ class FarmingFSM:
             if self.mode == BotMode.FULL and self.respawn_travel.enabled:
                 if self.respawn_travel.is_in_city(world.coords_smoothed):
                     self._need_dynamic_anchor = False
-                    self.transition(BotState.TELEPORT_TO_SPOT, now, "resumed_in_town_auto_teleport")
+                    if self._force_repair_requested or (
+                        self.respawn_travel.repair_enabled
+                        and self._active_farming_sec >= self.respawn_travel.repair_interval_sec
+                    ):
+                        self._force_repair_requested = False
+                        self.transition(BotState.REPAIR_AT_NPC, now, "resumed_in_town_auto_repair")
+                    else:
+                        self.transition(BotState.TELEPORT_TO_SPOT, now, "resumed_in_town_auto_teleport")
                 elif self.respawn_travel.is_near_addon_keep(world.coords_smoothed):
                     self._need_dynamic_anchor = False
                     self.tracker.travel_waypoint_index = self.respawn_travel.choose_starting_travel_index(
@@ -993,14 +1002,20 @@ class FarmingFSM:
                 self.transition(BotState.LOOT, now, "gold_kill_hp_gone_check_loot")
             return []
 
-        # 5. Stage 1 (No Hit Confirmation within 5.0s) & Anti-Ghost-Lock (min 1.5s lock hold to prevent target-hopping):
-        #    Hold locked target for at least combat_min_lock_hold_sec (1.5s) before allowing any miss/ghost unlock!
+        # 5. Stage 1 (No Hit Confirmation within 4.5s) & Anti-Ghost-Lock (min 2.0s lock hold):
+        #    Strictly abort COMBAT_WAIT after 4.5s if NEITHER THP nor local hit damage appeared (never freeze 35s!).
         miss_limit = max(
             self.combat_min_lock_hold_sec,
             self.combat_miss_timeout_sec if world.locked_mob_visible else self.combat_ghost_lock_sec,
         )
         approach_active = world.locked_mob_visible and ((now - self._combat_last_approach_ts) < miss_limit)
         coords_moving = idle_no_move < miss_limit
+        no_hit_hard_abort = (
+            (not self._combat_confirmed)
+            and (not self._combat_saw_hp)
+            and elapsed >= max(self.combat_min_lock_hold_sec, self.combat_no_hit_abort_sec)
+            and (not approach_active)
+        )
         hit_confirm_expired = (
             (not self._combat_confirmed)
             and elapsed >= max(self.combat_min_lock_hold_sec, self.combat_hit_confirm_timeout_sec)
@@ -1013,7 +1028,7 @@ class FarmingFSM:
             and (not approach_active)
             and (not coords_moving)
         )
-        if hit_confirm_expired or ghost_idle_expired:
+        if no_hit_hard_abort or hit_confirm_expired or ghost_idle_expired:
             logger.info(
                 "COMBAT_WAIT miss/ghost (elapsed=%.1fs, confirmed=%s) -> blacklisting %s for %.0fs",
                 elapsed,
@@ -1203,19 +1218,10 @@ class FarmingFSM:
 
             click_pt: tuple[int, int, str] | None = None
             if self._loot_fallback_stage == 0:
-                corpse_pts: list[tuple[float, int, int, str]] = []
-                for cx1, cy1, cx2, cy2 in world.snapshot.dead_corpses:
-                    mx, my = (cx1 + cx2) // 2, (cy1 + cy2) // 2
-                    d = math.hypot(mx - cx_scr, my - cy_scr)
-                    if d <= max_r:
-                        corpse_pts.append((d, mx, my, "loot_fallback_dead_rustler"))
-                corpse_pts.sort(key=lambda item: item[0])
-                if corpse_pts:
-                    click_pt = (corpse_pts[0][1], corpse_pts[0][2], corpse_pts[0][3])
-                else:
-                    kpos = world.last_kill_pos or self._combat_click_xy
-                    if kpos is not None and math.hypot(kpos[0] - cx_scr, kpos[1] - cy_scr) <= max_r:
-                        click_pt = (int(kpos[0]), int(kpos[1]), "loot_fallback_kill_pos")
+                # 3-class YOLO fallback: use last locked gold_rustler kill coordinates (last_kill_screen_xy)
+                kpos = world.last_kill_pos or self._combat_click_xy
+                if kpos is not None and math.hypot(kpos[0] - cx_scr, kpos[1] - cy_scr) <= max_r:
+                    click_pt = (int(kpos[0]), int(kpos[1]), "loot_fallback_kill_pos")
                 self._loot_fallback_stage = 1
             elif self._loot_fallback_stage == 1:
                 click_pt = (max(0, cx_scr - off_x), cy_scr, "loot_fallback_sweep_left")
@@ -1242,6 +1248,8 @@ class FarmingFSM:
                             x=mx,
                             y=my,
                             button="left",
+                            hold_sec=self.loot_click_hold_sec,
+                            pause_e_spam_sec=self.loot_click_pause_e_sec,
                             no_jitter=True,
                             reason=f"{rsn}({mx},{my})",
                         )

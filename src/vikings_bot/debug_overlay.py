@@ -450,23 +450,7 @@ def build_overlay_frame_data(
         )
     )
 
-    corpses_out = (
-        ()
-        if in_combat_wait
-        else tuple(
-            OverlayCorpse(
-                bbox=(int(cx1), int(cy1), int(cx2), int(cy2)),
-                label=(
-                    f"dead_rustler {snap.dead_corpse_confs[i]:.2f}"
-                    if i < len(snap.dead_corpse_confs)
-                    else "DEAD / MAYAT"
-                ),
-                conf=snap.dead_corpse_confs[i] if i < len(snap.dead_corpse_confs) else None,
-                class_name="dead_rustler" if i < len(snap.dead_corpse_confs) else "",
-            )
-            for i, (cx1, cy1, cx2, cy2) in enumerate(snap.dead_corpses)
-        )
-    )
+    corpses_out = ()
 
     target_hp_pct: float | None = None
     if locked_ov is not None and locked_ov.hp_ratio is not None:
@@ -678,7 +662,7 @@ def draw_overlay_scene(canvas: Any, data: OverlayFrameData) -> int:
     line2 = (
         f"HZ: {data.loop_hz:.1f}  |  VIS: {data.vision_ms:.1f}ms  |  THP: {thp_txt}  |  "
         f"MOB: {safe_count}(skip:{skip_count}) GOLD: {len(data.loot)}  |  POS: {coord_txt}{rep_txt}  |  "
-        f"D:{data.deaths_count} R:{data.repairs_count}  |  Overlay [{data.overlay_hotkey}]: ON"
+        f"D:{data.deaths_count} R:{data.repairs_count}  |  [F7]:Rep [{data.overlay_hotkey}]:OV"
     )
 
     canvas.create_rectangle(bx1, by1, bx2, by2, fill="#0B1120", outline="#22D3EE", width=1)

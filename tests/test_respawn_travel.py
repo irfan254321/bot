@@ -75,7 +75,7 @@ def test_full_death_respawn_teleport_and_travel_to_gem_spot():
     safety = SafetyMonitor(cfg, enable_hotkeys=False)
 
     fsm.resume(1.0)
-    fsm.step(tracker.update(_snap(1.0, 1092, 1115)))
+    fsm.step(tracker.update(_snap(1.0, 1195, 1568)))
     assert fsm.state == BotState.SEARCH_MOB
 
     t = _feed_death(tracker, fsm, 2.0, 1053, 1117, frames=12)
@@ -98,19 +98,19 @@ def test_full_death_respawn_teleport_and_travel_to_gem_spot():
     acts_walk = fsm.step(tracker.update(_snap(t + 4.2, 1075, 2628, hp=1.0)))
     assert any(isinstance(a, HoldKeyIntent) and a.key == "w" and a.hold for a in acts_walk)
 
-    fsm.step(tracker.update(_snap(t + 5.5, 1060, 2626, hp=1.0)))
+    fsm.step(tracker.update(_snap(t + 5.5, 1066, 2627, hp=1.0)))
     assert fsm.respawn_travel._tele_phase == "FIND_SIGN"
 
     sign_box = (895, 434, 156, 31)
-    acts_cur = fsm.step(tracker.update(_snap(t + 5.7, 1060, 2626, sign_bbox=sign_box)))
-    assert any(isinstance(a, TapKeyIntent) and a.key == "esc" for a in acts_cur)
+    acts_cur = fsm.step(tracker.update(_snap(t + 5.7, 1066, 2627, sign_bbox=sign_box)))
+    assert any(isinstance(a, TapKeyIntent) and a.key == "tab" for a in acts_cur)
 
-    acts_npc = fsm.step(tracker.update(_snap(t + 5.9, 1060, 2626, sign_bbox=sign_box)))
+    acts_npc = fsm.step(tracker.update(_snap(t + 5.9, 1066, 2627, sign_bbox=sign_box)))
     assert any(isinstance(a, ClickScreenIntent) and 960 <= a.x <= 985 and 470 <= a.y <= 500 for a in acts_npc)
     assert fsm.respawn_travel._tele_phase == "WAIT_MENU"
 
     menu_box = (1026, 318, 64, 43)
-    acts_menu = fsm.step(tracker.update(_snap(t + 6.3, 1060, 2626, sign_bbox=sign_box, menu_bbox=menu_box)))
+    acts_menu = fsm.step(tracker.update(_snap(t + 6.3, 1066, 2627, sign_bbox=sign_box, menu_bbox=menu_box)))
     assert any(
         isinstance(a, ClickScreenIntent) and a.x == 1058 and 350 <= a.y <= 352 and a.no_jitter for a in acts_menu
     )

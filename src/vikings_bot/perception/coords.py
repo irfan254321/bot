@@ -357,10 +357,10 @@ class CoordReader:
             crop, _ = frame.crop_norm(self.roi)
             return self.read_crop(crop)
 
-        # VMware 1024x768 fixed-pixel UI: RYL renders the minimap & coord strip at native 1:1 pixels
-        # anchored to top-left (exact vm_1024_raw.jpg box: x=5..96, y=122..143; widened fallback x=4..116, y=118..142).
-        # Checking crop_norm first on 1024x768 lands inside the minimap (y=85..100) and causes bogus '(11,14)'.
+        # VMware 1024x768 fixed-pixel UI: RYL renders the minimap & coord strip at native 1:1 pixels.
+        # Primary box x=4..114 covers full 4-digit city coords ('1066, 2627', '1094, 2644', '1409, 1773') without clipping!
         for fx1, fy1, fx2, fy2 in (
+            (4, 120, min(fw, 114), min(fh, 144)),
             (5, 122, min(fw, 96), min(fh, 143)),
             (
                 max(0, int(round(self.roi[0] * 1920.0)) - 2),
